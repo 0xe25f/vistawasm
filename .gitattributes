@@ -1,0 +1,29 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source code
+*.props text
+*.targets text
+
+# Scripts
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# Documentation
+*.md text
+*.txt text
+LICENSE text
+README text
+
+# Graphics
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg text
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary

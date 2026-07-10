@@ -1,0 +1,222 @@
+# Testing and Contributing
+
+This is the practical reference for building, testing, and contributing to
+VistaWASM itself — not for consuming the published package (see
+[`docs/getting-started.md`](getting-started.md) for that). Read
+[`AGENTS.md`](../AGENTS.md) first for the project's style and process rules;
+this document is the concrete commands and workflow that satisfy them.
+
+## Prerequisites
+
+- Rust (stable), with the `wasm32-unknown-unknown` target installed via
+  `rustup target add wasm32-unknown-unknown`.
+- Node.js and npm.
+- `wasm-pack` (`cargo install wasm-pack`, or via your package manager).
+
+### A macOS/Homebrew toolchain quirk
+
+If your `cargo`/`rustc` resolve to a Homebrew-installed Rust (check with
+`which cargo`), it will have **no `wasm32-unknown-unknown` standard
+library**, even after `rustup target add wasm32-unknown-unknown` reports
+success — that command installs the target into the *rustup* toolchain, not
+the Homebrew one. Native builds/tests work fine with Homebrew's `cargo`
+regardless (they only need the host target); only wasm32 builds need the
+fix below.
+
+To build/check the wasm32 target in that situation, put the rustup
+toolchain's `bin` directory first on `PATH` for that one command:
+
+```bash
+PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH" \
+  cargo check --target wasm32-unknown-unknown -p vista_wasm
+```
+
+(Substitute your own rustup toolchain directory name if it differs.)
+
+## Building
+
+```bash
+npm run clean       # remove dist/ and any stale build output
+npm run build:wasm  # wasm-pack build crates/vista_wasm --target web --out-dir ../../dist/pkg
+npm run build:ts    # tsc -p tsconfig.json
+npm run build       # clean + build:wasm + build:ts, in order
+npm run build:demo  # build + copy dist/ into demo/dist/ (see below)
+```
+
+`npm run build` is what the published package's `dist/` is generated from,
+and is also what the demo/example dev servers expect to already exist —
+run it once before `npm run dev*` (see
+[`docs/architecture.md`](architecture.md) and the examples' own
+`vite.config.ts` aliasing note below).
+
+`js/src/*.ts`'s relative imports/exports always include an explicit `.js`
+extension (e.g. `from "./errors.js"`, even though the source file is
+`errors.ts`) — this is deliberate, not a typo. TypeScript's `Bundler`
+module resolution accepts this and still resolves it to the sibling
+`.ts` file for type-checking, but the *compiled* `dist/*.js` output then
+also has real `.js` extensions on its own internal imports, which is what
+lets a plain browser load `dist/index.js` directly via native ES modules
+(no bundler, no Node resolution) — see `demo/`, below. Omitting the
+extension compiles fine and works under Vite/Node, but silently breaks
+for any consumer loading the compiled output directly in a browser (a real
+regression this repository has hit once already).
+
+### `demo/`: a plain static site, not a Vite app
+
+Unlike `examples/{vanilla,react,vue,svelte}`, `demo/` is intentionally
+**not** a bundled app — `demo/src/main.js` is plain JavaScript, and
+`demo/index.html` resolves `@vista-wasm/vista-wasm` via a native browser
+[import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+pointing at `./dist/index.js`, not a bundler alias. `npm run build:demo`
+builds the package and copies the real output into `demo/dist/` (see
+`scripts/build-demo.mjs`), after which `demo/` is fully self-contained and
+can be served by *any* static file server (`python3 -m http.server` run
+from inside `demo/`, `npx serve demo`, GitHub Pages, and so on) with zero
+Node/build step at request time. `npm run dev` (Vite) still works against
+`demo/` too, for convenient local hot-reload during development — Vite's
+own alias resolves the bare specifier during dev, and the import map is
+simply unused in that mode (the two do not conflict). See
+`.github/workflows/deploy-demo.yml` for the GitHub Pages deployment this
+enables, and [`README.md`](../README.md#deploying-demo-as-a-static-site-github-pages)
+for the deployment-facing summary.
+
+If you change anything under `demo/` (new controls, wiring), mirror the
+same change into `demo/src/main.js` directly (there is no `.ts` source to
+compile from any more) and keep it in sync with `examples/vanilla/src/main.ts`
+where the two overlap, per this repo's near-duplicate convention for those
+two.
+
+## Testing
+
+```bash
+cargo test --workspace   # native Rust tests (both crates), no wasm32 needed
+npm test                 # vitest, the JS/TS test suite
+npm run lint:indent      # repo-wide 2-space indentation / no-tabs check
+```
+
+All three must pass before considering a change complete. `cargo test
+--workspace` alone does **not** exercise anything WebGPU/shader-related
+(gpu.rs and every `.wgsl` file are effectively untestable by `cargo` — WGSL
+shader source is only ever parsed by `wgpu` at runtime via `include_str!`,
+so a shader with a real logic bug, as opposed to a syntax error, will
+compile cleanly and only show up on screen). For any change that touches
+`render/gpu.rs` or a `.wgsl` file, also do the in-browser verification pass
+below — this is not optional, it is the only way to actually catch shader
+logic bugs.
+
+### In-browser verification
+
+```bash
+npm run dev          # demo, at http://127.0.0.1:5173/
+npm run dev:vanilla  # vanilla example
+npm run dev:react
+npm run dev:vue
+npm run dev:svelte
+```
+
+Each of these needs `npm run build` (specifically `build:wasm` +
+`build:ts`) to have been run first — the examples/demo alias
+`@vista-wasm/vista-wasm` to the *built* `dist/index.js`, not the raw
+TypeScript source, since the WASM loader in `js/src/index.ts` resolves its
+`.wasm`/glue files relative to its own module URL, which only exist next to
+the built output.
+
+For a shader or rendering change specifically, load the affected
+control(s) in a real browser, toggle them through their full range, and
+visually confirm the result — a screenshot is the actual test here, not a
+green terminal.
+
+## Project structure
+
+```text
+crates/
+  vista_types/   # shared serialisable types, no WebGPU dependency
+  vista_wasm/    # the engine: terrain, camera, and all render/ pipelines
+js/
+  src/           # the published TypeScript wrapper (index.ts, types.ts, ...)
+  tests/         # vitest suite for js/src
+demo/            # the full-featured demo app
+examples/        # vanilla, react, vue, svelte — same feature set, different framework
+docs/            # this documentation
+```
+
+See [`docs/architecture.md`](architecture.md) for how the two Rust crates
+and the JS wrapper fit together, and [`docs/options-reference.md`](options-reference.md)
+for the full current public option surface if you are adding to it.
+
+## Code style
+
+- **2-space indentation everywhere** (Rust, TypeScript, WGSL, JSON, YAML,
+  Markdown code blocks) — no tabs, ever. `npm run lint:indent` enforces
+  this repo-wide, including inside Markdown files; numbered-list
+  continuation lines in Markdown must use 4-space indents (not the
+  CommonMark-conventional 3), since the linter only recognises even-numbered
+  indent steps.
+- **British English** in every comment, doc string, and user-facing message
+  (`optimise`, `behaviour`, `colour`, `initialise`, and so on) — see
+  [`AGENTS.md`](../AGENTS.md) for the full spelling list.
+- No image textures anywhere in the renderer — every visual (terrain
+  material blending, tree/grass silhouettes, clouds) is procedural,
+  computed in a shader with `discard`/noise/masks rather than sampled from
+  an image. Keep new rendering features consistent with this rather than
+  introducing the first texture asset.
+- Validate every new public numeric/enum option in `config.rs`, the same
+  way existing ones are (`validate_finite`, `validate_positive`,
+  `validate_non_negative`, `validate_range`) — JavaScript input is
+  untrusted, and any value that bounds a shader loop or allocation size
+  must be hard-clamped server-side, not just documented as "please don't
+  set this too high".
+
+## Adding a new public option end-to-end
+
+If you are adding a new engine option (as opposed to fixing a bug), the
+current codebase touches roughly this many places, in this order:
+
+1. `crates/vista_types/src/lib.rs` — the new field/struct/enum, with a
+    `Default` impl. Use `#[serde(default)]` on new fields added to an
+    *existing* struct so old serialised options without the new key still
+    deserialise correctly.
+2. `crates/vista_wasm/src/config.rs` — validation.
+3. `crates/vista_wasm/src/engine.rs` — a field on `EngineCore`, a
+    `set_*`/getter as needed, and wiring into `render_once()` if it affects
+    per-frame GPU state.
+4. `crates/vista_wasm/src/api.rs` — the `#[wasm_bindgen]` method, if it is
+    a new top-level setter.
+5. `crates/vista_wasm/src/render/gpu.rs` and the relevant `shaders/*.wgsl`
+    files, if it affects rendering — remember `FrameUniforms` fields are
+    append-only across every shader that shares the bind group (see
+    [`docs/architecture.md`](architecture.md#rendering)).
+6. `js/src/types.ts` and `js/src/index.ts` — the TypeScript type and any
+    wrapper method, including the `pendingCall` reentrancy guard on any new
+    synchronous setter (see
+    [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#reentrancy)).
+7. `demo/index.html` + `demo/src/main.ts`, and the matching controls in
+    each of `examples/{vanilla,react,vue,svelte}` — the demo and vanilla
+    example are near-duplicates by design (same DOM element IDs), so those
+    two are usually a near-identical pair of edits; the framework examples
+    each have their own idiomatic wiring around the same underlying calls.
+8. This documentation — at minimum
+    [`docs/options-reference.md`](options-reference.md), plus whichever
+    topic guide covers that system.
+
+Rust tests live in `crates/vista_wasm/tests/` (integration) and
+`#[cfg(test)] mod tests` blocks next to the code they cover (unit). JS
+tests live in `js/tests/`, mirroring `js/src/`.
+
+## Pull request checklist
+
+Before considering a change complete:
+
+- [ ] `cargo test --workspace` passes.
+- [ ] `cargo check --target wasm32-unknown-unknown -p vista_wasm` passes
+      (using the `PATH` fix above if needed).
+- [ ] `npm run build` succeeds end-to-end.
+- [ ] `npm test` passes.
+- [ ] `npm run lint:indent` passes.
+- [ ] Any shader/rendering change has been visually verified in a real
+      browser, not just compiled.
+- [ ] Public API changes are additive (new optional fields/methods) unless
+      a breaking change was explicitly requested and discussed.
+- [ ] Documentation affected by the change has been updated — see
+      [`docs/options-reference.md`](options-reference.md) in particular,
+      since it is the one place every public field is enumerated.

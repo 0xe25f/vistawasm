@@ -1,0 +1,58 @@
+{
+  "name": "@vista-wasm/vista-wasm",
+  "version": "1.0.0",
+  "description": "VistaWASM is a Rust and WebAssembly terrain engine for modern browsers with WebGPU.",
+  "type": "module",
+  "sideEffects": false,
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xe25f/vistawasm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/0xe25f/vistawasm/issues"
+  },
+  "homepage": "https://github.com/0xe25f/vistawasm#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm": "./dist/pkg/vista_wasm_bg.wasm"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build:wasm": "wasm-pack build crates/vista_wasm --target web --out-dir ../../dist/pkg",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run clean && npm run build:wasm && npm run build:ts",
+    "build:demo": "npm run build && node scripts/build-demo.mjs",
+    "dev": "vite --host 127.0.0.1 --config vite.config.ts demo",
+    "dev:vanilla": "vite --host 127.0.0.1 --config vite.config.ts examples/vanilla",
+    "dev:react": "vite --host 127.0.0.1 --config vite.config.ts examples/react",
+    "dev:vue": "vite --host 127.0.0.1 --config vite.config.ts examples/vue",
+    "dev:svelte": "vite --host 127.0.0.1 --config vite.config.ts examples/svelte",
+    "test": "vitest run",
+    "lint:indent": "node scripts/check-indent.mjs"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "svelte": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest",
+    "vue": "latest"
+  }
+}

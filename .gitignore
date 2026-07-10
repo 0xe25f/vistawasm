@@ -1,0 +1,7 @@
+node_modules/
+target/
+dist/
+demo/dist/
+js/pkg/
+*.log
+.DS_Store

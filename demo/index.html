@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VistaWASM Demo</title>
+    <link rel="stylesheet" href="./src/style.css">
+    <!--
+      A native import map, not a bundler alias: this demo is a plain static
+      site (plain JS, no build step) so it can be served as-is by any static
+      file server, including GitHub Pages. "./dist" is the real, compiled
+      package output (wasm-pack + tsc), copied next to this file by
+      `npm run build:demo` (see scripts/build-demo.mjs) — not the raw
+      TypeScript source. Import maps are supported by every evergreen
+      2025-and-newer browser, so no bundler is required at request time.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@vista-wasm/vista-wasm": "./dist/index.js"
+        }
+      }
+    </script>
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="viewer">
+        <canvas id="vista" aria-label="VistaWASM terrain view"></canvas>
+        <canvas id="minimap" aria-label="Terrain minimap" title="Top-down terrain map"></canvas>
+        <div class="status" id="status">Starting VistaWASM...</div>
+        <div class="stats" id="stats"></div>
+        <div class="hint">
+          Drag to look &middot; WASD to move &middot; Space/Shift or middle-drag to rise and fall &middot; Scroll to zoom
+        </div>
+      </section>
+      <aside class="controls" aria-label="VistaWASM controls">
+        <fieldset>
+          <legend>Terrain</legend>
+          <label>
+            Seed
+            <input id="seed" type="number" value="12345" step="1">
+          </label>
+          <label>
+            Size
+            <select id="size">
+              <option value="256">256</option>
+              <option value="512" selected>512</option>
+              <option value="1024">1024</option>
+              <option value="2048">2048</option>
+            </select>
+          </label>
+          <label>
+            Noise kind
+            <select id="noiseKind">
+              <option value="ridged" selected>Ridged</option>
+              <option value="simplex">Simplex</option>
+              <option value="hybrid">Hybrid</option>
+              <option value="island">Island</option>
+              <option value="canyon">Canyon</option>
+              <option value="cratered">Cratered</option>
+              <option value="classic">Classic</option>
+            </select>
+          </label>
+          <label>
+            Octaves
+            <input id="octaves" type="range" min="1" max="12" value="7">
+          </label>
+          <label>
+            Horizontal scale (m)
+            <input id="horizontalScale" type="range" min="2" max="40" value="12">
+          </label>
+          <label>
+            Vertical scale
+            <input id="verticalScale" type="range" min="0.2" max="3" step="0.1" value="1">
+          </label>
+          <label>
+            Domain warp
+            <input id="warp" type="range" min="0" max="2" step="0.05" value="0.15">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Shape</legend>
+          <label>
+            Island falloff
+            <input id="shapeIsland" type="range" min="0" max="1" step="0.05" value="0.3">
+          </label>
+          <label>
+            Terrace
+            <input id="shapeTerrace" type="range" min="0" max="1" step="0.05" value="0.05">
+          </label>
+          <label>
+            Basin
+            <input id="shapeBasin" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Canyon
+            <input id="shapeCanyon" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Crater
+            <input id="shapeCrater" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Erosion</legend>
+          <label class="checkbox">
+            <input id="erosionEnabled" type="checkbox" checked>
+            Enabled
+          </label>
+          <label>
+            Hydraulic iterations
+            <input id="hydraulicIterations" type="range" min="0" max="60" value="10">
+          </label>
+          <label>
+            Thermal iterations
+            <input id="thermalIterations" type="range" min="0" max="60" value="8">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sky and light</legend>
+          <label>
+            Sun azimuth
+            <input id="sun" type="range" min="0" max="360" value="132">
+          </label>
+          <label>
+            Sun elevation
+            <input id="sunElevation" type="range" min="-10" max="85" value="30">
+          </label>
+          <label>
+            Sun intensity
+            <input id="sunIntensity" type="range" min="0.2" max="3" step="0.1" value="1.3">
+          </label>
+          <label>
+            Haze distance (m)
+            <input id="haze" type="range" min="1000" max="120000" value="60000">
+          </label>
+          <label>
+            Exposure
+            <input id="exposure" type="range" min="0.4" max="2" step="0.05" value="1.1">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Water</legend>
+          <label class="checkbox">
+            <input id="waterEnabled" type="checkbox" checked>
+            Enabled
+          </label>
+          <label>
+            Sea level (m)
+            <input id="sea" type="range" min="-200" max="400" value="0">
+          </label>
+          <label>
+            Wave scale
+            <input id="waveScale" type="range" min="0" max="3" step="0.1" value="0.8">
+          </label>
+          <label>
+            Reflectivity
+            <input id="reflectivity" type="range" min="0" max="1" step="0.05" value="0.4">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Vegetation</legend>
+          <label class="checkbox">
+            <input id="floraEnabled" type="checkbox" checked>
+            Enabled
+          </label>
+          <label>
+            Density
+            <input id="floraDensity" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label>
+            Tree line (m)
+            <input id="treeLine" type="range" min="200" max="3000" value="1800">
+          </label>
+          <label>
+            Tree quality
+            <select id="treeQuality">
+              <option value="billboard" selected>Billboard (fast)</option>
+              <option value="cross-quad">Cross-quad</option>
+              <option value="mesh">Mesh (hyper-realistic)</option>
+            </select>
+          </label>
+          <label>
+            Species variation
+            <input id="speciesVariation" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Wind strength
+            <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Grass</legend>
+          <label class="checkbox">
+            <input id="grassEnabled" type="checkbox">
+            Enabled
+          </label>
+          <label>
+            Style
+            <select id="grassStyle">
+              <option value="billboard-blades" selected>Billboard blades</option>
+              <option value="dense-blades">Dense blades (hyper-realistic)</option>
+            </select>
+          </label>
+          <label>
+            Density
+            <input id="grassDensity" type="range" min="0" max="1" step="0.05" value="0.5">
+          </label>
+          <label>
+            View distance (m)
+            <input id="grassViewDistance" type="range" min="30" max="600" value="220">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Clouds</legend>
+          <label>
+            Style
+            <select id="cloudStyle">
+              <option value="off" selected>Off</option>
+              <option value="painted">Painted</option>
+              <option value="volumetric">Volumetric (hyper-realistic)</option>
+            </select>
+          </label>
+          <label>
+            Coverage
+            <input id="cloudCoverage" type="range" min="0" max="1" step="0.05" value="0.45">
+          </label>
+          <label>
+            Drift speed
+            <input id="cloudSpeed" type="range" min="0" max="3" step="0.1" value="1">
+          </label>
+          <label>
+            Layer height (m)
+            <input id="cloudHeight" type="range" min="500" max="12000" value="4000">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Mist</legend>
+          <label>
+            Style
+            <select id="mistStyle">
+              <option value="off" selected>Off</option>
+              <option value="flat">Flat</option>
+              <option value="volumetric">Volumetric (hyper-realistic)</option>
+            </select>
+          </label>
+          <label>
+            Density
+            <input id="mistDensity" type="range" min="0" max="1" step="0.05" value="0.5">
+          </label>
+          <label>
+            Base height (m)
+            <input id="mistBaseHeight" type="range" min="-200" max="500" value="40">
+          </label>
+          <label>
+            Height falloff (m)
+            <input id="mistHeightFalloff" type="range" min="10" max="500" value="120">
+          </label>
+          <label class="checkbox">
+            <input id="mistRiseAboveWater" type="checkbox" checked>
+            Rise above water
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Render</legend>
+          <label>
+            Quality preset
+            <select id="quality">
+              <option value="preview">Preview</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="high">High</option>
+              <option value="offline">Offline</option>
+            </select>
+          </label>
+          <label>
+            Debug view
+            <select id="debugView">
+              <option value="none" selected>None</option>
+              <option value="height">Height</option>
+              <option value="slope">Slope</option>
+              <option value="normals">Normals</option>
+              <option value="lod">LOD</option>
+              <option value="flow">Flow</option>
+              <option value="materials">Materials</option>
+              <option value="no-data">No data</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Actions</legend>
+          <button id="generate" type="button">Generate terrain</button>
+          <button id="screenshot" type="button">Save screenshot (PNG)</button>
+          <button id="downloadMap" type="button">Download terrain map (PNG)</button>
+          <button id="downloadModel" type="button">Download 3D model (OBJ)</button>
+          <button id="downloadHeightmap" type="button">Download raw heightmap</button>
+        </fieldset>
+      </aside>
+    </main>
+  </body>
+</html>
