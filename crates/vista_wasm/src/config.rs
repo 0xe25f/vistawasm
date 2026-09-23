@@ -87,6 +87,7 @@ impl VistaEngineConfig {
     validate_weather(&weather)?;
     validate_shadows(&shadows)?;
     validate_surface(&surface)?;
+    validate_quality(&quality)?;
 
     Ok(Self {
       render,
@@ -474,6 +475,33 @@ pub fn validate_shadows(shadows: &ShadowOptions) -> VistaResult<()> {
   Ok(())
 }
 
+/// Validate render quality controls. Distances must be at least 100 m.
+pub fn validate_quality(quality: &RenderQualityOptions) -> VistaResult<()> {
+  for (name, value) in [
+    (
+      "quality.renderDistanceMetres",
+      quality.render_distance_metres,
+    ),
+    (
+      "quality.detailDistanceMetres",
+      quality.detail_distance_metres,
+    ),
+    ("quality.cloudDistanceMetres", quality.cloud_distance_metres),
+  ] {
+    if let Some(value) = value {
+      validate_finite(name, value)?;
+
+      if value < 100.0 {
+        return Err(VistaError::options(format!(
+          "{name} must be at least 100 metres."
+        )));
+      }
+    }
+  }
+
+  Ok(())
+}
+
 /// Validate terrain surface controls.
 pub fn validate_surface(surface: &SurfaceOptions) -> VistaResult<()> {
   validate_unit_range("surface.textureScale", surface.texture_scale, 0.05, 20.0)?;
@@ -531,6 +559,18 @@ mod tests {
     assert!(validate_clouds(&clouds).is_err());
     clouds.cirrus_speed = 0.4;
     assert!(validate_clouds(&clouds).is_ok());
+  }
+
+  #[test]
+  fn rejects_short_render_distances() {
+    let mut quality = RenderQualityOptions::default();
+    assert!(validate_quality(&quality).is_ok());
+    quality.render_distance_metres = Some(50.0);
+    assert!(validate_quality(&quality).is_err());
+    quality.render_distance_metres = Some(f32::NAN);
+    assert!(validate_quality(&quality).is_err());
+    quality.render_distance_metres = Some(3_000.0);
+    assert!(validate_quality(&quality).is_ok());
   }
 
   #[test]

@@ -184,8 +184,11 @@ than a single heightmap comfortably supports:
   and means your camera controller can keep calling `setCamera()` every frame without any
   special-casing around terrain generation. `renderOnce()` keeps returning
   the last real `RenderStats` during this window rather than blocking.
-- Trade quality for frame time feature by feature (`RenderQualityOptions.preset`
-  has no effect in this release).
+- Find the slow pass first: `RenderStats.gpuPassTimesMs` gives GPU time per
+  pass (see
+  [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#find-what-is-slow-first)).
+  Then limit distant work with `RenderQualityOptions.renderDistanceMetres`,
+  `detailDistanceMetres`, and `cloudDistanceMetres`, or a `preset`.
   `RenderQualityOptions.floraDensityScale` is the cheapest lever if flora/grass billboard
   fill-rate is your bottleneck — it scales both `FloraOptions.density` and
   `GrassOptions.density` together. `CloudsOptions.style: "volumetric"` and

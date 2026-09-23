@@ -307,9 +307,12 @@ Passed to `engine.setSurface()`. Every field is optional.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `preset` | `"preview" \| "balanced" \| "high" \| "offline"` | `"balanced"` | Accepted and stored, but **has no effect** in this release. The erosion cap is `ErosionOptions.quality`. |
+| `preset` | `"preview" \| "balanced" \| "high" \| "offline"` | `"balanced"` | Fills in any distance below that is left unset (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#distances-and-presets-renderqualityoptions)). Does not affect erosion; that is `ErosionOptions.quality`. |
 | `maxClipmapLevels` | `number?` | `7` | Theoretical LOD-level budget used only by native/test builds without a GPU; browser builds report the real uploaded mesh's stats regardless of this value (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)). |
 | `floraDensityScale` | `number?` | `1.0` | Global multiplier applied on top of both `FloraOptions.density` and `GrassOptions.density`. The cheapest performance lever for vegetation-heavy scenes. |
+| `renderDistanceMetres` | `number?` | from `preset` | At least `100`. Terrain, trees, and water beyond it are not shaded; everything fades into horizon-coloured fog between 60 % and 90 % of it. |
+| `detailDistanceMetres` | `number?` | from `preset` | At least `100`. Past it, terrain takes one far-scale texture sample per material instead of up to eight. |
+| `cloudDistanceMetres` | `number?` | from `preset` | At least `100`. Clouds and rain curtains are raymarched only this far, fading out from 70 % of it. |
 
 ## `DebugView`
 
@@ -441,13 +444,14 @@ These are never passed *in* — the engine returns them.
 | --- | --- | --- |
 | `frameIndex` | `number` | Monotonic. |
 | `frameTimeMs` | `number` | CPU time to record and submit the frame, measured by the JS wrapper. Does not include GPU time; see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats). |
-| `gpuFrameTimeMs` | `number \| null` | Not currently populated by any backend. |
+| `gpuFrameTimeMs` | `number \| null` | Sum of `gpuPassTimesMs`, or `null` without timestamp queries. |
 | `terrainTriangles` | `number` | Real uploaded mesh triangle count on browser builds; a theoretical estimate on native/test builds. |
 | `floraInstances` | `number` | |
 | `grassInstances` | `number` | |
 | `clipmapLevels` | `number` | Number of exponential LOD bands the terrain mesh's half-span currently spans. |
 | `activeGpuMemoryBytes` | `number \| null` | Not currently populated. |
 | `weather` | `WeatherKind \| null` | The dominant weather, or `null` when the weather system is off. |
+| `gpuPassTimesMs` | `GpuPassTimes \| null` | GPU milliseconds per pass (`terrain`, `trees`, `grass`, `clouds`, `skyAndFog`, `water`, `shadows`, `treeCulling`, `lens`), when the browser supports timestamp queries. A few frames behind. |
 
 See [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)
 for how to use these for a performance HUD.

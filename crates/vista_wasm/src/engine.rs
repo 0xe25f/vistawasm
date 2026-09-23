@@ -444,6 +444,7 @@ impl EngineCore {
   /// Replace render quality controls.
   pub fn set_render_quality(&mut self, quality: RenderQualityOptions) -> VistaResult<()> {
     self.ensure_live()?;
+    crate::config::validate_quality(&quality)?;
     self.quality = quality;
     self.refresh_flora();
     self.refresh_grass();
@@ -626,6 +627,18 @@ impl EngineCore {
       self.recentre_terrain_mesh_if_needed(dt);
       let params = self.frame_params();
       self.gpu.render_once(&params)?;
+      self.stats.gpu_pass_times_ms = self.gpu.pass_times();
+      self.stats.gpu_frame_time_ms = self.stats.gpu_pass_times_ms.map(|times| {
+        times.shadows
+          + times.tree_culling
+          + times.terrain
+          + times.trees
+          + times.grass
+          + times.clouds
+          + times.sky_and_fog
+          + times.water
+          + times.lens
+      });
     }
 
     Ok(self.stats.clone())
@@ -1080,6 +1093,7 @@ impl EngineCore {
         lens_drops: weather.lens_drops,
       },
       height_range: self.height_range,
+      distances: self.quality.distances(),
     }
   }
 

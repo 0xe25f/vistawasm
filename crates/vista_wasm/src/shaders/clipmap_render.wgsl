@@ -109,6 +109,18 @@ fn sample_planar(
   return MaterialSample(srgb_to_linear(a.rgb), a.a, n.rg * 2.0 - 1.0, n.b, n.a);
 }
 
+// A single far-scale, top-down sample: the low-detail path for distant
+// terrain.
+fn sample_material_far(
+  material: i32,
+  position: vec3<f32>,
+  ddx_p: vec3<f32>,
+  ddy_p: vec3<f32>
+) -> MaterialSample {
+  let far_inv = 1.0 / (material_scale(material) * max(frame.surface.z, 0.01) * 5.3);
+  return sample_planar(material, position.xz * far_inv + vec2<f32>(0.37, 0.61), ddx_p.xz * far_inv, ddy_p.xz * far_inv);
+}
+
 // Two scales, cross-faded with distance, so close-up detail never tiles
 // visibly and distant ground does not shimmer.
 fn sample_material(
@@ -207,6 +219,17 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let ddy_p = dpdy(position);
   let distance = length(position - frame.camera_position.xyz);
 
+  // Past the render distance the composite covers this pixel with fog, so
+  // skip the shading.
+  if (beyond_render_distance(distance)) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+
+  // Past the detail distance, like a game's distant level of detail, each
+  // material takes one far-scale sample instead of up to eight. Textures
+  // there are so minified that the two look the same.
+  let low_detail = distance > frame.distances.y;
+
   var weights = array<f32, 8>(
     in.materials_a.x, in.materials_a.y, in.materials_a.z, in.materials_a.w,
     in.materials_b.x, in.materials_b.y, in.materials_b.z, in.materials_b.w
@@ -273,7 +296,12 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
   for (var k = 0; k < 3; k = k + 1) {
     if (top_weight[k] > 0.02) {
-      samples[k] = sample_material(top[k], position, ddx_p, ddy_p, geometric_normal, far_blend);
+      if (low_detail) {
+        samples[k] = sample_material_far(top[k], position, ddx_p, ddy_p);
+      } else {
+        samples[k] = sample_material(top[k], position, ddx_p, ddy_p, geometric_normal, far_blend);
+      }
+
       // Height-based blend: materials whose texture sits higher win the
       // transition, producing natural, crisp borders.
       blend_height[k] = top_weight[k] + samples[k].height * 0.45;

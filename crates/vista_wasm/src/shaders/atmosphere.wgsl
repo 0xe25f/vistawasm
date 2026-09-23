@@ -241,7 +241,8 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     }
   }
 
-  t1 = min(t1, min(max_distance, t0 + 40000.0));
+  // The cloud render distance caps how far clouds are marched.
+  t1 = min(t1, min(min(max_distance, frame.distances.z), t0 + 40000.0));
 
   if (t1 <= t0 || t0 > 90000.0) {
     return result;
@@ -501,7 +502,7 @@ fn rain_shafts(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
 
   let camera = frame.camera_position.xyz;
   let base = frame.cloud_params.y;
-  let t_end = min(max_distance, 16000.0);
+  let t_end = min(min(max_distance, 16000.0), frame.distances.z);
   // Shafts change slowly across the ground, so fixed sample positions
   // give a smooth result; any per-pixel offset shows as grain.
   let dither = 0.5;
@@ -581,12 +582,16 @@ fn clouds_along(ray: vec3<f32>, depth: f32, pixel: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
 
-  // Distant clouds fade into the haze near the horizon.
+  // Distant clouds fade into the haze near the horizon, and out entirely
+  // before the cloud render distance.
   let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
   let sky = sky_radiance(ray);
-  let scatter = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
+  let limit = frame.distances.z;
+  let keep = 1.0 - smoothstep(limit * 0.7, limit, clouds.distance);
+  let transmittance = mix(1.0, clouds.transmittance, keep);
+  let scatter = mix(sky * (1.0 - transmittance), clouds.scatter * keep, haze);
   // Rain shafts hang below the clouds, so they sit in front of them.
-  return vec4<f32>(shafts.rgb + shafts.a * scatter, shafts.a * clouds.transmittance);
+  return vec4<f32>(shafts.rgb + shafts.a * scatter, shafts.a * transmittance);
 }
 
 // Which pixel of each 2 x 2 block of the cloud image is marched this frame
@@ -661,6 +666,11 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       // Below the horizon with no geometry (water disabled, or beyond the
       // terrain): darken towards a hazy ground colour.
       sky = mix(sky, sky * 0.35, saturate(-ray.y * 3.0));
+
+      // With a render distance, the ground beyond it is distance fog.
+      if (frame.distances.x < 1.0e8) {
+        sky = mix(sky, render_distance_colour(ray), saturate(-ray.y * 20.0));
+      }
     }
 
     // The disc is hundreds of times brighter than the sky, so even 1 %
@@ -682,16 +692,24 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     let mist = atmospheric_fog(ray, 12000.0, in.clip_position.xy, false);
     colour = colour * mist.transmittance + mist.inscatter;
   } else {
-    let scene = textureLoad(scene_texture, pixel, 0).rgb;
     distance = linear_distance(depth, ray);
-    let fog = atmospheric_fog(ray, distance, in.clip_position.xy, true);
-    colour = scene * fog.transmittance + fog.inscatter;
 
-    // Only geometry that reaches into the cloud layer can have clouds in
-    // front of it; skipping the rest avoids upsampling halos on low ground.
-    if (clouds_on && (cloud_entry_distance(ray) < distance || frame.clouds4.x > 0.001)) {
-      let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
-      colour = colour * clouds.a + clouds.rgb;
+    if (beyond_render_distance(distance)) {
+      // Past the render distance: only the distance fog is visible.
+      colour = render_distance_colour(ray);
+    } else {
+      let scene = textureLoad(scene_texture, pixel, 0).rgb;
+      let fog = atmospheric_fog(ray, distance, in.clip_position.xy, true);
+      colour = scene * fog.transmittance + fog.inscatter;
+
+      // Only geometry that reaches into the cloud layer can have clouds in
+      // front of it; skipping the rest avoids upsampling halos on low ground.
+      if (clouds_on && (cloud_entry_distance(ray) < distance || frame.clouds4.x > 0.001)) {
+        let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
+        colour = colour * clouds.a + clouds.rgb;
+      }
+
+      colour = mix(colour, render_distance_colour(ray), render_distance_fog(distance));
     }
   }
 

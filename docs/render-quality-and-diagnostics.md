@@ -4,40 +4,72 @@ This covers the three tools VistaWASM gives you for understanding and
 tuning what it renders: `RenderQualityOptions`, `RenderStats`, and
 `DebugView`.
 
-## Render quality presets (`RenderQualityOptions`)
+## Find what is slow first
 
-See [`docs/options-reference.md`](options-reference.md#renderqualityoptions)
-for the exact field list. The one field with a real effect today is
-`floraDensityScale`, a global multiplier applied to both
-`FloraOptions.density` and `GrassOptions.density` — the cheapest lever if
-vegetation fill-rate is your bottleneck (see
+`RenderStats.gpuPassTimesMs` reports the GPU time of each pass, like a
+game's frame profiler: terrain, trees, grass, clouds, sky and fog, water,
+shadows, tree culling, and lens drops. The demo lists them, largest first,
+in its stats panel. Look there before changing settings: the pass at the
+top is the one worth making cheaper. It needs the browser's
+`timestamp-query` feature (current Chrome and Edge have it); elsewhere it
+is `null`. Readings arrive a few frames late and are only taken when the
+previous one has arrived, so measuring never stalls rendering.
+
+## Distances and presets (`RenderQualityOptions`)
+
+Three distances limit work far from the camera, like a game's video
+settings. See
+[`docs/options-reference.md`](options-reference.md#renderqualityoptions)
+for the exact fields.
+
+| Setting | What it does | Cost it saves |
+| --- | --- | --- |
+| `renderDistanceMetres` | Terrain, trees, and water past it are not shaded; everything fades into horizon-coloured fog between 60 % and 90 % of it, so the edge is never seen. | Terrain and tree shading in the distance. |
+| `detailDistanceMetres` | Past it, terrain takes one far-scale texture sample per material instead of up to eight. Textures there are so minified that the two look the same. | Terrain texture sampling. |
+| `cloudDistanceMetres` | Clouds and rain curtains are raymarched only this far, fading out from 70 % of it. | The longest cloud marches, near the horizon. |
+
+`preset` fills in any distance you leave unset:
+
+| `preset` | Render | Detail | Clouds |
+| --- | --- | --- | --- |
+| `"preview"` | 6 km | 400 m | 12 km |
+| `"balanced"` (default) | unlimited | 2 km | 60 km |
+| `"high"` | unlimited | 5 km | 90 km |
+| `"offline"` | unlimited | unlimited | 90 km |
+
+Measured in one scene (a 12 km island seen from 7.5 km away, software
+GPU), GPU time per frame: `"offline"` 1330 ms, `"balanced"` 1164 ms (no
+visible difference), `"preview"` 981 ms, and `"balanced"` with a 4 km
+render distance 957 ms. Most of the saving was terrain shading. Real GPUs
+are much faster, and the proportions differ, so check the profiler.
+
+```ts
+engine.setRenderQuality({ preset: "balanced", renderDistanceMetres: 8000 });
+```
+
+`preset` does not change `FloraOptions.treeQuality`, `GrassOptions`,
+`CloudsOptions.style`, or `MistOptions.style`, and it does not limit
+erosion (that is `ErosionOptions.quality`; see
+[`docs/terrain-data.md`](terrain-data.md#erosion)).
+
+`floraDensityScale` is a global multiplier applied to both
+`FloraOptions.density` and `GrassOptions.density` (see
 [`docs/vegetation.md`](vegetation.md#performance)).
 
 `maxClipmapLevels` is only used by native/test builds without a GPU, to
 compute a theoretical `RenderStats.terrainTriangles`/`clipmapLevels`
 estimate; browser builds report the real uploaded mesh's stats regardless
-of this value (the terrain mesh's actual vertex budget is fixed — see
+of this value (see
 [`docs/architecture.md`](architecture.md#terrain-rendering-and-level-of-detail)).
 
-`preset` is accepted and stored but has **no effect** in this release. It
-does not change `FloraOptions.treeQuality`, `GrassOptions`,
-`CloudsOptions.style`, or `MistOptions.style`, and it does not limit
-erosion: the erosion iteration cap is `ErosionOptions.quality` (see
-[`docs/terrain-data.md`](terrain-data.md#erosion)). Set each feature
-yourself. The most effective
-per-feature levers are `CloudsOptions.temporal` (reuse distant clouds
-between frames, about a quarter of the cloud cost with no visible change
-in testing), `CloudsOptions.raymarchSteps` (or `style:
-"painted"`), `CloudsOptions.resolutionScale` (clouds render at half
-resolution by default; `0.25` is cheaper still),
-`ShadowOptions.trees.resolution` and `distanceMetres`,
-`FloraOptions.meshDistanceMetres`, and `GrassOptions.viewDistanceMetres`.
-Storm weather (or `CloudsOptions.towering`) makes the cloud layer up to
-2.6 times as tall and costs more than fair weather; `rainShafts` adds a
-short march in the cloud pass. If you want
-"one dial" behaviour (cheap tiers at `"preview"`/`"balanced"`, expensive
-tiers at `"high"`/`"offline"`), implement that mapping yourself in your own
-UI/settings code.
+Other per-feature levers: `CloudsOptions.temporal` (reuse distant clouds
+between frames), `CloudsOptions.raymarchSteps` (or `style: "painted"`),
+`CloudsOptions.resolutionScale` (clouds render at half resolution by
+default; `0.25` is cheaper still), `ShadowOptions.trees.resolution` and
+`distanceMetres`, `FloraOptions.meshDistanceMetres`, and
+`GrassOptions.viewDistanceMetres`. Storm weather (or
+`CloudsOptions.towering`) makes the cloud layer up to 2.6 times as tall
+and costs more than fair weather.
 
 ## Render statistics (`RenderStats`)
 
@@ -56,9 +88,9 @@ engine.on("stats", (stats) => {
 ```
 
 See [`docs/options-reference.md`](options-reference.md#renderstats-from-enginerenderonce-and-the-stats-event)
-for the exact field list. Two fields are always `null` today regardless of
-platform: `gpuFrameTimeMs` and `activeGpuMemoryBytes` — the type reserves
-space for them, but no current backend populates either.
+for the exact field list. `gpuFrameTimeMs` is the sum of
+`gpuPassTimesMs`, when the browser supports timestamp queries.
+`activeGpuMemoryBytes` is always `null` today.
 
 `frameTimeMs` is the CPU time the JavaScript wrapper measures around the
 call into the WASM module: the time to record and submit the frame. The

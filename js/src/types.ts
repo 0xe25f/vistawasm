@@ -778,9 +778,32 @@ export type RenderQualityPreset = "preview" | "balanced" | "high" | "offline";
  * Render quality controls.
  */
 export interface RenderQualityOptions {
+  /**
+   * Sets any distance below that is left unset: `"preview"` 6 km render,
+   * 400 m detail, 12 km clouds; `"balanced"` unlimited, 2 km, 60 km;
+   * `"high"` unlimited, 5 km, 90 km; `"offline"` unlimited, unlimited,
+   * 90 km.
+   */
   preset: RenderQualityPreset;
   maxClipmapLevels?: number;
   floraDensityScale?: number;
+  /**
+   * Render distance in metres, at least 100: terrain, trees, and water
+   * beyond it are not drawn, and everything fades into horizon-coloured
+   * fog between 60 % and 90 % of it.
+   */
+  renderDistanceMetres?: number;
+  /**
+   * Terrain detail distance in metres, at least 100: beyond it, terrain
+   * takes one far-scale texture sample per material instead of up to
+   * eight.
+   */
+  detailDistanceMetres?: number;
+  /**
+   * Cloud render distance in metres, at least 100: clouds and rain
+   * curtains are raymarched only this far, fading out from 70 % of it.
+   */
+  cloudDistanceMetres?: number;
 }
 
 /**
@@ -811,6 +834,36 @@ export interface RenderStats {
   activeGpuMemoryBytes?: number | null;
   /** The dominant weather, or `null` when the weather system is off. */
   weather?: WeatherKind | null;
+  /**
+   * GPU time per pass, when the browser supports timestamp queries.
+   * Measured a few frames behind, without stalling rendering.
+   */
+  gpuPassTimesMs?: GpuPassTimes | null;
+}
+
+/**
+ * GPU time spent in each render pass, in milliseconds. A pass that did not
+ * run reports 0.
+ */
+export interface GpuPassTimes {
+  /** Tree shadow map. */
+  shadows: number;
+  /** GPU tree culling. */
+  treeCulling: number;
+  /** Terrain. */
+  terrain: number;
+  /** Trees: near meshes and distant impostors. */
+  trees: number;
+  /** Grass. */
+  grass: number;
+  /** Cloud raymarching, including rain curtains. */
+  clouds: number;
+  /** Sky, fog, mist, falling rain and snow, and tone mapping. */
+  skyAndFog: number;
+  /** Ocean, rivers, and lakes. */
+  water: number;
+  /** Raindrops on the lens. */
+  lens: number;
 }
 
 /**

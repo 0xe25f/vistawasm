@@ -63,6 +63,17 @@ for changed defaults.
 - A rewritten README with a screenshot, a quick start, and clear paths for
   people using the package and people changing it; a documentation index
   (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
+- **A frame profiler.** `RenderStats.gpuPassTimesMs` reports GPU time per
+  pass (terrain, trees, grass, clouds, sky and fog, water, shadows, tree
+  culling, lens), and `gpuFrameTimeMs` their sum, from timestamp queries
+  read back without stalling. The demo lists them in its stats panel.
+- **Distances, like a game's video settings.**
+  `RenderQualityOptions.renderDistanceMetres` (terrain, trees, and water
+  beyond it are not shaded, hidden by distance fog),
+  `detailDistanceMetres` (distant terrain takes one texture sample per
+  material instead of up to eight), and `cloudDistanceMetres` (how far
+  clouds are marched). `preset` now fills in whichever are unset, and the
+  demo has a control for each.
 - `CloudsOptions.temporal`: reuse distant clouds between frames. A
   quarter-size pass marches one sky pixel of every 2 x 2 block, a different
   one each frame, and the rest are reprojected from the previous frame,
@@ -88,6 +99,11 @@ for changed defaults.
   image file.
 
 ### Changed
+
+- The default `"balanced"` render preset now draws terrain beyond 2 km with
+  one texture sample per material, and marches clouds to 60 km (from 90
+  km). In testing this saved about 12 % of GPU time with no visible
+  difference; `preset: "offline"` restores the previous behaviour.
 
 - Volumetric clouds are rebuilt: an adaptive march that refines cloud
   edges, multiple-scattering lighting with bright tops and darker bases,
@@ -155,7 +171,7 @@ for changed defaults.
   build is older than the Rust or TypeScript sources.
 
 - Documentation checked against the code. Corrected: `RenderQualityOptions.preset`
-  has no effect (the erosion cap is `ErosionOptions.quality`);
+  never capped erosion (that is `ErosionOptions.quality`);
   `RenderStats.frameTimeMs` covers CPU time only; the `"stats"` event also
   fires for `renderOnce()` loops; the fly camera's `←`/`→` keys turn; the
   default `RiverOptions.minCatchmentKm2` is `0.15`; `toVistaWasmError()` and

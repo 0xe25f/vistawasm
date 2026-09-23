@@ -85,6 +85,9 @@ struct FrameUniforms {
   // y: which pixel of each 2 x 2 block is raymarched this frame (0 to 3),
   // zw: size of the cloud image in pixels.
   temporal: vec4<f32>,
+  // x: render distance, y: terrain detail distance, z: cloud distance
+  // (metres; 1e9 means unlimited), w: unused.
+  distances: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -484,8 +487,35 @@ fn atmospheric_fog(ray: vec3<f32>, distance: f32, pixel: vec2<f32>, include_haze
 fn apply_fog(colour: vec3<f32>, world_position: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
   let offset = world_position - frame.camera_position.xyz;
   let distance = length(offset);
-  let fog = atmospheric_fog(offset / max(distance, 0.001), distance, pixel, true);
-  return colour * fog.transmittance + fog.inscatter;
+  let ray = offset / max(distance, 0.001);
+  let fog = atmospheric_fog(ray, distance, pixel, true);
+  return mix(colour * fog.transmittance + fog.inscatter, render_distance_colour(ray), render_distance_fog(distance));
+}
+
+// --- Render distance ----------------------------------------------------
+
+// Like a game's distance fog: nothing until 60 % of the render distance,
+// complete at 90 %, so the edge where the world stops being drawn is never
+// seen. Beyond 90 %, shaders skip their shading entirely.
+fn render_distance_fog(distance: f32) -> f32 {
+  let limit = frame.distances.x;
+
+  if (limit >= 1.0e8) {
+    return 0.0;
+  }
+
+  return smoothstep(limit * 0.6, limit * 0.9, distance);
+}
+
+// Whether a point is past the render distance, fully hidden by its fog.
+fn beyond_render_distance(distance: f32) -> bool {
+  return distance > frame.distances.x * 0.9;
+}
+
+// The colour the render-distance fog fades to: the sky just above the
+// horizon in the direction of `ray`.
+fn render_distance_colour(ray: vec3<f32>) -> vec3<f32> {
+  return sky_radiance(normalize(vec3<f32>(ray.x, 0.02, ray.z)));
 }
 
 // --- Lighting -------------------------------------------------------------

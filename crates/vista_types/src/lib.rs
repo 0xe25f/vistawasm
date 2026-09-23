@@ -1556,12 +1556,64 @@ impl Default for RenderQualityPreset {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderQualityOptions {
-  /// Quality preset.
+  /// Quality preset. It sets any of the distances below that are left
+  /// unset, like a game's graphics presets.
   pub preset: RenderQualityPreset,
   /// Optional maximum clipmap levels.
   pub max_clipmap_levels: Option<u32>,
   /// Optional flora density multiplier.
   pub flora_density_scale: Option<f32>,
+  /// Render distance in metres: terrain, trees, and water beyond it are not
+  /// drawn, and everything fades into horizon-coloured fog over the last
+  /// 30 % of it. Unset uses the preset's distance.
+  #[serde(default)]
+  pub render_distance_metres: Option<f32>,
+  /// Terrain detail distance in metres: beyond it, terrain uses one
+  /// far-scale texture sample per material instead of up to eight. Unset
+  /// uses the preset's distance.
+  #[serde(default)]
+  pub detail_distance_metres: Option<f32>,
+  /// Cloud render distance in metres: clouds and rain curtains are
+  /// raymarched only this far, fading out before it. Unset uses the
+  /// preset's distance.
+  #[serde(default)]
+  pub cloud_distance_metres: Option<f32>,
+}
+
+/// Distances used when none is set; far enough to change nothing.
+pub const UNLIMITED_DISTANCE_METRES: f32 = 1.0e9;
+
+/// Render, detail, and cloud distances after applying the preset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderDistances {
+  /// See [`RenderQualityOptions::render_distance_metres`].
+  pub render_metres: f32,
+  /// See [`RenderQualityOptions::detail_distance_metres`].
+  pub detail_metres: f32,
+  /// See [`RenderQualityOptions::cloud_distance_metres`].
+  pub cloud_metres: f32,
+}
+
+impl RenderQualityOptions {
+  /// The distances in effect: each explicit value, or else the preset's.
+  pub fn distances(&self) -> RenderDistances {
+    let (render, detail, cloud) = match self.preset {
+      RenderQualityPreset::Preview => (6_000.0, 400.0, 12_000.0),
+      RenderQualityPreset::Balanced => (UNLIMITED_DISTANCE_METRES, 2_000.0, 60_000.0),
+      RenderQualityPreset::High => (UNLIMITED_DISTANCE_METRES, 5_000.0, 90_000.0),
+      RenderQualityPreset::Offline => (
+        UNLIMITED_DISTANCE_METRES,
+        UNLIMITED_DISTANCE_METRES,
+        90_000.0,
+      ),
+    };
+
+    RenderDistances {
+      render_metres: self.render_distance_metres.unwrap_or(render),
+      detail_metres: self.detail_distance_metres.unwrap_or(detail),
+      cloud_metres: self.cloud_distance_metres.unwrap_or(cloud),
+    }
+  }
 }
 
 impl Default for RenderQualityOptions {
@@ -1570,6 +1622,9 @@ impl Default for RenderQualityOptions {
       preset: RenderQualityPreset::Balanced,
       max_clipmap_levels: Some(7),
       flora_density_scale: Some(1.0),
+      render_distance_metres: None,
+      detail_distance_metres: None,
+      cloud_distance_metres: None,
     }
   }
 }
@@ -1628,6 +1683,35 @@ pub struct RenderStats {
   /// system is disabled.
   #[serde(default)]
   pub weather: Option<WeatherKind>,
+  /// GPU time per pass, when the browser supports timestamp queries.
+  /// Measured a few frames behind, without stalling rendering.
+  #[serde(default)]
+  pub gpu_pass_times_ms: Option<GpuPassTimes>,
+}
+
+/// GPU time spent in each render pass, in milliseconds, like a game's
+/// frame profiler. A pass that did not run reports 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuPassTimes {
+  /// Terrain shadow bake and tree shadow map.
+  pub shadows: f32,
+  /// GPU tree culling.
+  pub tree_culling: f32,
+  /// Terrain.
+  pub terrain: f32,
+  /// Trees: near meshes and distant impostors.
+  pub trees: f32,
+  /// Grass.
+  pub grass: f32,
+  /// Cloud raymarching, including rain curtains.
+  pub clouds: f32,
+  /// Sky, fog, mist, falling rain and snow, and tone mapping.
+  pub sky_and_fog: f32,
+  /// Ocean, rivers, and lakes.
+  pub water: f32,
+  /// Raindrops on the lens.
+  pub lens: f32,
 }
 
 impl Default for RenderStats {
@@ -1642,6 +1726,7 @@ impl Default for RenderStats {
       clipmap_levels: 0,
       active_gpu_memory_bytes: None,
       weather: None,
+      gpu_pass_times_ms: None,
     }
   }
 }

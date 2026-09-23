@@ -136,6 +136,9 @@ const inputs = {
   replaceFile: input("replaceFile"),
   palmBeaches: input("palmBeaches"),
   quality: select("quality"),
+  renderDistance: select("renderDistance"),
+  detailDistance: select("detailDistance"),
+  cloudDistance: select("cloudDistance"),
   debugView: select("debugView")
 };
 
@@ -203,6 +206,34 @@ function button(id) {
 function readNumber(element, fallback) {
   const value = Number(element.value);
   return Number.isFinite(value) ? value : fallback;
+}
+
+// Where each frame's GPU time goes, largest first, like a game's frame
+// profiler.
+function gpuProfile(stats) {
+  const times = stats.gpuPassTimesMs;
+
+  if (!times) {
+    return ["GPU timing: not available in this browser"];
+  }
+
+  const names = {
+    terrain: "Terrain",
+    trees: "Trees",
+    grass: "Grass",
+    clouds: "Clouds",
+    skyAndFog: "Sky and fog",
+    water: "Water",
+    shadows: "Shadows",
+    treeCulling: "Tree culling",
+    lens: "Lens drops"
+  };
+  const rows = Object.entries(names)
+    .map(([key, name]) => [name, times[key]])
+    .filter(([, ms]) => ms > 0.005)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, ms]) => `  ${name} ${ms.toFixed(2)} ms`);
+  return [`GPU ${(stats.gpuFrameTimeMs ?? 0).toFixed(2)} ms per frame`, ...rows];
 }
 
 function setStatus(message) {
@@ -678,11 +709,19 @@ function wireWeatherChips() {
   syncWeatherChips();
 }
 
+// "From preset" leaves a distance unset, so the preset chooses it.
+function optionalDistance(element) {
+  return element.value === "" ? undefined : Number(element.value);
+}
+
 function applyQuality() {
   engine?.setRenderQuality({
     preset: inputs.quality.value,
     maxClipmapLevels: 7,
-    floraDensityScale: 1
+    floraDensityScale: 1,
+    renderDistanceMetres: optionalDistance(inputs.renderDistance),
+    detailDistanceMetres: optionalDistance(inputs.detailDistance),
+    cloudDistanceMetres: optionalDistance(inputs.cloudDistance)
   });
 }
 
@@ -971,6 +1010,10 @@ function wireLiveControls() {
   });
 
   inputs.quality.addEventListener("change", applyQuality);
+
+  for (const element of [inputs.renderDistance, inputs.detailDistance, inputs.cloudDistance]) {
+    element.addEventListener("change", applyQuality);
+  }
   inputs.debugView.addEventListener("change", applyDebugView);
 }
 
@@ -1092,7 +1135,8 @@ async function run() {
       `Flora instances ${stats.floraInstances.toLocaleString()}`,
       `Grass instances ${stats.grassInstances.toLocaleString()}`,
       `Clipmap levels ${stats.clipmapLevels}`,
-      `Weather ${stats.weather ? WEATHER_NAMES[stats.weather] : "off"}`
+      `Weather ${stats.weather ? WEATHER_NAMES[stats.weather] : "off"}`,
+      ...gpuProfile(stats)
     ].join("\n");
   });
 

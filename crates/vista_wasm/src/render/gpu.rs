@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
 use vista_types::{
@@ -64,9 +64,10 @@ struct FrameUniforms {
   weather3: [f32; 4],
   previous_view_proj: [f32; 16],
   temporal: [f32; 4],
+  distances: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 704);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 720);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -190,6 +191,8 @@ pub struct FrameParams {
   pub weather: FrameWeather,
   /// Lowest and highest terrain heights, for fitting the shadow map.
   pub height_range: (f32, f32),
+  /// Render, detail, and cloud distances.
+  pub distances: vista_types::RenderDistances,
 }
 
 // The engine validates replacement textures against these sizes without
@@ -263,6 +266,132 @@ struct CloudTarget {
   current: usize,
   /// Whether the image not being drawn holds the previous frame's clouds.
   history_valid: bool,
+}
+
+/// Timestamp slots: a begin and an end for each timed pass.
+const TIMED_PASSES: u32 = 10;
+const PASS_TREE_CULL: u32 = 0;
+const PASS_TREE_SHADOW: u32 = 1;
+const PASS_TERRAIN: u32 = 2;
+const PASS_QUARTER_CLOUDS: u32 = 3;
+const PASS_CLOUDS: u32 = 4;
+const PASS_COMPOSITE: u32 = 5;
+const PASS_WATER: u32 = 6;
+const PASS_LENS: u32 = 7;
+const PASS_TREES: u32 = 8;
+const PASS_GRASS: u32 = 9;
+
+/// GPU time per pass from timestamp queries, like a game's frame profiler.
+/// Results are read back asynchronously, so a frame is only timed when the
+/// previous reading has arrived, and rendering never waits for it.
+struct GpuTimer {
+  query_set: wgpu::QuerySet,
+  resolve: wgpu::Buffer,
+  readback: wgpu::Buffer,
+  /// Whether a reading is on its way back.
+  busy: Arc<AtomicBool>,
+  latest: Arc<Mutex<Option<vista_types::GpuPassTimes>>>,
+  /// Nanoseconds per timestamp tick.
+  period: f32,
+}
+
+impl GpuTimer {
+  fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+    let size = u64::from(TIMED_PASSES * 2) * 8;
+    Self {
+      query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("VistaWASM pass timestamps"),
+        ty: wgpu::QueryType::Timestamp,
+        count: TIMED_PASSES * 2,
+      }),
+      resolve: device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("VistaWASM timestamp resolve"),
+        size,
+        usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+      }),
+      readback: device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("VistaWASM timestamp readback"),
+        size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+      }),
+      busy: Arc::new(AtomicBool::new(false)),
+      latest: Arc::new(Mutex::new(None)),
+      period: queue.get_timestamp_period(),
+    }
+  }
+
+  fn render_writes(&self, pass: u32) -> wgpu::RenderPassTimestampWrites<'_> {
+    wgpu::RenderPassTimestampWrites {
+      query_set: &self.query_set,
+      beginning_of_pass_write_index: Some(pass * 2),
+      end_of_pass_write_index: Some(pass * 2 + 1),
+    }
+  }
+
+  fn compute_writes(&self, pass: u32) -> wgpu::ComputePassTimestampWrites<'_> {
+    wgpu::ComputePassTimestampWrites {
+      query_set: &self.query_set,
+      beginning_of_pass_write_index: Some(pass * 2),
+      end_of_pass_write_index: Some(pass * 2 + 1),
+    }
+  }
+
+  /// Copy this frame's timestamps out, before the command buffer ends.
+  fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
+    encoder.resolve_query_set(&self.query_set, 0..TIMED_PASSES * 2, &self.resolve, 0);
+    encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.readback, 0, self.resolve.size());
+  }
+
+  /// Read the timestamps back once the GPU has finished. `ran` has one bit
+  /// per pass that ran this frame.
+  fn read_back(&self, ran: u32) {
+    self.busy.store(true, Ordering::Release);
+    let buffer = self.readback.clone();
+    let busy = Arc::clone(&self.busy);
+    let latest = Arc::clone(&self.latest);
+    let period = self.period;
+    self
+      .readback
+      .slice(..)
+      .map_async(wgpu::MapMode::Read, move |result| {
+        if result.is_ok() {
+          if let Ok(view) = buffer.slice(..).get_mapped_range() {
+            let ticks: &[u64] = bytemuck::cast_slice(&view);
+            let ms = |pass: u32| -> f32 {
+              if ran & (1 << pass) == 0 {
+                return 0.0;
+              }
+
+              let begin = ticks[(pass * 2) as usize];
+              let end = ticks[(pass * 2 + 1) as usize];
+              end.saturating_sub(begin) as f32 * period / 1.0e6
+            };
+            let times = vista_types::GpuPassTimes {
+              shadows: ms(PASS_TREE_SHADOW),
+              tree_culling: ms(PASS_TREE_CULL),
+              terrain: ms(PASS_TERRAIN),
+              trees: ms(PASS_TREES),
+              grass: ms(PASS_GRASS),
+              clouds: ms(PASS_QUARTER_CLOUDS) + ms(PASS_CLOUDS),
+              sky_and_fog: ms(PASS_COMPOSITE),
+              water: ms(PASS_WATER),
+              lens: ms(PASS_LENS),
+            };
+            drop(view);
+
+            if let Ok(mut slot) = latest.lock() {
+              *slot = Some(times);
+            }
+          }
+
+          buffer.unmap();
+        }
+
+        busy.store(false, Ordering::Release);
+      });
+  }
 }
 
 /// The finished frame, drawn off-screen so the lens-drop pass can read it.
@@ -412,6 +541,8 @@ pub struct GpuContext {
   /// this limit frames queue up without bound and the picture lags seconds
   /// behind the camera.
   frames_in_flight: Arc<AtomicU32>,
+  /// Per-pass GPU timing, when the browser supports timestamp queries.
+  timer: Option<GpuTimer>,
   /// Set when the browser reports the device lost. Work submitted to a lost
   /// device silently does nothing, so rendering stops and reports it.
   device_lost: Arc<AtomicBool>,
@@ -1305,12 +1436,18 @@ impl GpuContext {
     let (device, queue) = adapter
       .request_device(&wgpu::DeviceDescriptor {
         label: Some("VistaWASM device"),
-        required_features: wgpu::Features::empty(),
+        // Timestamps feed the per-pass profiler when the browser offers
+        // them; everything else works without.
+        required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
         required_limits: wgpu::Limits::default(),
         ..Default::default()
       })
       .await
       .map_err(|_| VistaError::WebGpuDeviceRequestFailed)?;
+    let timer = device
+      .features()
+      .contains(wgpu::Features::TIMESTAMP_QUERY)
+      .then(|| GpuTimer::new(&device, &queue));
     let device_lost = Arc::new(AtomicBool::new(false));
     let lost_flag = Arc::clone(&device_lost);
     device.set_device_lost_callback(move |_reason, _message| {
@@ -1502,6 +1639,7 @@ impl GpuContext {
       mist_offset: [0.0; 2],
       current_offset: [0.0; 2],
       frames_in_flight: Arc::new(AtomicU32::new(0)),
+      timer,
       device_lost,
       cloud_evolution: 0.0,
       erosion,
@@ -2237,6 +2375,12 @@ impl GpuContext {
       weather.wind[0],
       weather.wind[1],
     ];
+    u.distances = [
+      params.distances.render_metres,
+      params.distances.detail_metres,
+      params.distances.cloud_metres,
+      0.0,
+    ];
     u.weather3 = [
       self.cirrus_offset[0],
       self.cirrus_offset[1],
@@ -2523,7 +2667,10 @@ impl GpuContext {
         params.flora.mesh_distance_metres.max(1.0),
       ];
       cull.params = [
-        params.far_metres.min(40_000.0),
+        params
+          .far_metres
+          .min(40_000.0)
+          .min(params.distances.render_metres),
         params.tree_style as f32,
         self.height as f32 / (2.0 * tan_half_fov_y),
         trees.instance_count as f32,
@@ -2587,11 +2734,20 @@ impl GpuContext {
       });
     self.bake_terrain_shadow_if_needed(params, &mut encoder);
 
+    // Time this frame's passes unless the previous reading is still on its
+    // way back.
+    let timing = self
+      .timer
+      .as_ref()
+      .filter(|timer| !timer.busy.load(Ordering::Acquire));
+    let mut ran = 0u32;
+
     if let Some(trees) = &self.trees {
       let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("VistaWASM tree cull pass"),
-        timestamp_writes: None,
+        timestamp_writes: timing.map(|timer| timer.compute_writes(PASS_TREE_CULL)),
       });
+      ran |= 1 << PASS_TREE_CULL;
       pass.set_pipeline(&self.pipelines.cull);
       pass.set_bind_group(0, &trees.cull_bind_group, &[]);
       pass.dispatch_workgroups(trees.instance_count.div_ceil(64), 1, 1);
@@ -2603,6 +2759,7 @@ impl GpuContext {
     if let (Some(trees), true) = (&self.trees, tree_shadows) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM tree shadow pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_TREE_SHADOW)),
         color_attachments: &[],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
           view: &self.tree_shadow_map.view,
@@ -2614,6 +2771,7 @@ impl GpuContext {
         }),
         ..Default::default()
       });
+      ran |= 1 << PASS_TREE_SHADOW;
       pass.set_pipeline(&self.pipelines.tree_shadow);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2637,31 +2795,16 @@ impl GpuContext {
     }
 
     // Opaque geometry into the HDR target.
+    // Terrain, trees, and grass draw into the same targets in three passes
+    // so the profiler can time each; the terrain pass clears them.
     {
-      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("VistaWASM opaque pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.hdr_view,
-          depth_slice: None,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-          view: &self.depth_view,
-          depth_ops: Some(wgpu::Operations {
-            load: wgpu::LoadOp::Clear(1.0),
-            store: wgpu::StoreOp::Store,
-          }),
-          stencil_ops: None,
-        }),
-        ..Default::default()
-      });
-      pass.set_bind_group(0, &self.frame_bind_group, &[]);
-      pass.set_bind_group(1, &self.world_bind_group, &[]);
-      pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+      let mut pass = self.begin_opaque_pass(
+        &mut encoder,
+        "VistaWASM terrain pass",
+        timing.map(|timer| timer.render_writes(PASS_TERRAIN)),
+        true,
+      );
+      ran |= 1 << PASS_TERRAIN;
 
       if let Some(terrain) = &self.terrain {
         pass.set_pipeline(&self.pipelines.terrain);
@@ -2669,30 +2812,24 @@ impl GpuContext {
         pass.set_index_buffer(terrain.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..terrain.index_count, 0, 0..1);
       }
+    }
 
-      if let Some(trees) = &self.trees {
-        if params.tree_style == 2 {
-          pass.set_pipeline(&self.pipelines.tree_mesh);
-          pass.set_vertex_buffer(0, self.tree_mesh.vertex_buffer.slice(..));
-          pass.set_index_buffer(
-            self.tree_mesh.index_buffer.slice(..),
-            wgpu::IndexFormat::Uint32,
-          );
+    if let Some(trees) = &self.trees {
+      let mut pass = self.begin_opaque_pass(
+        &mut encoder,
+        "VistaWASM tree pass",
+        timing.map(|timer| timer.render_writes(PASS_TREES)),
+        false,
+      );
+      ran |= 1 << PASS_TREES;
 
-          for slot in 0..SPECIES_COUNT {
-            if trees.counts[slot] == 0 {
-              continue;
-            }
-
-            pass.set_vertex_buffer(
-              1,
-              trees.mesh_out.slice(trees.offsets[slot] as u64 * stride..),
-            );
-            pass.draw_indexed_indirect(&trees.args_buffer, (slot * 5 * 4) as u64);
-          }
-        }
-
-        pass.set_pipeline(&self.pipelines.tree_impostor);
+      if params.tree_style == 2 {
+        pass.set_pipeline(&self.pipelines.tree_mesh);
+        pass.set_vertex_buffer(0, self.tree_mesh.vertex_buffer.slice(..));
+        pass.set_index_buffer(
+          self.tree_mesh.index_buffer.slice(..),
+          wgpu::IndexFormat::Uint32,
+        );
 
         for slot in 0..SPECIES_COUNT {
           if trees.counts[slot] == 0 {
@@ -2700,24 +2837,45 @@ impl GpuContext {
           }
 
           pass.set_vertex_buffer(
-            0,
-            trees
-              .impostor_out
-              .slice(trees.offsets[slot] as u64 * stride..),
+            1,
+            trees.mesh_out.slice(trees.offsets[slot] as u64 * stride..),
           );
-          pass.draw_indirect(
-            &trees.args_buffer,
-            ((IMPOSTOR_ARGS_BASE + slot * 4) * 4) as u64,
-          );
+          pass.draw_indexed_indirect(&trees.args_buffer, (slot * 5 * 4) as u64);
         }
       }
 
-      if let Some(grass) = &self.grass {
-        pass.set_pipeline(&self.pipelines.grass);
-        pass.set_vertex_buffer(0, self.grass_base_vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, grass.instance_buffer.slice(..));
-        pass.draw(0..18, 0..grass.instance_count);
+      pass.set_pipeline(&self.pipelines.tree_impostor);
+
+      for slot in 0..SPECIES_COUNT {
+        if trees.counts[slot] == 0 {
+          continue;
+        }
+
+        pass.set_vertex_buffer(
+          0,
+          trees
+            .impostor_out
+            .slice(trees.offsets[slot] as u64 * stride..),
+        );
+        pass.draw_indirect(
+          &trees.args_buffer,
+          ((IMPOSTOR_ARGS_BASE + slot * 4) * 4) as u64,
+        );
       }
+    }
+
+    if let Some(grass) = &self.grass {
+      let mut pass = self.begin_opaque_pass(
+        &mut encoder,
+        "VistaWASM grass pass",
+        timing.map(|timer| timer.render_writes(PASS_GRASS)),
+        false,
+      );
+      ran |= 1 << PASS_GRASS;
+      pass.set_pipeline(&self.pipelines.grass);
+      pass.set_vertex_buffer(0, self.grass_base_vertex_buffer.slice(..));
+      pass.set_vertex_buffer(1, grass.instance_buffer.slice(..));
+      pass.draw(0..18, 0..grass.instance_count);
     }
 
     let Some(cloud_target) = &self.cloud_target else {
@@ -2729,6 +2887,7 @@ impl GpuContext {
     if params.cloud_coverage > 0.001 && self.uniforms.temporal[0] > 0.5 {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM quarter cloud pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_QUARTER_CLOUDS)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &cloud_target.quarter_view,
           depth_slice: None,
@@ -2741,6 +2900,7 @@ impl GpuContext {
         depth_stencil_attachment: None,
         ..Default::default()
       });
+      ran |= 1 << PASS_QUARTER_CLOUDS;
       pass.set_pipeline(&self.pipelines.clouds_quarter);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2752,6 +2912,7 @@ impl GpuContext {
     if params.cloud_coverage > 0.001 {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM cloud pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_CLOUDS)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &cloud_target.views[cloud_target.current],
           depth_slice: None,
@@ -2764,6 +2925,7 @@ impl GpuContext {
         depth_stencil_attachment: None,
         ..Default::default()
       });
+      ran |= 1 << PASS_CLOUDS;
       pass.set_pipeline(&self.pipelines.clouds);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2780,6 +2942,7 @@ impl GpuContext {
     {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM composite pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_COMPOSITE)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &view,
           depth_slice: None,
@@ -2792,6 +2955,7 @@ impl GpuContext {
         depth_stencil_attachment: None,
         ..Default::default()
       });
+      ran |= 1 << PASS_COMPOSITE;
       pass.set_pipeline(&self.pipelines.composite);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2808,6 +2972,7 @@ impl GpuContext {
     if self.water_visible {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM water pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_WATER)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &view,
           depth_slice: None,
@@ -2827,6 +2992,7 @@ impl GpuContext {
         }),
         ..Default::default()
       });
+      ran |= 1 << PASS_WATER;
       pass.set_pipeline(&self.pipelines.water);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2842,6 +3008,7 @@ impl GpuContext {
     if let (Some(target), true) = (&self.lens_target, lens_drops) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM lens pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_LENS)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &canvas_view,
           depth_slice: None,
@@ -2854,6 +3021,7 @@ impl GpuContext {
         depth_stencil_attachment: None,
         ..Default::default()
       });
+      ran |= 1 << PASS_LENS;
       pass.set_pipeline(&self.pipelines.lens);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -2862,7 +3030,16 @@ impl GpuContext {
       pass.draw(0..3, 0..1);
     }
 
+    if let Some(timer) = timing {
+      timer.resolve(&mut encoder);
+    }
+
     self.queue.submit(Some(encoder.finish()));
+
+    if let Some(timer) = timing {
+      timer.read_back(ran);
+    }
+
     self.frames_in_flight.fetch_add(1, Ordering::AcqRel);
     let frames_in_flight = Arc::clone(&self.frames_in_flight);
     self.queue.on_submitted_work_done(move || {
@@ -2870,6 +3047,62 @@ impl GpuContext {
     });
     self.queue.present(surface_texture);
     Ok(())
+  }
+
+  /// Begin a pass drawing opaque geometry into the HDR and depth targets,
+  /// clearing them first when `clear` is set.
+  fn begin_opaque_pass<'encoder>(
+    &self,
+    encoder: &'encoder mut wgpu::CommandEncoder,
+    label: &str,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    clear: bool,
+  ) -> wgpu::RenderPass<'encoder> {
+    let (colour_load, depth_load) = if clear {
+      (
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        wgpu::LoadOp::Clear(1.0),
+      )
+    } else {
+      (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+    };
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some(label),
+      timestamp_writes,
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: &self.hdr_view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load: colour_load,
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+        view: &self.depth_view,
+        depth_ops: Some(wgpu::Operations {
+          load: depth_load,
+          store: wgpu::StoreOp::Store,
+        }),
+        stencil_ops: None,
+      }),
+      ..Default::default()
+    });
+    pass.set_bind_group(0, &self.frame_bind_group, &[]);
+    pass.set_bind_group(1, &self.world_bind_group, &[]);
+    pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+    pass.forget_lifetime().into()
+  }
+
+  /// The latest per-pass GPU timings, if the browser supports them.
+  pub fn pass_times(&self) -> Option<vista_types::GpuPassTimes> {
+    self
+      .timer
+      .as_ref()?
+      .latest
+      .lock()
+      .ok()
+      .and_then(|slot| *slot)
   }
 
   /// Whether the GPU is still drawing earlier frames. The engine skips a
