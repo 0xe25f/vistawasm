@@ -106,6 +106,20 @@ for changed defaults.
 
 ### Fixed
 
+- **Lag with a high frame-rate reading.** The demo and examples showed
+  `1000 / frameTimeMs` as FPS, but `frameTimeMs` only covers the CPU time
+  to submit a frame, so a slow GPU showed tens of thousands of FPS. They
+  now show the time between drawn frames. The engine also paces itself:
+  `renderOnce()` draws nothing while two earlier frames are still on the
+  GPU, so frames can no longer queue up behind a slow GPU and make the
+  picture lag behind the camera.
+- **Lost GPU devices went unnoticed.** Rendering carried on silently into a
+  lost device. The engine now reports `WEBGPU_DEVICE_LOST` on the next
+  frame, `start()` emits `"deviceLost"`, and the demo says so.
+- GPU erosion falling back to the CPU now adds a warning to the terrain
+  metadata, and `generateFractal()` emits `"warning"` events like the
+  loaders.
+
 - `npm run dev` and every `npm run dev:*` script failed in a fresh clone
   with "Failed to resolve import \"@vista-wasm/vista-wasm\"" until
   `npm run build` had been run. They now build first when `dist/` is

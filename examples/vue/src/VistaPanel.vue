@@ -359,10 +359,18 @@ onMounted(async () => {
     });
     observer.observe(element);
 
+    // Time between frames is what the viewer sees. `frameTimeMs` only counts
+    // the CPU time to submit a frame, not the GPU time to draw it.
+    let lastFrameAt = performance.now();
+    let smoothedFrameMs = 1000 / 60;
+
     engine.on("stats", (frameStats) => {
-      const fps = frameStats.frameTimeMs > 0 ? Math.round(1000 / frameStats.frameTimeMs) : 0;
+      const now = performance.now();
+      smoothedFrameMs += (now - lastFrameAt - smoothedFrameMs) * 0.1;
+      lastFrameAt = now;
+      const fps = Math.round(1000 / Math.max(1, smoothedFrameMs));
       stats.value = [
-        `FPS ~${fps}`,
+        `FPS ${fps} (${smoothedFrameMs.toFixed(1)} ms per frame)`,
         `Triangles ${frameStats.terrainTriangles.toLocaleString()}`,
         `Flora instances ${frameStats.floraInstances.toLocaleString()}`,
         `Grass instances ${frameStats.grassInstances.toLocaleString()}`,

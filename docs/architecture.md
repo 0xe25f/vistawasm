@@ -101,6 +101,11 @@ three. Other setters only change uniforms.
 
 ### Per frame
 
+0. **Pacing.** If two earlier frames are still on the GPU (tracked with
+    `Queue::on_submitted_work_done`), the frame is skipped, so frames never
+    queue up behind a slow GPU. If the device was lost (tracked with
+    `Device::set_device_lost_callback`), rendering returns
+    `WEBGPU_DEVICE_LOST`.
 1. **Weather** (CPU, `weather.rs`) advances by the frame time and is
     applied to the cloud, mist, wind, water, and haze options before they
     reach the GPU. Nothing is uploaded when the weather is off.

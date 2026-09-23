@@ -168,6 +168,7 @@ class VistaEngineWrapper implements VistaEngine {
     const handle = await this.callAsync<TerrainHandle>(() =>
       this.raw.generateFractal(normaliseFractalOptions(options))
     );
+    this.emitWarnings(handle);
     this.emit("terrainLoaded", handle);
     this.emit("progress", {
       phase: "fractal",
@@ -438,6 +439,13 @@ class VistaEngineWrapper implements VistaEngine {
 
     const start = performance.now();
     const stats = this.call<RenderStats>(() => this.raw.renderOnce());
+
+    // An unchanged frame index means the GPU was still busy with earlier
+    // frames, so the engine skipped this one rather than queue it.
+    if (stats.frameIndex === this.lastStats.frameIndex) {
+      return this.lastStats;
+    }
+
     stats.frameTimeMs = performance.now() - start;
     stats.weather ??= null;
     const weatherChanged = stats.weather !== this.lastWeather;

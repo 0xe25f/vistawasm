@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 use vista_types::{
   AtmosphereOptions, CloudsOptions, ErosionOptions, FloraOptions, MistOptions, ShadowOptions,
@@ -257,6 +260,9 @@ const IMPOSTOR_HEIGHT: u32 = 512;
 const HEIGHT_TEXTURE_MAX: u32 = 2048;
 const TERRAIN_SHADOW_MAX: u32 = 1024;
 const OCEAN_GRID_SAMPLES: u32 = 193;
+/// Two frames in flight let the CPU record one frame while the GPU draws the
+/// previous one, and keep input-to-screen latency to at most two frames.
+const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 /// How much taller than the ordinary cloud layer storm towers grow, at
 /// full `towering`.
 const TOWER_STRETCH: f32 = 1.6;
@@ -359,6 +365,14 @@ pub struct GpuContext {
   mist_offset: [f32; 2],
   current_offset: [f32; 2],
   cloud_evolution: f32,
+  /// Frames submitted to the GPU and not yet finished. Browsers keep firing
+  /// animation frames on schedule even when the GPU falls behind, so without
+  /// this limit frames queue up without bound and the picture lags seconds
+  /// behind the camera.
+  frames_in_flight: Arc<AtomicU32>,
+  /// Set when the browser reports the device lost. Work submitted to a lost
+  /// device silently does nothing, so rendering stops and reports it.
+  device_lost: Arc<AtomicBool>,
   erosion: ErosionCompute,
   terrain: Option<TerrainGpu>,
   trees: Option<TreesGpu>,
@@ -1203,6 +1217,11 @@ impl GpuContext {
       })
       .await
       .map_err(|_| VistaError::WebGpuDeviceRequestFailed)?;
+    let device_lost = Arc::new(AtomicBool::new(false));
+    let lost_flag = Arc::clone(&device_lost);
+    device.set_device_lost_callback(move |_reason, _message| {
+      lost_flag.store(true, Ordering::Release);
+    });
     let pixel_width = scaled_extent(width, device_pixel_ratio);
     let pixel_height = scaled_extent(height, device_pixel_ratio);
     let config = surface
@@ -1384,6 +1403,8 @@ impl GpuContext {
       cloud_offset: [0.0; 2],
       mist_offset: [0.0; 2],
       current_offset: [0.0; 2],
+      frames_in_flight: Arc::new(AtomicU32::new(0)),
+      device_lost,
       cloud_evolution: 0.0,
       erosion,
       terrain: None,
@@ -2164,6 +2185,10 @@ impl GpuContext {
 
   /// Render one frame.
   pub fn render_once(&mut self, params: &FrameParams) -> VistaResult<()> {
+    if self.device_lost.load(Ordering::Acquire) {
+      return Err(VistaError::WebGpuDeviceLost);
+    }
+
     let time = ((now_ms() - self.start_time_ms) / 1000.0) as f32;
     let dt = (time - self.last_time).clamp(0.0, 0.25);
     self.last_time = time;
@@ -2491,8 +2516,19 @@ impl GpuContext {
     }
 
     self.queue.submit(Some(encoder.finish()));
+    self.frames_in_flight.fetch_add(1, Ordering::AcqRel);
+    let frames_in_flight = Arc::clone(&self.frames_in_flight);
+    self.queue.on_submitted_work_done(move || {
+      frames_in_flight.fetch_sub(1, Ordering::AcqRel);
+    });
     self.queue.present(surface_texture);
     Ok(())
+  }
+
+  /// Whether the GPU is still drawing earlier frames. The engine skips a
+  /// frame rather than queue another one behind them.
+  pub fn is_busy(&self) -> bool {
+    self.frames_in_flight.load(Ordering::Acquire) >= MAX_FRAMES_IN_FLIGHT
   }
 
   /// Resize the WebGPU surface and render targets.

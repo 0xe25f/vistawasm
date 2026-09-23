@@ -6,6 +6,9 @@ import type { VistaEngine, VistaWasmGeneratedModule } from "../src/types";
 // wrapper's validation and packing can be tested without a GPU.
 const calls: { name: string; args: unknown[] }[] = [];
 let weather: string | undefined;
+// When set, renderOnce reports this frame index, as the engine does when it
+// skips a frame because the GPU is still busy.
+let skippedFrameIndex: number | undefined;
 
 const raw = new Proxy(
   {},
@@ -20,7 +23,7 @@ const raw = new Proxy(
 
         if (name === "renderOnce") {
           return {
-            frameIndex: calls.length,
+            frameIndex: skippedFrameIndex ?? calls.length,
             frameTimeMs: 0,
             terrainTriangles: 0,
             floraInstances: 0,
@@ -133,5 +136,22 @@ describe("weatherChanged", () => {
     off();
 
     expect(seen).toEqual(["rain", null]);
+  });
+});
+
+describe("frame pacing", () => {
+  it("returns the previous stats and emits nothing for a skipped frame", () => {
+    const seen: number[] = [];
+    const off = engine.on("stats", (stats) => seen.push(stats.frameIndex));
+
+    const drawn = engine.renderOnce();
+    skippedFrameIndex = drawn.frameIndex;
+    const skipped = engine.renderOnce();
+    skippedFrameIndex = undefined;
+    const next = engine.renderOnce();
+    off();
+
+    expect(skipped).toBe(drawn);
+    expect(seen).toEqual([drawn.frameIndex, next.frameIndex]);
   });
 });

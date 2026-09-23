@@ -250,8 +250,11 @@ impl EngineCore {
           map.heights = eroded;
           crate::terrain::heightmap::update_stats(&map.heights, &map.no_data, &mut map.metadata);
         }
-        Err(_) => {
+        Err(error) => {
           crate::terrain::erosion::apply_erosion(&mut map, erosion)?;
+          map.metadata.warnings.push(format!(
+            "GPU erosion failed, so erosion ran on the CPU instead: {error}"
+          ));
         }
       }
     }
@@ -555,6 +558,15 @@ impl EngineCore {
   /// Render one frame.
   pub fn render_once(&mut self) -> VistaResult<RenderStats> {
     self.ensure_live()?;
+
+    // While the GPU is still drawing earlier frames, skip this one instead
+    // of queueing it. The unchanged `frame_index` tells the caller that
+    // nothing was drawn.
+    #[cfg(target_arch = "wasm32")]
+    if self.gpu.is_busy() {
+      return Ok(self.stats.clone());
+    }
+
     self.stats.frame_index = self.stats.frame_index.saturating_add(1);
     let dt = self.frame_delta_seconds();
 

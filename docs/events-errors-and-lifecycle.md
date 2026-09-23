@@ -44,12 +44,12 @@ unsubscribe();
 | --- | --- | --- |
 | `"ready"` | `undefined` | Once, immediately after `createVistaEngine()` succeeds. |
 | `"progress"` | `{ phase: string; progress: number }` | Twice per `generateFractal()` call: `progress: 0` when it starts, `progress: 1` when it resolves. **Not** emitted by `loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap` — those only emit `"terrainLoaded"` (and `"warning"`, below). |
-| `"warning"` | `{ message: string; details?: unknown }` | Once per entry in `TerrainHandle.metadata.warnings`, after a successful `loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap`. **Not currently emitted after `generateFractal()`**, even though its returned handle has the same `warnings` field (fractal generation practically never produces warnings today). |
+| `"warning"` | `{ message: string; details?: unknown }` | Once per entry in `TerrainHandle.metadata.warnings`, after any successful terrain call. For `generateFractal()`, the one warning today is GPU erosion failing and running on the CPU instead. |
 | `"terrainLoaded"` | `TerrainHandle` | After every successful `generateFractal`/`loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap` call. |
-| `"stats"` | `RenderStats` | After every rendered frame, whether `start()` or your own loop calls `renderOnce()` (see [`docs/game-development.md`](game-development.md#1-where-vistawasm-fits-in-a-game-loop)). `renderOnce()` also returns the same `RenderStats`. Not emitted while terrain is generating, when `renderOnce()` returns the previous stats without drawing. |
+| `"stats"` | `RenderStats` | After every rendered frame, whether `start()` or your own loop calls `renderOnce()` (see [`docs/game-development.md`](game-development.md#1-where-vistawasm-fits-in-a-game-loop)). `renderOnce()` also returns the same `RenderStats`. Not emitted when `renderOnce()` draws nothing: while terrain is generating, or while the GPU is still drawing two earlier frames (see [Frame pacing](#frame-pacing)). |
 | `"weatherChanged"` | `WeatherKind \| null` | When the dominant weather changes (halfway through a transition), and `null` when the weather system is switched off. Checked on every `renderOnce()`, whether called by `start()` or by you. See [`docs/weather.md`](weather.md#reading-the-weather). |
 | `"fatalError"` | `Error` (a `VistaWasmError`) | From the `start()` loop's internal catch, for any error other than a lost device. The loop stops itself before emitting this. |
-| `"deviceLost"` | `Error` (a `VistaWasmError` with code `WEBGPU_DEVICE_LOST`) | From the `start()` loop's internal catch, specifically for a lost GPU device. The loop stops itself before emitting this — VistaWASM does not attempt automatic device recreation; dispose and create a new engine. |
+| `"deviceLost"` | `Error` (a `VistaWasmError` with code `WEBGPU_DEVICE_LOST`) | From the `start()` loop's internal catch, on the first frame after the browser reports the GPU device lost. The loop stops itself before emitting this — VistaWASM does not attempt automatic device recreation; dispose and create a new engine. |
 
 Note that `"fatalError"`/`"deviceLost"` are **only** raised through the
 `start()` loop. If you drive rendering yourself via `renderOnce()`, catch
@@ -89,6 +89,20 @@ try {
 | `GPU_LIMIT_EXCEEDED` | Reserved. The current release does not raise it: instance counts above the device's limits are clamped instead. |
 | `ENGINE_DISPOSED` | A call was made on an engine after `dispose()`. Guard against this in your own code if you hold a reference to the engine outside the component/module that owns its lifecycle. |
 | `INTERNAL_ERROR` | An unexpected internal fault, or any non-VistaWASM error the wrapper caught and normalised (the original error, when there is one, is kept in `.details`). |
+
+## Frame pacing
+
+Browsers keep firing animation frames on schedule even when the GPU cannot
+keep up. If every one of them submitted a frame, frames would queue up
+behind the GPU without limit, and the picture would fall seconds behind
+the camera while the frame rate still looked high. So `renderOnce()`
+draws nothing while two earlier frames are still on the GPU: it returns
+the previous `RenderStats` (with the same `frameIndex`) and emits no
+`"stats"` event. The engine then draws exactly as fast as the GPU
+finishes frames, and the picture is never more than two frames behind.
+
+To measure the real frame rate, time the gap between `"stats"` events
+(see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats)).
 
 ## Reentrancy
 

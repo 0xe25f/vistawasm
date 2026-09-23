@@ -42,6 +42,11 @@ function tick(nowMs: number) {
 requestAnimationFrame(tick);
 ```
 
+When the GPU is still drawing two earlier frames, `renderOnce()` skips
+drawing and returns the previous stats (same `frameIndex`), so frames never
+queue up behind a slow GPU (see
+[Frame pacing](events-errors-and-lifecycle.md#frame-pacing)).
+
 Option B is preferable once you have a real player/vehicle controller, since
 it guarantees the camera you set is the one used for that exact frame,
 rather than racing against VistaWASM's own internal loop.

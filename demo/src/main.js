@@ -1057,14 +1057,28 @@ async function run() {
 
   observer.observe(canvas);
 
+  // The render loop stops itself on these; say so rather than freezing silently.
+  engine.on("deviceLost", () => {
+    setStatus("The GPU device was lost, so rendering stopped. Reload the page to start again.");
+  });
+  engine.on("fatalError", showError);
+
+  // Time between frames is what the viewer sees. `frameTimeMs` only counts
+  // the CPU time to submit a frame, not the GPU time to draw it.
+  let lastFrameAt = performance.now();
+  let smoothedFrameMs = 1000 / 60;
+
   engine.on("stats", (stats) => {
     if (!statsPanel) {
       return;
     }
 
-    const fps = stats.frameTimeMs > 0 ? Math.round(1000 / stats.frameTimeMs) : 0;
+    const now = performance.now();
+    smoothedFrameMs += (now - lastFrameAt - smoothedFrameMs) * 0.1;
+    lastFrameAt = now;
+    const fps = Math.round(1000 / Math.max(1, smoothedFrameMs));
     statsPanel.textContent = [
-      `FPS ~${fps}`,
+      `FPS ${fps} (${smoothedFrameMs.toFixed(1)} ms per frame)`,
       `Triangles ${stats.terrainTriangles.toLocaleString()}`,
       `Flora instances ${stats.floraInstances.toLocaleString()}`,
       `Grass instances ${stats.grassInstances.toLocaleString()}`,
