@@ -376,8 +376,13 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     var optical = 0.0;
     var light_step = 40.0;
     var light_t = light_step * 0.5;
+    // Under a flat overcast sheet the light arriving is diffuse and the
+    // ambient term dominates, so three light samples do the work of five.
+    // The count is the same for the whole frame, so no pixel waits on
+    // another.
+    let light_samples = select(5, 3, frame.clouds3.x > 0.6);
 
-    for (var j = 0; j < 5; j = j + 1) {
+    for (var j = 0; j < light_samples; j = j + 1) {
       let lp = p + sun * light_t;
       let lw = cloud_weather(lp.xz);
       optical = optical + cloud_shape(lp, lw) * (0.35 + frame.cloud_motion.w * 1.3) * light_step;
@@ -718,54 +723,76 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   return vec4<f32>(finish_colour(colour), 1.0);
 }
 
-// Raindrops on the camera lens. Runs after everything else, reading the
-// finished frame: each drop is a small lens that shows the scene behind it
-// flipped and magnified, with a darker rim and a glint. Small beads sit
-// still and evaporate; larger drops run down the screen.
+// The final pass, run when the scene was rendered below the canvas
+// resolution or raindrops land on the lens. It upscales the finished frame
+// to the canvas, sharpening what was upscaled with a contrast-adaptive
+// filter that cannot overshoot its neighbours (so no halos), and refracts
+// the frame through raindrops on the lens: small beads that sit still and
+// evaporate, and larger drops that run down the screen, each showing the
+// scene behind it flipped and magnified, with a darker rim and a glint.
 @fragment
-fn lens_main(in: VertexOut) -> @location(0) vec4<f32> {
-  let size = frame.viewport.xy;
+fn present_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let size = frame.output.xy;
   let pixel = in.clip_position.xy;
-  let rain = frame.weather.x * frame.weather3.w;
-  let t = time_seconds();
-  // Square cells measured in screen heights, so drops stay round.
-  let screen = vec2<f32>(pixel.x / size.y, pixel.y / size.y);
   var bend = vec2<f32>(0.0);
   var rim = 0.0;
   var glint = 0.0;
+  let rain = frame.weather.x * frame.weather3.w * frame.weather3.z;
 
-  for (var layer = 0; layer < 2; layer = layer + 1) {
-    let running = layer == 1;
-    let cells = select(16.0, 7.0, running);
-    var p = screen * cells;
-    let column = floor(p.x);
-    let column_hash = hash12(vec2<f32>(column, f32(layer) * 13.1));
-    // Running drops slide down their column at their own speed.
-    let slide = select(0.0, t * (0.35 + column_hash * 0.6), running);
-    p.y = p.y - slide;
-    let cell = floor(p);
-    let h = hash12(cell + f32(layer) * 41.7);
-    let life = select(4.0 + h * 5.0, 1.0e6, running);
-    let age = fract(t / life + h * 7.3);
-    let present = step(h, saturate(rain * select(0.55, 0.3, running)));
-    let centre = cell + vec2<f32>(0.2 + 0.6 * hash12(cell + 3.7), 0.2 + 0.6 * hash12(cell + 8.9));
-    // Beads appear quickly and shrink away as they evaporate.
-    let grow = smoothstep(0.0, 0.05, age) * (1.0 - smoothstep(0.7, 1.0, age));
-    let radius = (0.12 + 0.2 * hash12(cell + 5.3)) * grow * select(1.0, 1.3, running);
-    var d = p - centre;
-    // Running drops are a little taller than wide.
-    d.y = d.y * select(1.0, 0.8, running);
-    let r = length(d) / max(radius, 0.0001);
-    let inside = (1.0 - smoothstep(0.85, 1.0, r)) * present;
-    let normal = d / max(radius, 0.0001);
-    // Offset in screen heights, converted to pixels below.
-    bend = bend - normal * radius / cells * 1.6 * inside;
-    rim = max(rim, smoothstep(0.55, 1.0, r) * inside);
-    glint = max(glint, (1.0 - smoothstep(0.0, 0.25, length(normal - vec2<f32>(-0.35, -0.4)))) * inside);
+  if (rain > 0.001) {
+    let t = time_seconds();
+    // Square cells measured in screen heights, so drops stay round.
+    let screen = pixel / size.y;
+
+    for (var layer = 0; layer < 2; layer = layer + 1) {
+      let running = layer == 1;
+      let cells = select(16.0, 7.0, running);
+      var p = screen * cells;
+      let column = floor(p.x);
+      let column_hash = hash12(vec2<f32>(column, f32(layer) * 13.1));
+      // Running drops slide down their column at their own speed.
+      let slide = select(0.0, t * (0.35 + column_hash * 0.6), running);
+      p.y = p.y - slide;
+      let cell = floor(p);
+      let h = hash12(cell + f32(layer) * 41.7);
+      let life = select(4.0 + h * 5.0, 1.0e6, running);
+      let age = fract(t / life + h * 7.3);
+      let present = step(h, saturate(rain * select(0.55, 0.3, running)));
+      let centre = cell + vec2<f32>(0.2 + 0.6 * hash12(cell + 3.7), 0.2 + 0.6 * hash12(cell + 8.9));
+      // Beads appear quickly and shrink away as they evaporate.
+      let grow = smoothstep(0.0, 0.05, age) * (1.0 - smoothstep(0.7, 1.0, age));
+      let radius = (0.12 + 0.2 * hash12(cell + 5.3)) * grow * select(1.0, 1.3, running);
+      var d = p - centre;
+      // Running drops are a little taller than wide.
+      d.y = d.y * select(1.0, 0.8, running);
+      let r = length(d) / max(radius, 0.0001);
+      let inside = (1.0 - smoothstep(0.85, 1.0, r)) * present;
+      let normal = d / max(radius, 0.0001);
+      // Offset in screen heights, converted to pixels below.
+      bend = bend - normal * radius / cells * 1.6 * inside;
+      rim = max(rim, smoothstep(0.55, 1.0, r) * inside);
+      glint = max(glint, (1.0 - smoothstep(0.0, 0.25, length(normal - vec2<f32>(-0.35, -0.4)))) * inside);
+    }
   }
 
-  let source = (pixel + bend * size.y) * frame.viewport.zw;
-  var colour = textureSampleLevel(lens_source, linear_sampler, clamp(source, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+  let uv = clamp((pixel + bend * size.y) / size, vec2<f32>(0.0), vec2<f32>(1.0));
+  var colour = textureSampleLevel(lens_source, linear_sampler, uv, 0.0).rgb;
+  let scale = frame.output.z;
+
+  if (scale < 0.999) {
+    let texel = frame.viewport.zw;
+    let north = textureSampleLevel(lens_source, linear_sampler, uv - vec2<f32>(0.0, texel.y), 0.0).rgb;
+    let south = textureSampleLevel(lens_source, linear_sampler, uv + vec2<f32>(0.0, texel.y), 0.0).rgb;
+    let west = textureSampleLevel(lens_source, linear_sampler, uv - vec2<f32>(texel.x, 0.0), 0.0).rgb;
+    let east = textureSampleLevel(lens_source, linear_sampler, uv + vec2<f32>(texel.x, 0.0), 0.0).rgb;
+    let low = min(min(min(north, south), min(west, east)), colour);
+    let high = max(max(max(north, south), max(west, east)), colour);
+    // Sharpen more the further the frame was upscaled.
+    let amount = saturate((1.0 - scale) * 2.0) * 0.6;
+    let sharpened = colour + (colour * 4.0 - north - south - west - east) * amount * 0.25;
+    colour = clamp(sharpened, low, high);
+  }
+
   colour = colour * (1.0 - rim * 0.35) + vec3<f32>(glint * 0.35);
   return vec4<f32>(colour, 1.0);
 }

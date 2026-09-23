@@ -55,6 +55,9 @@ pub struct EngineCore {
   height_range: (f32, f32),
   /// Time of the previous frame in milliseconds, for the weather clock.
   last_frame_ms: Option<f64>,
+  frame_clock: crate::pacing::FrameClock,
+  resolution: crate::pacing::ResolutionController,
+  frame_seconds: f32,
   debug_view: DebugView,
   stats: RenderStats,
   render_width: u32,
@@ -169,6 +172,9 @@ impl EngineCore {
       custom_trees: None,
       height_range: (0.0, 0.0),
       last_frame_ms: None,
+      frame_clock: Default::default(),
+      resolution: Default::default(),
+      frame_seconds: 0.0,
       debug_view: DebugView::None,
       stats: RenderStats::default(),
       render_width: config.render.width,
@@ -218,6 +224,9 @@ impl EngineCore {
       custom_trees: None,
       height_range: (0.0, 0.0),
       last_frame_ms: None,
+      frame_clock: Default::default(),
+      resolution: Default::default(),
+      frame_seconds: 0.0,
       debug_view: DebugView::None,
       stats: RenderStats::default(),
       render_width: config.render.width,
@@ -599,7 +608,14 @@ impl EngineCore {
     }
 
     self.stats.frame_index = self.stats.frame_index.saturating_add(1);
-    let dt = self.frame_delta_seconds();
+    let interval = self.frame_delta_seconds();
+    let dt = self.frame_clock.step(interval);
+    self.frame_seconds = dt;
+    self.stats.render_scale = self.resolution.update(
+      interval,
+      self.quality.frame_rate_cap(),
+      self.quality.render_scale_range(),
+    );
 
     if self.weather.options().enabled {
       self.weather.advance(dt);
@@ -637,7 +653,7 @@ impl EngineCore {
           + times.clouds
           + times.sky_and_fog
           + times.water
-          + times.lens
+          + times.present
       });
     }
 
@@ -1093,6 +1109,8 @@ impl EngineCore {
         lens_drops: weather.lens_drops,
       },
       height_range: self.height_range,
+      render_scale: self.stats.render_scale,
+      frame_seconds: self.frame_seconds,
       distances: self.quality.distances(),
     }
   }
@@ -1218,7 +1236,7 @@ impl EngineCore {
       .last_frame_ms
       .map_or(0.0, |last| ((now - last) / 1_000.0) as f32);
     self.last_frame_ms = Some(now);
-    dt.clamp(0.0, 0.25)
+    dt.max(0.0)
   }
 
   fn ensure_live(&self) -> VistaResult<()> {

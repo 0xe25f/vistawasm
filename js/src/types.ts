@@ -816,6 +816,29 @@ export interface RenderQualityOptions {
    * Defaults to 30 % of the cloud distance.
    */
   cloudFadeMetres?: number;
+  /**
+   * Frame-rate cap for `engine.start()`, in frames per second. Frames are
+   * rendered evenly spaced, so a 60 cap on a 144 Hz display gives a steady
+   * 60. `0` renders on every animation frame. Defaults to 60.
+   */
+  maxFrameRate?: number;
+  /**
+   * Fraction of the canvas resolution the scene is rendered at, from 0.25
+   * to 1; a final pass upscales and sharpens it. With dynamic resolution
+   * on, this is the highest scale used. Defaults to 1.
+   */
+  renderScale?: number;
+  /**
+   * Lower the render scale when frames arrive late, and raise it again when
+   * there is time to spare, to hold `maxFrameRate` (or 60 when uncapped).
+   * Defaults to `true`.
+   */
+  dynamicResolution?: boolean;
+  /**
+   * Lowest render scale dynamic resolution may use, from 0.25 to 1.
+   * Defaults to 0.5.
+   */
+  minRenderScale?: number;
 }
 
 /**
@@ -851,6 +874,11 @@ export interface RenderStats {
    * Measured a few frames behind, without stalling rendering.
    */
   gpuPassTimesMs?: GpuPassTimes | null;
+  /**
+   * Fraction of the canvas resolution the scene was rendered at, chosen by
+   * dynamic resolution between `minRenderScale` and `renderScale`.
+   */
+  renderScale?: number;
 }
 
 /**
@@ -874,8 +902,8 @@ export interface GpuPassTimes {
   skyAndFog: number;
   /** Ocean, rivers, and lakes. */
   water: number;
-  /** Raindrops on the lens. */
-  lens: number;
+  /** Upscaling to the canvas and raindrops on the lens. */
+  present: number;
 }
 
 /**

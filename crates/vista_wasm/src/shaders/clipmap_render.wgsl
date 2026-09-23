@@ -225,9 +225,9 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
 
-  // Past the detail distance, like a game's distant level of detail, each
-  // material takes one far-scale sample instead of up to eight. Textures
-  // there are so minified that the two look the same.
+  // Past the detail distance each material takes one far-scale sample
+  // instead of up to eight. Textures there are so minified that the two
+  // look the same.
   let low_detail = distance > frame.distances.y;
 
   var weights = array<f32, 8>(

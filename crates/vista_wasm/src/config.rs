@@ -500,6 +500,19 @@ pub fn validate_quality(quality: &RenderQualityOptions) -> VistaResult<()> {
   }
 
   for (name, value) in [
+    ("quality.renderScale", quality.render_scale),
+    ("quality.minRenderScale", quality.min_render_scale),
+  ] {
+    if let Some(value) = value {
+      validate_unit_range(name, value, 0.25, 1.0)?;
+    }
+  }
+
+  if let Some(rate) = quality.max_frame_rate {
+    validate_non_negative("quality.maxFrameRate", rate)?;
+  }
+
+  for (name, value) in [
     ("quality.renderFadeMetres", quality.render_fade_metres),
     ("quality.cloudFadeMetres", quality.cloud_fade_metres),
   ] {
@@ -625,6 +638,44 @@ mod tests {
     grass.density = -0.1;
 
     assert!(validate_grass(&grass).is_err());
+  }
+
+  #[test]
+  fn frame_pacing_options_are_validated_and_resolved() {
+    let quality = RenderQualityOptions {
+      render_scale: Some(0.8),
+      min_render_scale: Some(0.6),
+      ..Default::default()
+    };
+    assert!(validate_quality(&quality).is_ok());
+    assert_eq!(quality.render_scale_range(), (0.8, 0.6));
+    assert_eq!(quality.frame_rate_cap(), 60.0);
+
+    let fixed = RenderQualityOptions {
+      render_scale: Some(0.7),
+      dynamic_resolution: Some(false),
+      max_frame_rate: Some(0.0),
+      ..Default::default()
+    };
+    assert_eq!(fixed.render_scale_range(), (0.7, 0.7));
+    assert_eq!(fixed.frame_rate_cap(), 0.0);
+
+    for bad in [
+      RenderQualityOptions {
+        render_scale: Some(0.1),
+        ..Default::default()
+      },
+      RenderQualityOptions {
+        min_render_scale: Some(1.5),
+        ..Default::default()
+      },
+      RenderQualityOptions {
+        max_frame_rate: Some(-30.0),
+        ..Default::default()
+      },
+    ] {
+      assert!(validate_quality(&bad).is_err());
+    }
   }
 
   #[test]

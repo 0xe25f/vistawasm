@@ -66,9 +66,10 @@ struct FrameUniforms {
   temporal: [f32; 4],
   distances: [f32; 4],
   fades: [f32; 4],
+  output: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 736);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 752);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -194,6 +195,10 @@ pub struct FrameParams {
   pub height_range: (f32, f32),
   /// Render, detail, and cloud distances.
   pub distances: vista_types::RenderDistances,
+  /// Fraction of the canvas resolution to render the scene at (0.25 to 1).
+  pub render_scale: f32,
+  /// Smoothed time step to animate by, in seconds.
+  pub frame_seconds: f32,
 }
 
 // The engine validates replacement textures against these sizes without
@@ -278,11 +283,11 @@ const PASS_QUARTER_CLOUDS: u32 = 3;
 const PASS_CLOUDS: u32 = 4;
 const PASS_COMPOSITE: u32 = 5;
 const PASS_WATER: u32 = 6;
-const PASS_LENS: u32 = 7;
+const PASS_PRESENT: u32 = 7;
 const PASS_TREES: u32 = 8;
 const PASS_GRASS: u32 = 9;
 
-/// GPU time per pass from timestamp queries, like a game's frame profiler.
+/// GPU time per pass from timestamp queries.
 /// Results are read back asynchronously, so a frame is only timed when the
 /// previous reading has arrived, and rendering never waits for it.
 struct GpuTimer {
@@ -378,7 +383,7 @@ impl GpuTimer {
               clouds: ms(PASS_QUARTER_CLOUDS) + ms(PASS_CLOUDS),
               sky_and_fog: ms(PASS_COMPOSITE),
               water: ms(PASS_WATER),
-              lens: ms(PASS_LENS),
+              present: ms(PASS_PRESENT),
             };
             drop(view);
 
@@ -526,7 +531,6 @@ pub struct GpuContext {
   rivers: Option<IndexedMesh>,
   water_visible: bool,
   uniforms: FrameUniforms,
-  start_time_ms: f64,
   last_time: f32,
   // Wind-driven offsets are integrated over time rather than computed as
   // speed x time, so changing the wind (for example when the weather
@@ -551,8 +555,15 @@ pub struct GpuContext {
   terrain: Option<TerrainGpu>,
   trees: Option<TreesGpu>,
   grass: Option<GrassGpu>,
+  /// Internal render size in pixels: the canvas size times `render_scale`.
   width: u32,
   height: u32,
+  /// Canvas (surface) size in pixels.
+  canvas_width: u32,
+  canvas_height: u32,
+  /// Fraction of the canvas resolution the scene is rendered at; the final
+  /// pass upscales it.
+  render_scale: f32,
 }
 
 fn texture_entry(
@@ -1162,10 +1173,6 @@ fn direction_from_degrees(degrees: f32) -> [f32; 2] {
   [radians.sin(), radians.cos()]
 }
 
-fn now_ms() -> f64 {
-  js_sys::Date::now()
-}
-
 fn flag(on: bool) -> f32 {
   if on {
     1.0
@@ -1374,9 +1381,9 @@ fn create_pipelines(
         format: Some(surface_format),
         depth: None,
         ..PipelineSpec::opaque(
-          "VistaWASM lens drops",
+          "VistaWASM present",
           &modules.atmosphere,
-          ("vertex_main", "lens_main"),
+          ("vertex_main", "present_main"),
           &[],
         )
       },
@@ -1633,7 +1640,6 @@ impl GpuContext {
       rivers: None,
       water_visible: false,
       uniforms,
-      start_time_ms: now_ms(),
       last_time: 0.0,
       cloud_offset: [0.0; 2],
       cirrus_offset: [0.0; 2],
@@ -1649,6 +1655,9 @@ impl GpuContext {
       grass: None,
       width: pixel_width,
       height: pixel_height,
+      canvas_width: pixel_width,
+      canvas_height: pixel_height,
+      render_scale: 1.0,
     };
     context.bake_impostors();
     Ok(context)
@@ -2345,6 +2354,12 @@ impl GpuContext {
     let width = self.width.max(1) as f32;
     let height = self.height.max(1) as f32;
     u.viewport = [width, height, 1.0 / width, 1.0 / height];
+    u.output = [
+      self.canvas_width.max(1) as f32,
+      self.canvas_height.max(1) as f32,
+      self.render_scale,
+      0.0,
+    ];
 
     let shadows = &params.shadows;
     let tree_shadows =
@@ -2587,8 +2602,10 @@ impl GpuContext {
       return Err(VistaError::WebGpuDeviceLost);
     }
 
-    let time = ((now_ms() - self.start_time_ms) / 1000.0) as f32;
-    let dt = (time - self.last_time).clamp(0.0, 0.25);
+    // Animation runs on the engine's smoothed time step, so a late frame
+    // does not make wind, water, and clouds jump.
+    let dt = params.frame_seconds.clamp(0.0, 0.25);
+    let time = self.last_time + dt;
     self.last_time = time;
 
     if params.shadows.trees.resolution != self.tree_shadow_map.resolution {
@@ -2601,12 +2618,16 @@ impl GpuContext {
       );
     }
 
+    self.set_render_scale(params.render_scale);
     self.ensure_cloud_target(params.clouds.resolution_scale);
-    // Lens drops refract the finished frame, so while they are on the frame
-    // is drawn off-screen first; otherwise it goes straight to the canvas.
+    // When the scene is rendered below the canvas resolution, or lens drops
+    // refract it, the frame is drawn off-screen first and a final pass
+    // upscales it (adding the drops); otherwise it goes straight to the
+    // canvas with no extra pass.
     let lens_drops = params.weather.lens_drops && params.weather.rain > 0.001;
+    let present = lens_drops || self.render_scale < 0.999;
 
-    if lens_drops {
+    if present {
       self.ensure_lens_target();
     }
     self.update_uniforms(params, time, dt);
@@ -2730,7 +2751,7 @@ impl GpuContext {
     };
 
     let canvas_view = default_view(&surface_texture.texture);
-    let view = match (&self.lens_target, lens_drops) {
+    let view = match (&self.lens_target, present) {
       (Some(target), true) => target.view.clone(),
       _ => canvas_view.clone(),
     };
@@ -3012,10 +3033,10 @@ impl GpuContext {
       }
     }
 
-    if let (Some(target), true) = (&self.lens_target, lens_drops) {
+    if let (Some(target), true) = (&self.lens_target, present) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("VistaWASM lens pass"),
-        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_LENS)),
+        label: Some("VistaWASM present pass"),
+        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_PRESENT)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &canvas_view,
           depth_slice: None,
@@ -3028,7 +3049,7 @@ impl GpuContext {
         depth_stencil_attachment: None,
         ..Default::default()
       });
-      ran |= 1 << PASS_LENS;
+      ran |= 1 << PASS_PRESENT;
       pass.set_pipeline(&self.pipelines.lens);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
@@ -3125,17 +3146,42 @@ impl GpuContext {
     self.config.width = pixel_width;
     self.config.height = pixel_height;
     self.surface.configure(&self.device, &self.config);
+    self.canvas_width = pixel_width;
+    self.canvas_height = pixel_height;
+    self.create_scaled_targets();
+    Ok(())
+  }
 
-    let (depth_view, hdr_view) = create_render_targets(&self.device, pixel_width, pixel_height);
+  /// Render the scene at `scale` (0.25 to 1) of the canvas resolution; the
+  /// final pass upscales and sharpens it.
+  pub fn set_render_scale(&mut self, scale: f32) {
+    let scale = scale.clamp(0.25, 1.0);
+
+    if (scale - self.render_scale).abs() < 0.001 {
+      return;
+    }
+
+    self.render_scale = scale;
+    self.create_scaled_targets();
+  }
+
+  /// The fraction of the canvas resolution currently rendered.
+  pub fn render_scale(&self) -> f32 {
+    self.render_scale
+  }
+
+  /// (Re)create the depth, HDR, cloud, and final-pass targets at the
+  /// internal render size.
+  fn create_scaled_targets(&mut self) {
+    self.width = scaled_extent(self.canvas_width, self.render_scale);
+    self.height = scaled_extent(self.canvas_height, self.render_scale);
+    let (depth_view, hdr_view) = create_render_targets(&self.device, self.width, self.height);
     self.depth_view = depth_view;
     self.hdr_view = hdr_view;
-    self.width = pixel_width;
-    self.height = pixel_height;
-    // The cloud, composite, and lens bind groups read the old targets, so
-    // rebuild them on the next frame.
+    // The cloud, composite, and final-pass bind groups read the old
+    // targets, so rebuild them on the next frame.
     self.cloud_target = None;
     self.lens_target = None;
-    Ok(())
   }
 }
 

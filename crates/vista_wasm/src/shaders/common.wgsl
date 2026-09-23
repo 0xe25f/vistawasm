@@ -91,6 +91,9 @@ struct FrameUniforms {
   // x: render distance fade length, y: cloud fade length (metres), zw:
   // unused.
   fades: vec4<f32>,
+  // xy: canvas size in pixels, z: render scale (the scene is rendered at
+  // `viewport` = canvas x scale), w: unused.
+  output: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -277,8 +280,16 @@ fn sky_radiance(direction: vec3<f32>) -> vec3<f32> {
 // Diffuse sky light arriving on a surface with normal `normal`.
 fn sky_irradiance(normal: vec3<f32>) -> vec3<f32> {
   let up = sky_radiance(vec3<f32>(0.0, 1.0, 0.0));
+  let towards_sky = saturate(normal.y * 0.5 + 0.5);
+
+  // Most callers ask about an upward-facing surface, which sees no
+  // horizon term, so skip evaluating the sky model a second time.
+  if (towards_sky >= 0.9999) {
+    return up * 2.4;
+  }
+
   let horizon = sky_radiance(normalize(vec3<f32>(-sun_dir().x, 0.2, -sun_dir().z)));
-  let sky = mix(horizon, up, saturate(normal.y * 0.5 + 0.5));
+  let sky = mix(horizon, up, towards_sky);
   // Light bounced off the ground below.
   let bounce = sun_light() * 0.035 * saturate(-normal.y * 0.5 + 0.5);
   return sky * (0.55 + 0.45 * saturate(normal.y * 0.5 + 0.5)) * 2.4 + bounce;
@@ -504,7 +515,7 @@ fn fade_in_before(end: f32, length: f32, distance: f32) -> f32 {
   return t * t * (3.0 - 2.0 * t);
 }
 
-// Like a game's distance fog: it thickens over the fade length
+// Distance fog: it thickens over the fade length
 // (`renderFadeMetres`) and is complete at the render distance, so the edge
 // where the world stops being drawn is never seen. Beyond it, shaders skip
 // their shading entirely.

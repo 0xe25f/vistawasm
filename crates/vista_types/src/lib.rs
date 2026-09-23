@@ -1557,7 +1557,7 @@ impl Default for RenderQualityPreset {
 #[serde(rename_all = "camelCase")]
 pub struct RenderQualityOptions {
   /// Quality preset. It sets any of the distances below that are left
-  /// unset, like a game's graphics presets.
+  /// unset.
   pub preset: RenderQualityPreset,
   /// Optional maximum clipmap levels.
   pub max_clipmap_levels: Option<u32>,
@@ -1587,6 +1587,42 @@ pub struct RenderQualityOptions {
   /// clouds thin out to nothing. Unset uses 30 % of the cloud distance.
   #[serde(default)]
   pub cloud_fade_metres: Option<f32>,
+  /// Highest frame rate the built-in render loop draws at, evenly paced;
+  /// 0 removes the cap. Defaults to 60.
+  #[serde(default)]
+  pub max_frame_rate: Option<f32>,
+  /// Fraction of the canvas resolution the scene is rendered at, 0.25 to 1;
+  /// a final pass upscales and sharpens it. With `dynamicResolution`, the
+  /// highest scale used. Defaults to 1.
+  #[serde(default)]
+  pub render_scale: Option<f32>,
+  /// Lower the render scale automatically while frames arrive late, and
+  /// raise it again when there is room, to hold the frame rate. Defaults
+  /// to on.
+  #[serde(default)]
+  pub dynamic_resolution: Option<bool>,
+  /// Lowest render scale `dynamicResolution` may use, 0.25 to 1. Defaults
+  /// to 0.5.
+  #[serde(default)]
+  pub min_render_scale: Option<f32>,
+}
+
+impl RenderQualityOptions {
+  /// The frame-rate cap in effect; 0 means uncapped.
+  pub fn frame_rate_cap(&self) -> f32 {
+    self.max_frame_rate.unwrap_or(60.0).max(0.0)
+  }
+
+  /// The highest and lowest render scales in effect.
+  pub fn render_scale_range(&self) -> (f32, f32) {
+    let max = self.render_scale.unwrap_or(1.0).clamp(0.25, 1.0);
+    let min = if self.dynamic_resolution.unwrap_or(true) {
+      self.min_render_scale.unwrap_or(0.5).clamp(0.25, max)
+    } else {
+      max
+    };
+    (max, min)
+  }
 }
 
 /// Distances used when none is set; far enough to change nothing.
@@ -1653,6 +1689,10 @@ impl Default for RenderQualityOptions {
       detail_distance_metres: None,
       cloud_distance_metres: None,
       cloud_fade_metres: None,
+      max_frame_rate: None,
+      render_scale: None,
+      dynamic_resolution: None,
+      min_render_scale: None,
     }
   }
 }
@@ -1715,10 +1755,16 @@ pub struct RenderStats {
   /// Measured a few frames behind, without stalling rendering.
   #[serde(default)]
   pub gpu_pass_times_ms: Option<GpuPassTimes>,
+  /// Fraction of the canvas resolution rendered this frame.
+  #[serde(default = "default_render_scale")]
+  pub render_scale: f32,
 }
 
-/// GPU time spent in each render pass, in milliseconds, like a game's
-/// frame profiler. A pass that did not run reports 0.
+fn default_render_scale() -> f32 {
+  1.0
+}
+
+/// GPU time spent in each render pass, in milliseconds. A pass that did not run reports 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuPassTimes {
@@ -1738,8 +1784,8 @@ pub struct GpuPassTimes {
   pub sky_and_fog: f32,
   /// Ocean, rivers, and lakes.
   pub water: f32,
-  /// Raindrops on the lens.
-  pub lens: f32,
+  /// Upscaling to the canvas and raindrops on the lens, when either is on.
+  pub present: f32,
 }
 
 impl Default for RenderStats {
@@ -1755,6 +1801,7 @@ impl Default for RenderStats {
       active_gpu_memory_bytes: None,
       weather: None,
       gpu_pass_times_ms: None,
+      render_scale: 1.0,
     }
   }
 }

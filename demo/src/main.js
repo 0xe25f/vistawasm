@@ -136,6 +136,10 @@ const inputs = {
   replaceFile: input("replaceFile"),
   palmBeaches: input("palmBeaches"),
   quality: select("quality"),
+  maxFrameRate: select("maxFrameRate"),
+  renderScale: select("renderScale"),
+  dynamicResolution: input("dynamicResolution"),
+  minRenderScale: select("minRenderScale"),
   renderDistance: select("renderDistance"),
   detailDistance: select("detailDistance"),
   cloudDistance: select("cloudDistance"),
@@ -210,8 +214,8 @@ function readNumber(element, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-// Where each frame's GPU time goes, largest first, like a game's frame
-// profiler.
+// Where each frame's GPU time goes, largest first, so the pass worth
+// making cheaper is at the top.
 function gpuProfile(stats) {
   const times = stats.gpuPassTimesMs;
 
@@ -228,7 +232,7 @@ function gpuProfile(stats) {
     water: "Water",
     shadows: "Shadows",
     treeCulling: "Tree culling",
-    lens: "Lens drops"
+    present: "Upscale and lens"
   };
   const rows = Object.entries(names)
     .map(([key, name]) => [name, times[key]])
@@ -725,7 +729,14 @@ function applyQuality() {
     renderFadeMetres: optionalDistance(inputs.renderFade),
     detailDistanceMetres: optionalDistance(inputs.detailDistance),
     cloudDistanceMetres: optionalDistance(inputs.cloudDistance),
-    cloudFadeMetres: optionalDistance(inputs.cloudFade)
+    cloudFadeMetres: optionalDistance(inputs.cloudFade),
+    maxFrameRate: readNumber(inputs.maxFrameRate, 60),
+    renderScale: readNumber(inputs.renderScale, 1),
+    dynamicResolution: inputs.dynamicResolution.checked,
+    minRenderScale: Math.min(
+      readNumber(inputs.minRenderScale, 0.5),
+      readNumber(inputs.renderScale, 1)
+    )
   });
 }
 
@@ -1020,7 +1031,11 @@ function wireLiveControls() {
     inputs.renderFade,
     inputs.detailDistance,
     inputs.cloudDistance,
-    inputs.cloudFade
+    inputs.cloudFade,
+    inputs.maxFrameRate,
+    inputs.renderScale,
+    inputs.dynamicResolution,
+    inputs.minRenderScale
   ]) {
     element.addEventListener("change", applyQuality);
   }
@@ -1141,6 +1156,7 @@ async function run() {
     const fps = Math.round(1000 / Math.max(1, smoothedFrameMs));
     statsPanel.textContent = [
       `FPS ${fps} (${smoothedFrameMs.toFixed(1)} ms per frame)`,
+      `Render resolution ${Math.round((stats.renderScale ?? 1) * 100)} %`,
       `Triangles ${stats.terrainTriangles.toLocaleString()}`,
       `Flora instances ${stats.floraInstances.toLocaleString()}`,
       `Grass instances ${stats.grassInstances.toLocaleString()}`,

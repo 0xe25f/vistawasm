@@ -105,8 +105,14 @@ three. Other setters only change uniforms.
     `Queue::on_submitted_work_done`), the frame is skipped, so frames never
     queue up behind a slow GPU. If the device was lost (tracked with
     `Device::set_device_lost_callback`), rendering returns
-    `WEBGPU_DEVICE_LOST`.
-1. **Weather** (CPU, `weather.rs`) advances by the frame time and is
+    `WEBGPU_DEVICE_LOST`. The engine smooths the time step (`pacing.rs`,
+    `FrameClock`) and picks the render scale (`ResolutionController`): it
+    averages the interval between rendered frames over half a second,
+    lowers the scale in proportion when frames are late, tries one step
+    higher after two calm seconds, and avoids a scale that just dropped
+    frames for ten seconds. Changing the scale rebuilds the depth, HDR,
+    and cloud targets, so it moves in steps of 0.05.
+1. **Weather** (CPU, `weather.rs`) advances by the smoothed time step and is
     applied to the cloud, mist, wind, water, and haze options before they
     reach the GPU. Nothing is uploaded when the weather is off.
 2. **Terrain shadow bake** (compute, `shaders/terrain_shadow.wgsl`) runs
@@ -146,9 +152,15 @@ three. Other setters only change uniforms.
 8. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
     depth-tested against the opaque scene, alpha-blended, fogged, and tone
     mapped in the same way.
+9. **Present pass** (`shaders/atmosphere.wgsl`, `present_main`), only when
+    the scene is rendered below the canvas resolution or lens drops are on.
+    Steps 5 to 8 then draw into an off-screen image at the render scale,
+    and this pass upscales it to the canvas with contrast-adaptive
+    sharpening, refracting it through raindrops on the lens. At full
+    resolution without lens drops there is no extra pass.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (608 bytes), the shared world
+declares the one `FrameUniforms` struct (752 bytes), the shared world
 textures (bind group 1), shadow receivers (bind group 2), the sky model,
 lighting, fog integrals, and every shadow lookup. Because there is exactly
 one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct
@@ -158,7 +170,7 @@ Rust side. `build.rs` strips comments and indentation from each shader, and
 binary small. Every shader is validated with naga in `cargo test`. Each
 shader module is compiled once and shared by every pipeline that uses it.
 
-Animation uses a real-time clock (`camera_position.w`), and wind-driven
+Animation uses a smoothed real-time clock (`camera_position.w`), and wind-driven
 offsets are integrated over time, so wind, water, clouds, and mist move at
 the same speed regardless of frame rate and never jump when the wind
 changes.

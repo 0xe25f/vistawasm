@@ -6,19 +6,62 @@ tuning what it renders: `RenderQualityOptions`, `RenderStats`, and
 
 ## Find what is slow first
 
-`RenderStats.gpuPassTimesMs` reports the GPU time of each pass, like a
-game's frame profiler: terrain, trees, grass, clouds, sky and fog, water,
-shadows, tree culling, and lens drops. The demo lists them, largest first,
+`RenderStats.gpuPassTimesMs` reports the GPU time of each pass: terrain, trees, grass, clouds, sky and fog, water,
+shadows, tree culling, and upscaling with lens drops. The demo lists them, largest first,
 in its stats panel. Look there before changing settings: the pass at the
 top is the one worth making cheaper. It needs the browser's
 `timestamp-query` feature (current Chrome and Edge have it); elsewhere it
 is `null`. Readings arrive a few frames late and are only taken when the
 previous one has arrived, so measuring never stalls rendering.
 
+## Frame rate and resolution
+
+VistaWASM aims for a steady frame rate on any display, from a 1080p
+laptop to a 4K monitor or a phone. Three settings do this:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `maxFrameRate` | `60` | `start()` renders evenly spaced frames at this rate, so a 120 or 144 Hz display shows a steady 60 rather than a rate that swings with the scene. `0` renders on every animation frame. |
+| `dynamicResolution` | `true` | Renders the scene below the canvas resolution when frames arrive late, and back up to `renderScale` when there is time to spare. |
+| `renderScale` / `minRenderScale` | `1` / `0.5` | The highest and lowest fraction of the canvas resolution to render at. |
+
+Most of the cost of clouds, sky, fog, and rain is per pixel, and a 4K
+display at a device pixel ratio of 2 has four times the pixels of 1080p.
+Rendering at 75 % of each side shades 56 % of the pixels. A final pass
+upscales the image with contrast-adaptive sharpening, which keeps edges
+crisp; at typical viewing distances 75 % is hard to tell from full
+resolution. `RenderStats.renderScale` reports the scale in use.
+
+```ts
+engine.setRenderQuality({
+  preset: "balanced",
+  maxFrameRate: 60,
+  dynamicResolution: true,
+  minRenderScale: 0.5
+});
+
+// A fixed 75 %, for example on a phone:
+engine.setRenderQuality({
+  preset: "balanced",
+  renderScale: 0.75,
+  dynamicResolution: false
+});
+```
+
+Dynamic resolution judges the real interval between rendered frames, so
+it works in every browser, with or without GPU timing. It holds the cap,
+or 60 when uncapped. It lowers the scale within half a second of frames
+running late, raises it one step after two calm seconds, and avoids for
+ten seconds a scale that has just dropped frames, so it settles instead
+of swinging.
+
+Overcast, rain, and storm skies also march cloud lighting with fewer
+samples: under a thick grey layer the fine light detail that more samples
+resolve cannot be seen.
+
 ## Distances and presets (`RenderQualityOptions`)
 
-Three distances limit work far from the camera, like a game's video
-settings. See
+Three distances limit work far from the camera. See
 [`docs/options-reference.md`](options-reference.md#renderqualityoptions)
 for the exact fields.
 
@@ -140,7 +183,8 @@ modes replace the terrain's textured shading with a flat-lit overlay:
 
 ## Building your own performance HUD
 
-Combine `RenderStats` with the levers above for an adaptive-quality loop:
+Dynamic resolution already holds the frame rate. To trade other detail
+for speed as well, combine `RenderStats` with the levers above:
 
 ```ts
 let lastFrameAt = performance.now();

@@ -10,6 +10,7 @@ pub mod dem;
 pub mod engine;
 pub mod errors;
 pub mod maths;
+pub mod pacing;
 pub mod render;
 pub mod terrain;
 pub mod weather;

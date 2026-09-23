@@ -660,6 +660,41 @@
               </select>
             </label>
             <label>
+              Frame-rate cap
+              <select id="maxFrameRate">
+                <option value="30">30 FPS</option>
+                <option value="60" selected>60 FPS</option>
+                <option value="72">72 FPS</option>
+                <option value="90">90 FPS</option>
+                <option value="120">120 FPS</option>
+                <option value="144">144 FPS</option>
+                <option value="0">Uncapped</option>
+              </select>
+            </label>
+            <label>
+              Render resolution
+              <select id="renderScale">
+                <option value="1" selected>100 %</option>
+                <option value="0.85">85 %</option>
+                <option value="0.75">75 %</option>
+                <option value="0.67">67 %</option>
+                <option value="0.5">50 %</option>
+              </select>
+            </label>
+            <label class="checkbox">
+              <input id="dynamicResolution" type="checkbox" checked>
+              Dynamic resolution (holds the frame rate)
+            </label>
+            <label>
+              Lowest dynamic resolution
+              <select id="minRenderScale">
+                <option value="0.75">75 %</option>
+                <option value="0.67">67 %</option>
+                <option value="0.5" selected>50 %</option>
+                <option value="0.35">35 %</option>
+              </select>
+            </label>
+            <label>
               Render distance
               <select id="renderDistance">
                 <option value="" selected>From preset</option>

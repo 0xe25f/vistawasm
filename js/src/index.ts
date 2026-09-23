@@ -1,5 +1,6 @@
 import { VistaWasmError, toVistaWasmError } from "./errors.js";
 import { assertVistaWasmSupport, detectVistaWasmSupport } from "./feature-detect.js";
+import { DEFAULT_MAX_FRAME_RATE, FramePacer } from "./frame-pacing.js";
 import type {
   AtmosphereOptions,
   BiomeKind,
@@ -95,6 +96,7 @@ export async function createVistaEngine(
   try {
     const raw = await loadedModule.VistaEngine.create(canvas, normaliseEngineOptions(options));
     const engine = new VistaEngineWrapper(canvas, raw);
+    engine.setFrameRateCap(options.quality);
     engine.emit("ready", undefined);
     return engine;
   } catch (error) {
@@ -144,6 +146,8 @@ class VistaEngineWrapper implements VistaEngine {
   private pendingCall: Promise<unknown> | null = null;
 
   private lastWeather: WeatherKind | null = null;
+
+  private readonly pacer = new FramePacer();
 
   private lastStats: RenderStats = {
     frameIndex: 0,
@@ -282,6 +286,12 @@ class VistaEngineWrapper implements VistaEngine {
     }
 
     this.call(() => this.raw.setRenderQuality(quality));
+    this.setFrameRateCap(quality);
+  }
+
+  /** Called after the engine accepted the options, so the cap is valid. */
+  public setFrameRateCap(quality: RenderQualityOptions | undefined): void {
+    this.pacer.setMaxFrameRate(quality?.maxFrameRate ?? DEFAULT_MAX_FRAME_RATE);
   }
 
   public setBiomes(biomes: BiomeOptions): void {
@@ -468,8 +478,14 @@ class VistaEngineWrapper implements VistaEngine {
     }
 
     this.running = true;
-    const tick = () => {
+    this.pacer.reset();
+    const tick = (now: number) => {
       if (!this.running) {
+        return;
+      }
+
+      if (!this.pacer.shouldRender(now)) {
+        this.animationFrameId = window.requestAnimationFrame(tick);
         return;
       }
 

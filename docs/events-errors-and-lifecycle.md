@@ -101,6 +101,17 @@ the previous `RenderStats` (with the same `frameIndex`) and emits no
 `"stats"` event. The engine then draws exactly as fast as the GPU
 finishes frames, and the picture is never more than two frames behind.
 
+`start()` also caps the frame rate at `RenderQualityOptions.maxFrameRate`
+(default 60; `0` for uncapped). It renders evenly spaced animation frames,
+so a 60 cap on a 144 Hz display gives a steady 60. A steady 60 looks
+smoother than a rate that swings between 50 and 144. If you call
+`renderOnce()` from your own loop, the cap does not apply; pace it
+yourself.
+
+Animation (wind, water, clouds, weather) advances by a smoothed time
+step, so one late frame does not make the scene jump. A gap longer than
+0.2 s, such as a background tab, is treated as one normal frame.
+
 To measure the real frame rate, time the gap between `"stats"` events
 (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats)).
 

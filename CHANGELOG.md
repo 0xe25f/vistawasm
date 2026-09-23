@@ -65,16 +65,27 @@ for changed defaults.
   (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
 - **A frame profiler.** `RenderStats.gpuPassTimesMs` reports GPU time per
   pass (terrain, trees, grass, clouds, sky and fog, water, shadows, tree
-  culling, lens), and `gpuFrameTimeMs` their sum, from timestamp queries
-  read back without stalling. The demo lists them in its stats panel.
-- **Distances, like a game's video settings.**
+  culling, upscale and lens), and `gpuFrameTimeMs` their sum, from
+  timestamp queries read back without stalling. The demo lists them in its stats panel.
+- **Render, detail, and cloud distances.**
   `RenderQualityOptions.renderDistanceMetres` (terrain, trees, and water
   beyond it are not shaded, hidden by distance fog over
   `renderFadeMetres`),
   `detailDistanceMetres` (distant terrain takes one texture sample per
   material instead of up to eight), and `cloudDistanceMetres` (how far
-  clouds are marched, thinning out over `cloudFadeMetres`). `preset` now fills in whichever are unset, and the
-  demo has a control for each.
+  clouds are marched, thinning out over `cloudFadeMetres`). `preset` now
+  fills in whichever are unset, and the demo has a control for each.
+- **A frame-rate cap.** `RenderQualityOptions.maxFrameRate` (default 60,
+  `0` for uncapped) renders evenly spaced frames, so a 60 cap on a 120 or
+  144 Hz display gives a steady 60 rather than a rate that swings with the
+  scene.
+- **Dynamic resolution.** `renderScale` renders the scene below the canvas
+  resolution, and `dynamicResolution` (on by default, down to
+  `minRenderScale`, default 0.5) lowers it when frames arrive late and
+  raises it when there is time to spare, to hold the frame rate. A final
+  pass upscales with contrast-adaptive sharpening.
+  `RenderStats.renderScale` reports the scale in use; the demo has
+  controls and shows it.
 - `CloudsOptions.temporal`: reuse distant clouds between frames. A
   quarter-size pass marches one sky pixel of every 2 x 2 block, a different
   one each frame, and the rest are reprojected from the previous frame,
@@ -116,7 +127,11 @@ for changed defaults.
 - Water extends to the horizon instead of stopping at the terrain edge.
 - Animation uses a real-time clock instead of a frame counter, and wind
   drift is integrated over time, so changing the wind never makes clouds,
-  mist, or currents jump.
+  mist, or currents jump. The time step is smoothed, and a pause longer
+  than 0.2 s (a background tab) no longer jumps the scene forward.
+- Overcast, rain, and storm skies march cloud lighting with 3 samples
+  instead of 5, and sky lighting skips a second sky evaluation that did
+  not change the result.
 - `setWater`, `setFlora`, `setGrass`, `setClouds`, `setMist`, and every
   new setter validate their input at the JavaScript boundary.
 - Smaller, faster builds: release builds use link-time optimisation, one

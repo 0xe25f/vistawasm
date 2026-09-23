@@ -315,6 +315,10 @@ Passed to `engine.setSurface()`. Every field is optional.
 | `detailDistanceMetres` | `number?` | from `preset` | At least `100`. Past it, terrain takes one far-scale texture sample per material instead of up to eight. |
 | `cloudDistanceMetres` | `number?` | from `preset` | At least `100`. Clouds and rain curtains are raymarched only this far. |
 | `cloudFadeMetres` | `number?` | 30 % of the cloud distance | `0` or more, capped at the cloud distance. Length of the band before the cloud distance over which clouds thin out. |
+| `maxFrameRate` | `number?` | `60` | `0` or more. Frame-rate cap for `start()`, with evenly spaced frames. `0` renders on every animation frame. |
+| `renderScale` | `number?` | `1` | `0.25` to `1`. Fraction of the canvas resolution the scene is rendered at; a final pass upscales and sharpens it. The highest scale dynamic resolution uses. |
+| `dynamicResolution` | `boolean?` | `true` | Lower the render scale when frames arrive late, and raise it when there is time to spare, to hold `maxFrameRate` (or 60 when uncapped). |
+| `minRenderScale` | `number?` | `0.5` | `0.25` to `1`. Lowest scale dynamic resolution may use; capped at `renderScale`. |
 
 ## `DebugView`
 
@@ -453,7 +457,8 @@ These are never passed *in* — the engine returns them.
 | `clipmapLevels` | `number` | Number of exponential LOD bands the terrain mesh's half-span currently spans. |
 | `activeGpuMemoryBytes` | `number \| null` | Not currently populated. |
 | `weather` | `WeatherKind \| null` | The dominant weather, or `null` when the weather system is off. |
-| `gpuPassTimesMs` | `GpuPassTimes \| null` | GPU milliseconds per pass (`terrain`, `trees`, `grass`, `clouds`, `skyAndFog`, `water`, `shadows`, `treeCulling`, `lens`), when the browser supports timestamp queries. A few frames behind. |
+| `renderScale` | `number` | Fraction of the canvas resolution the scene was rendered at. |
+| `gpuPassTimesMs` | `GpuPassTimes \| null` | GPU milliseconds per pass (`terrain`, `trees`, `grass`, `clouds`, `skyAndFog`, `water`, `shadows`, `treeCulling`, `present`), when the browser supports timestamp queries. A few frames behind. |
 
 See [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)
 for how to use these for a performance HUD.
