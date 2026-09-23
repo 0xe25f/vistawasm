@@ -69,10 +69,9 @@ for every field.
 
 The same `seed` and options **always** produce the same heights, on both
 native and `wasm32` builds — this is verified by the engine's own test
-suite (`crates/vista_wasm/tests/deterministic_terrain.rs`). `seed` also
-offsets flora/grass/cloud/mist placement (via each system's own
-`seedOffset` field), so a saved seed reproduces the whole scene, not just
-the terrain shape.
+suite (`crates/vista_wasm/tests/deterministic_terrain.rs`). `seed` shapes
+the terrain only. Flora, grass, clouds, mist, biomes, and weather each have
+their own `seedOffset`; save those as well to reproduce a whole scene.
 
 ### Erosion
 
@@ -90,10 +89,19 @@ pixel-identical output between a browser run and a native/test run when
 erosion is enabled (undisturbed noise-only generation *is* bit-identical
 across both).
 
-`ErosionOptions.quality` caps the total iteration budget regardless of the
-requested `hydraulicIterations`/`thermalIterations` — `"preview"` keeps a
-UI responsive while scrubbing sliders, `"offline"` allows the full
-requested count for a final export.
+`ErosionOptions.quality` caps `hydraulicIterations` and
+`thermalIterations`, each on its own, whatever you request:
+
+| `quality` | Cap per pass |
+| --- | --- |
+| `"preview"` (default) | 16 |
+| `"balanced"` | 64 |
+| `"high"` | 160 |
+| `"offline"` | 320 |
+
+Use `"preview"` to keep a UI responsive while sliders move, and a higher
+tier for the final terrain. `RenderQualityOptions.preset` does not affect
+erosion.
 
 ## DEM import (GeoTIFF)
 
@@ -132,9 +140,10 @@ format:
 - **One sample per pixel only.** Multi-band GeoTIFFs (e.g. RGB plus a
   separate elevation band) are rejected — extract the elevation band to
   its own single-band file first.
-- **Strip-based storage** (not tiled). Most DEM exports use strips by
+- **Strip-based storage** (not tiled). A tiled file has no strip tags, so
+  it fails with `DEM_METADATA_MISSING`. Most DEM exports use strips by
   default; re-export without tiling if needed.
-- 16-bit integer (signed or unsigned) or 32-bit float samples.
+- 16-bit or 32-bit integer (signed or unsigned), or 32-bit float samples.
 - Reads `ModelPixelScaleTag` and `ModelTiepointTag` for geospatial scale,
   `GeoKeyDirectoryTag` presence (recorded, not fully interpreted — see
   `GeospatialMetadata.projectionName`), and GDAL's non-standard no-data tag

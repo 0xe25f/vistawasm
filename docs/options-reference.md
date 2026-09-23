@@ -102,7 +102,7 @@ projector model and the bundled fly-camera controller.
 | --- | --- | --- | --- |
 | `rayleighStrength` | `number` | `1.0` | Sky gradient saturation. |
 | `mieStrength` | `number` | `0.45` | Sun glare/haze size. |
-| `hazeDistanceMetres` | `number` | `60000` | Uniform, distance-only blend to sky colour. Must be `> 0`. See the haze-vs-mist distinction in [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md). |
+| `hazeDistanceMetres` | `number` | `60000` | Distance haze (aerial perspective), thinning gently with altitude. Must be `> 0`. See the haze-vs-mist distinction in [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md). |
 | `exposure` | `number` | `1.1` | Overall brightness multiplier. Must be `> 0`. |
 | `skyTint` | `[number, number, number]` | `[1, 1, 1]` | RGB multiplier applied to the whole sky/haze/cloud result. |
 
@@ -304,7 +304,7 @@ Passed to `engine.setSurface()`. Every field is optional.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `preset` | `"preview" \| "balanced" \| "high" \| "offline"` | `"balanced"` | Caps erosion iteration budget (see [`docs/terrain-data.md`](terrain-data.md#erosion)); does **not** automatically change `treeQuality`/`GrassOptions`/`CloudsOptions`/`MistOptions` defaults — those are set independently per feature. |
+| `preset` | `"preview" \| "balanced" \| "high" \| "offline"` | `"balanced"` | Accepted and stored, but **has no effect** in this release. The erosion cap is `ErosionOptions.quality`. |
 | `maxClipmapLevels` | `number?` | `7` | Theoretical LOD-level budget used only by native/test builds without a GPU; browser builds report the real uploaded mesh's stats regardless of this value (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)). |
 | `floraDensityScale` | `number?` | `1.0` | Global multiplier applied on top of both `FloraOptions.density` and `GrassOptions.density`. The cheapest performance lever for vegetation-heavy scenes. |
 
@@ -322,7 +322,7 @@ Passed to `engine.generateFractal(options)`.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `seed` | `number \| bigint` | — (required) | Deterministic seed for terrain, erosion, and flora/grass/cloud/mist placement offsets. |
+| `seed` | `number \| bigint` | — (required) | Deterministic seed for the terrain. Flora, grass, clouds, mist, biomes, and weather have their own `seedOffset`. |
 | `size` | `512 \| 1024 \| 2048 \| 4096 \| 8192 \| number` | — (required) | Square terrain side length in samples. |
 | `horizontalScaleMetres` | `number` | — (required) | Metres between adjacent samples. |
 | `verticalScale` | `number` | — (required) | Height multiplier applied to the generated `[-1, 1]` noise field. |
@@ -360,7 +360,7 @@ Passing `erosion` at all enables erosion; omit it entirely to skip erosion.
 | `evaporation` | `number?` | `0.5` | Hydraulic water loss rate. |
 | `sedimentCapacity` | `number?` | `0.04` | Hydraulic transport capacity. |
 | `talusAngleDegrees` | `number?` | `35` | Slope angle above which thermal erosion moves material. |
-| `quality` | `"preview" \| "balanced" \| "high" \| "offline"?` | `"preview"` | Caps total iteration budget regardless of the requested counts. |
+| `quality` | `"preview" \| "balanced" \| "high" \| "offline"?` | `"preview"` | Caps each pass's iterations at 16, 64, 160, or 320, whatever the requested counts. |
 
 Erosion runs as GPU compute passes on browser builds (CPU fallback on any
 GPU error); native/test builds always use the CPU path — see
@@ -437,7 +437,7 @@ These are never passed *in* — the engine returns them.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `frameIndex` | `number` | Monotonic. |
-| `frameTimeMs` | `number` | CPU-measured wall time for the frame, set by the JS wrapper. |
+| `frameTimeMs` | `number` | CPU time to record and submit the frame, measured by the JS wrapper. Does not include GPU time; see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats). |
 | `gpuFrameTimeMs` | `number \| null` | Not currently populated by any backend. |
 | `terrainTriangles` | `number` | Real uploaded mesh triangle count on browser builds; a theoretical estimate on native/test builds. |
 | `floraInstances` | `number` | |

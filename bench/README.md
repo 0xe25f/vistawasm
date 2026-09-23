@@ -86,8 +86,8 @@ What this shows:
 Frame rate. Rendering speed depends on the GPU, and the three libraries draw
 very different scenes (VistaWASM draws water, vegetation, volumetric clouds,
 and shadows; the others draw a lit terrain), so a frame-rate race would not
-be a fair comparison. The machine used here also has no hardware GPU. Use
-`RenderStats.frameTimeMs` in your own scene instead; see
+be a fair comparison. The machine used here also has no hardware GPU.
+Measure the time between frames in your own scene instead; see
 [`docs/render-quality-and-diagnostics.md`](../docs/render-quality-and-diagnostics.md).
 
 ## Features at a glance
@@ -98,7 +98,7 @@ From each project's published README and source, as of the versions above.
 | --- | --- | --- | --- |
 | Graphics API | WebGPU | WebGL (three.js) | WebGL (three.js) |
 | Browser reach | WebGPU browsers only | WebGL 2 browsers (three.js 0.186) | WebGL browsers (three.js 0.133) |
-| Works inside an existing three.js scene | No, it owns its canvas | Yes | Yes |
+| Works inside an existing three.js scene | As an overlay on its own canvas, or as exported terrain ([guide](../docs/threejs.md)) | Yes | Yes |
 | Procedural generation | Fractal noise with shaping and GPU erosion | Many generators (Diamond-Square, Perlin, Simplex, Worley, and more) and filters | No; supply a heightmap image or function |
 | Real-world elevation data | GeoTIFF DEMs and raw heightmaps | Heightmap images | Heightmap images |
 | Texturing | Procedural, biome-driven materials | Height- and slope-blended textures you supply | Colour map image or height colour bands |

@@ -84,7 +84,8 @@ fails — wrap it in a `try`/`catch` in real code (see
 the full error code reference).
 
 You can pass initial `camera`, `sun`, `atmosphere`, `water`, `flora`,
-`grass`, `clouds`, `mist`, and `quality` options here too, instead of
+`grass`, `clouds`, `mist`, `quality`, `biomes`, `weather`, `shadows`, and
+`surface` options here too, instead of
 calling the matching `set*()` method immediately afterwards — see
 [`docs/options-reference.md`](options-reference.md).
 
@@ -107,8 +108,11 @@ const handle = await engine.generateFractal({
 console.log(handle.metadata.minHeightMetres, handle.metadata.maxHeightMetres);
 ```
 
-`generateFractal()` is async — it can take from a few milliseconds to a few
-hundred, depending on `size` and whether erosion is requested. It returns a
+`generateFractal()` is async. It takes from tens of milliseconds for a
+small terrain to much longer for a large one with erosion. While it runs,
+`set*()` calls are skipped (see
+[Reentrancy](events-errors-and-lifecycle.md#reentrancy)), so await it
+before configuring the scene. It returns a
 `TerrainHandle` with `metadata` describing the real height range, sea level,
 and sample spacing of what was generated, which you will need for camera
 placement, sea level tuning, and gameplay height queries.
@@ -119,14 +123,22 @@ To load a real-world elevation model instead of generating one, see
 ## 5. Place a camera and start rendering
 
 ```ts
+// Look across the terrain from above its highest peak, near one edge.
+const { maxHeightMetres, width, metresPerSample } = handle.metadata;
+const start: [number, number, number] = [0, maxHeightMetres + 400, (width - 1) * metresPerSample * 0.45];
+
 engine.setCamera({
-  position: [0, 400, 900],
-  target: [0, 0, 0],
+  position: start,
+  target: [0, maxHeightMetres * 0.3, 0],
   fieldOfViewDegrees: 55
 });
 
 engine.start();
 ```
+
+Heights depend on the seed and options (fractal terrain spans up to about
+±900 m × `verticalScale`), so place the camera from `handle.metadata`
+rather than fixed numbers, which can end up inside a hill.
 
 `engine.start()` runs VistaWASM's own `requestAnimationFrame` loop. If you'd
 rather drive rendering from your own game loop, call `engine.renderOnce()`
@@ -139,7 +151,9 @@ controller:
 import { attachFlyCameraControls } from "@vista-wasm/vista-wasm";
 
 const controls = attachFlyCameraControls(engine, canvas, {
-  initialPosition: [0, 400, 900]
+  initialPosition: start,
+  initialYawDegrees: 180, // face −z, towards the centre
+  initialPitchDegrees: -15
 });
 ```
 
@@ -215,7 +229,7 @@ React, Vue, and Svelte components.
 - [`docs/camera-and-controls.md`](camera-and-controls.md) — camera model
   and the bundled fly-camera controller.
 - [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md) —
-  quality presets, render statistics, and debug overlays.
+  quality settings, render statistics, and debug overlays.
 - [`docs/export-and-snapshots.md`](export-and-snapshots.md) — heightmap,
   PNG, OBJ, and screenshot export helpers.
 - [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md) —

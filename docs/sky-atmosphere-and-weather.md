@@ -15,8 +15,8 @@ For the exact field list of every option mentioned here, see
 
 The sun is a single directional light. Its colour comes from the
 atmosphere model (white at midday, golden and red near the horizon);
-surfaces also receive hemispherical sky light, and clouds cast moving
-shadows. There is no terrain self-shadowing pass. Three controls:
+surfaces also receive hemispherical sky light. Hills, trees, and clouds
+cast sun shadows (see [`docs/shadows.md`](shadows.md)). Three controls:
 
 - `azimuthDegrees` — compass direction the light comes from.
 - `elevationDegrees` — angle above the horizon. Low values (below ~10°)
@@ -155,28 +155,34 @@ look while water is enabled.
 
 ## Putting it together: a few starting points
 
+`setAtmosphere()`, `setClouds()`, and `setMist()` replace the whole
+object, so every required field is listed.
+
 **Clear midday**
+
 ```ts
-sun: { azimuthDegrees: 140, elevationDegrees: 55, intensity: 1.2 },
-atmosphere: { rayleighStrength: 1, mieStrength: 0.4, hazeDistanceMetres: 80000, exposure: 1.1, skyTint: [1, 1, 1] },
-clouds: { style: "painted", coverage: 0.3 },
-mist: { style: "off" }
+engine.setSun({ azimuthDegrees: 140, elevationDegrees: 55, intensity: 1.2 });
+engine.setAtmosphere({ rayleighStrength: 1, mieStrength: 0.4, hazeDistanceMetres: 80000, exposure: 1.1, skyTint: [1, 1, 1] });
+engine.setClouds({ style: "painted", coverage: 0.3, speed: 1, heightMetres: 1800, colour: [1, 1, 1], seedOffset: 9007 });
+engine.setMist({ style: "off", density: 0, baseHeightMetres: 40, heightFalloffMetres: 120, colour: [0.82, 0.85, 0.88], riseAboveWater: false, seedOffset: 5303 });
 ```
 
 **Foggy valley morning**
+
 ```ts
-sun: { azimuthDegrees: 100, elevationDegrees: 12, intensity: 1.0 },
-atmosphere: { hazeDistanceMetres: 20000, exposure: 0.95, skyTint: [0.95, 0.92, 0.88] },
-clouds: { style: "painted", coverage: 0.55 },
-mist: { style: "volumetric", density: 0.7, baseHeightMetres: 20, heightFalloffMetres: 90, riseAboveWater: true, windSpeedMetresPerSecond: 1.5 }
+engine.setSun({ azimuthDegrees: 100, elevationDegrees: 12, intensity: 1 });
+engine.setAtmosphere({ rayleighStrength: 1, mieStrength: 0.45, hazeDistanceMetres: 20000, exposure: 0.95, skyTint: [0.95, 0.92, 0.88] });
+engine.setClouds({ style: "painted", coverage: 0.55, speed: 1, heightMetres: 1800, colour: [1, 1, 1], seedOffset: 9007 });
+engine.setMist({ style: "volumetric", density: 0.7, baseHeightMetres: 20, heightFalloffMetres: 90, colour: [0.82, 0.85, 0.88], riseAboveWater: true, seedOffset: 5303, windSpeedMetresPerSecond: 1.5 });
 ```
 
 **Dramatic overcast, hyper-realistic**
+
 ```ts
-sun: { azimuthDegrees: 220, elevationDegrees: 25, intensity: 0.9 },
-atmosphere: { mieStrength: 0.6, exposure: 1.0 },
-clouds: { style: "volumetric", coverage: 0.8, raymarchSteps: 48, thicknessMetres: 2500, density: 0.9, speed: 2 },
-mist: { style: "flat", density: 0.2, baseHeightMetres: 0, heightFalloffMetres: 200, riseAboveWater: false }
+engine.setSun({ azimuthDegrees: 220, elevationDegrees: 25, intensity: 0.9 });
+engine.setAtmosphere({ rayleighStrength: 1, mieStrength: 0.6, hazeDistanceMetres: 60000, exposure: 1, skyTint: [1, 1, 1] });
+engine.setClouds({ style: "volumetric", coverage: 0.8, speed: 2, heightMetres: 1800, colour: [1, 1, 1], seedOffset: 9007, raymarchSteps: 48, thicknessMetres: 2500, density: 0.9, stratiform: 0.6, baseDarkness: 0.5 });
+engine.setMist({ style: "flat", density: 0.2, baseHeightMetres: 0, heightFalloffMetres: 200, colour: [0.82, 0.85, 0.88], riseAboveWater: false, seedOffset: 5303 });
 ```
 
 See [`docs/world-design-guide.md`](world-design-guide.md#5-sea-level-atmosphere-and-mood)

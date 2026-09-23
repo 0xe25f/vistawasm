@@ -7,15 +7,8 @@ tuning what it renders: `RenderQualityOptions`, `RenderStats`, and
 ## Render quality presets (`RenderQualityOptions`)
 
 See [`docs/options-reference.md`](options-reference.md#renderqualityoptions)
-for the exact field list. The one field with real, direct effect today is
-`preset`, which caps the total erosion iteration budget requested by
-`ErosionOptions` regardless of what a caller asks for — `"preview"` keeps a
-UI responsive while a user drags sliders, `"balanced"` is a reasonable
-default for normal play, `"high"`/`"offline"` allow the full requested
-iteration count for a final export or screenshot. See
-[`docs/terrain-data.md`](terrain-data.md#erosion) for the exact caps.
-
-`floraDensityScale` is a global multiplier applied to both
+for the exact field list. The one field with a real effect today is
+`floraDensityScale`, a global multiplier applied to both
 `FloraOptions.density` and `GrassOptions.density` — the cheapest lever if
 vegetation fill-rate is your bottleneck (see
 [`docs/vegetation.md`](vegetation.md#performance)).
@@ -26,9 +19,12 @@ estimate; browser builds report the real uploaded mesh's stats regardless
 of this value (the terrain mesh's actual vertex budget is fixed — see
 [`docs/architecture.md`](architecture.md#terrain-rendering-and-level-of-detail)).
 
-`preset` does **not** automatically change `FloraOptions.treeQuality`,
-`GrassOptions`, `CloudsOptions.style`, or `MistOptions.style` — those
-default independently and a host sets each explicitly. The most effective
+`preset` is accepted and stored but has **no effect** in this release. It
+does not change `FloraOptions.treeQuality`, `GrassOptions`,
+`CloudsOptions.style`, or `MistOptions.style`, and it does not limit
+erosion: the erosion iteration cap is `ErosionOptions.quality` (see
+[`docs/terrain-data.md`](terrain-data.md#erosion)). Set each feature
+yourself. The most effective
 per-feature levers are `CloudsOptions.raymarchSteps` (or `style:
 "painted"`), `CloudsOptions.resolutionScale` (clouds render at half
 resolution by default; `0.25` is cheaper still),
@@ -47,8 +43,12 @@ Returned by `engine.renderOnce()` and emitted on every rendered frame via
 the `"stats"` event:
 
 ```ts
+let lastFrameAt = performance.now();
+
 engine.on("stats", (stats) => {
-  const fps = stats.frameTimeMs > 0 ? Math.round(1000 / stats.frameTimeMs) : 0;
+  const now = performance.now();
+  const fps = Math.round(1000 / Math.max(1, now - lastFrameAt));
+  lastFrameAt = now;
   updateHud({ fps, ...stats });
 });
 ```
@@ -56,9 +56,13 @@ engine.on("stats", (stats) => {
 See [`docs/options-reference.md`](options-reference.md#renderstats-from-enginerenderonce-and-the-stats-event)
 for the exact field list. Two fields are always `null` today regardless of
 platform: `gpuFrameTimeMs` and `activeGpuMemoryBytes` — the type reserves
-space for them, but no current backend populates either. Use
-`frameTimeMs` (measured by the JavaScript wrapper around the call into the
-WASM module) for real performance measurement instead.
+space for them, but no current backend populates either.
+
+`frameTimeMs` is the CPU time the JavaScript wrapper measures around the
+call into the WASM module: the time to record and submit the frame. The
+GPU runs that work afterwards, so a GPU-bound scene can drop frames while
+`frameTimeMs` stays small. To measure the real frame rate, time the gap
+between `"stats"` events with `performance.now()`, as below.
 
 `weather` holds the dominant weather state while the weather system is
 on, and `null` otherwise; the `"weatherChanged"` event fires when it
@@ -94,19 +98,19 @@ modes replace the terrain's textured shading with a flat-lit overlay:
 Combine `RenderStats` with the levers above for an adaptive-quality loop:
 
 ```ts
-let lowFrameTimeStreak = 0;
+let lastFrameAt = performance.now();
+let slowFrameStreak = 0;
 
-engine.on("stats", (stats) => {
-  if (stats.frameTimeMs > 20) {
-    lowFrameTimeStreak += 1;
-  } else {
-    lowFrameTimeStreak = 0;
-  }
+engine.on("stats", () => {
+  const now = performance.now();
+  const frameIntervalMs = now - lastFrameAt;
+  lastFrameAt = now;
+  slowFrameStreak = frameIntervalMs > 20 ? slowFrameStreak + 1 : 0;
 
-  if (lowFrameTimeStreak > 120) {
-    // Roughly two seconds of a real terrain frame budget breach at ~60 FPS.
+  if (slowFrameStreak > 100) {
+    // About two seconds below 50 FPS.
     engine.setRenderQuality({ preset: "balanced", floraDensityScale: 0.5 });
-    lowFrameTimeStreak = 0;
+    slowFrameStreak = 0;
   }
 });
 ```

@@ -30,7 +30,8 @@ Both libraries use the same conventions, so values carry over directly:
   `readHeightmapFloats()`.
 - **Camera:** `fieldOfViewDegrees` is the vertical field of view, like
   `PerspectiveCamera.fov`. Near and far default to `0.5` and `120000`
-  metres. VistaWASM's camera has no roll unless you set `rollDegrees`.
+  metres. VistaWASM's camera never rolls: it always uses world +Y as up,
+  as `Object3D.lookAt()` does, and `rollDegrees` is not applied yet.
 - **Sun:** VistaWASM's sun direction, for a three.js `DirectionalLight`, is:
 
 ```ts

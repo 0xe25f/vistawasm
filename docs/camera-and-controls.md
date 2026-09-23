@@ -63,7 +63,8 @@ controls.dispose();
 ### Controls
 
 - Drag with the primary (left) pointer button to look around.
-- `W`/`A`/`S`/`D` or arrow keys to move.
+- `W`/`A`/`S`/`D` to move, or `↑`/`↓` to move forwards and backwards.
+- `←`/`→` to turn.
 - `Space`/`E` to rise, `Shift`/`Q` to descend.
 - Hold the middle mouse button and drag up or down to rise or descend.
 - Scroll wheel to zoom in/out by adjusting the field of view (not by moving
@@ -88,11 +89,8 @@ controller while a settings panel is focused.
 | `zoomSensitivity` | `0.05` | Degrees of field of view per scroll wheel unit. |
 | `verticalPanSensitivity` | `1.5` | Metres per pixel while middle-dragging. |
 | `lookSensitivity` | `0.12` | Degrees per pixel while primary-dragging. |
-| `keyboardLookDegreesPerSecond` | `90` | Look speed when using arrow-key look (if you wire that up yourself; the default binding uses arrows for movement — see below). |
-| `onCameraChange` | none | Called every time the controller applies a new camera — use this instead of polling `getCamera()` to drive a minimap marker or HUD compass. |
-
-Arrow keys move the camera (mapped alongside WASD) rather than looking
-around by default; only pointer drag looks around out of the box.
+| `keyboardLookDegreesPerSecond` | `90` | Turning speed for the `←` and `→` keys. |
+| `onCameraChange` | none | Called with the new camera on every animation frame while the controller is attached, whether or not it moved. Use it to keep a minimap marker, a HUD compass, or another renderer's camera in step. |
 
 The returned `FlyCameraControls` handle exposes `getCamera()`,
 `getMoveSpeed()`, `getFieldOfView()`, `setPosition(position)` (teleport

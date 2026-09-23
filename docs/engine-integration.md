@@ -188,7 +188,7 @@ in this section.
 | Browser support | Requires WebGPU | Works anywhere your chosen engine works (including WebGL2/mobile) |
 | Runtime cost | One extra WebGPU context/canvas | None beyond your engine's own terrain rendering |
 | Terrain updates | Live — regenerate any time, renders immediately | Re-export and re-build your engine's mesh/collider on every change |
-| Depth-correct compositing with other 3D objects | No (separate canvases, see note above) | Yes — it's all one scene in your engine |
+| Depth-correct compositing with other 3D objects | Terrain only, with a depth-only occluder; trees and water do not hide objects (see [`docs/threejs.md`](threejs.md#let-hills-hide-your-objects)) | Yes — it's all one scene in your engine |
 | Best for | Exploration/flight/environment-forward games where VistaWASM's own look is the point | Games that need a specific existing rendering pipeline, WebGL fallback, or want terrain as just one asset among many in an existing engine |
 
 Most projects that reach for "integrate with a web game engine" want

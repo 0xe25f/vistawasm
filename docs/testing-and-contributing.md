@@ -90,7 +90,7 @@ regression this repository has hit once already).
 
 ### `demo/`: a plain static site, not a Vite app
 
-Unlike `examples/{vanilla,react,vue,svelte}`, `demo/` is intentionally
+Unlike `examples/`, `demo/` is intentionally
 **not** a bundled app — `demo/src/main.js` is plain JavaScript, and
 `demo/index.html` resolves `@vista-wasm/vista-wasm` via a native browser
 [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
@@ -144,6 +144,7 @@ npm run dev:vanilla  # vanilla example
 npm run dev:react
 npm run dev:vue
 npm run dev:svelte
+npm run dev:threejs   # three.js overlay example
 ```
 
 Each of these needs `npm run build` (specifically `build:wasm` +
@@ -168,7 +169,8 @@ js/
   src/           # the published TypeScript wrapper (index.ts, types.ts, ...)
   tests/         # vitest suite for js/src
 demo/            # the full-featured demo app
-examples/        # vanilla, react, vue, svelte — same feature set, different framework
+examples/        # vanilla, react, vue, svelte (same feature set), and threejs
+bench/           # size and speed comparisons, with their own package.json
 docs/            # this documentation
 ```
 
@@ -187,11 +189,12 @@ for the full current public option surface if you are adding to it.
 - **British English** in every comment, doc string, and user-facing message
   (`optimise`, `behaviour`, `colour`, `initialise`, and so on) — see
   [`AGENTS.md`](../AGENTS.md) for the full spelling list.
-- No image textures anywhere in the renderer — every visual (terrain
-  material blending, tree/grass silhouettes, clouds) is procedural,
-  computed in a shader with `discard`/noise/masks rather than sampled from
-  an image. Keep new rendering features consistent with this rather than
-  introducing the first texture asset.
+- No image files ship with the engine. Every texture (terrain materials,
+  bark and leaves, water ripples, noise) is generated on the GPU at
+  start-up, and tree models are built from code. Hosts may replace them
+  through the hooks (see [`docs/hooks.md`](hooks.md)), but keep new
+  rendering features procedural rather than adding the first bundled
+  asset.
 - Validate every new public numeric/enum option in `config.rs`, the same
   way existing ones are (`validate_finite`, `validate_positive`,
   `validate_non_negative`, `validate_range`) — JavaScript input is
@@ -222,7 +225,7 @@ current codebase touches roughly this many places, in this order:
     wrapper method, including the `pendingCall` reentrancy guard on any new
     synchronous setter (see
     [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#reentrancy)).
-7. `demo/index.html` + `demo/src/main.ts`, and the matching controls in
+7. `demo/index.html` + `demo/src/main.js`, and the matching controls in
     each of `examples/{vanilla,react,vue,svelte}` — the demo and vanilla
     example are near-duplicates by design (same DOM element IDs), so those
     two are usually a near-identical pair of edits; the framework examples

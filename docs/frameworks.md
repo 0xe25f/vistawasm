@@ -8,59 +8,91 @@ adjust the terrain options.
 Each framework also has a runnable example under `examples/` (see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md#running-the-examples)).
 
+Each component below creates the engine at the canvas's real size, keeps
+it in step with the canvas, generates a terrain, points the camera at it,
+and cleans up on unmount, including when the component unmounts before
+loading finishes. Give the canvas a size in CSS:
+
+```css
+.vista-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+```
+
 ## React
 
 ```tsx
 import { useEffect, useRef } from "react";
-import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
+import { createVistaEngine } from "@vista-wasm/vista-wasm";
 
 export function VistaPanel() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const engineRef = useRef<VistaEngine | null>(null);
 
   useEffect(() => {
-    let disposed = false;
+    const canvas = canvasRef.current;
 
-    async function run() {
-      const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
 
-      if (!canvas) {
-        return;
-      }
+    let unmounted = false;
+    let cleanup = () => {};
 
-      const engine = await createVistaEngine(canvas);
+    async function run(target: HTMLCanvasElement) {
+      const engine = await createVistaEngine(target, {
+        render: {
+          width: target.clientWidth,
+          height: target.clientHeight,
+          devicePixelRatio: window.devicePixelRatio
+        }
+      });
 
-      if (disposed) {
+      if (unmounted) {
         engine.dispose();
         return;
       }
 
-      engineRef.current = engine;
+      const observer = new ResizeObserver(() => {
+        engine.resize(target.clientWidth, target.clientHeight, window.devicePixelRatio);
+      });
+      observer.observe(target);
+      cleanup = () => {
+        observer.disconnect();
+        engine.dispose();
+      };
 
-      await engine.generateFractal({
+      const terrain = await engine.generateFractal({
         seed: 9876,
-        size: 2048,
+        size: 1024,
         horizontalScaleMetres: 12,
         verticalScale: 1.1,
-        noise: {
-          kind: "simplex",
-          octaves: 8,
-          gain: 0.5,
-          lacunarity: 2
-        }
+        noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
       });
 
+      if (unmounted) {
+        return;
+      }
+
+      const peak = terrain.metadata.maxHeightMetres;
+      engine.setCamera({
+        position: [0, peak + 400, 3000],
+        target: [0, peak * 0.4, 0],
+        fieldOfViewDegrees: 55
+      });
       engine.start();
     }
 
-    run().catch((error) => {
-      console.error(error);
+    run(canvas).catch((error: unknown) => {
+      if (!unmounted) {
+        console.error(error);
+      }
     });
 
     return () => {
-      disposed = true;
-      engineRef.current?.dispose();
-      engineRef.current = null;
+      unmounted = true;
+      cleanup();
     };
   }, []);
 
@@ -72,38 +104,70 @@ export function VistaPanel() {
 
 ```vue
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
-import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
+import { onBeforeUnmount, onMounted, ref } from "vue";
+import { createVistaEngine } from "@vista-wasm/vista-wasm";
 
 const canvas = ref<HTMLCanvasElement | null>(null);
-let engine: VistaEngine | null = null;
+let unmounted = false;
+let cleanup = () => {};
 
-onMounted(async () => {
-  if (!canvas.value) {
-    return;
-  }
-
-  engine = await createVistaEngine(canvas.value);
-
-  await engine.generateFractal({
-    seed: 2222,
-    size: 2048,
-    horizontalScaleMetres: 10,
-    verticalScale: 1,
-    noise: {
-      kind: "ridged",
-      octaves: 7,
-      gain: 0.5,
-      lacunarity: 2
+async function run(target: HTMLCanvasElement) {
+  const engine = await createVistaEngine(target, {
+    render: {
+      width: target.clientWidth,
+      height: target.clientHeight,
+      devicePixelRatio: window.devicePixelRatio
     }
   });
 
+  if (unmounted) {
+    engine.dispose();
+    return;
+  }
+
+  const observer = new ResizeObserver(() => {
+    engine.resize(target.clientWidth, target.clientHeight, window.devicePixelRatio);
+  });
+  observer.observe(target);
+  cleanup = () => {
+    observer.disconnect();
+    engine.dispose();
+  };
+
+  const terrain = await engine.generateFractal({
+    seed: 2222,
+    size: 1024,
+    horizontalScaleMetres: 10,
+    verticalScale: 1,
+    noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
+  });
+
+  if (unmounted) {
+    return;
+  }
+
+  const peak = terrain.metadata.maxHeightMetres;
+  engine.setCamera({
+    position: [0, peak + 400, 2500],
+    target: [0, peak * 0.4, 0],
+    fieldOfViewDegrees: 55
+  });
   engine.start();
+}
+
+onMounted(() => {
+  if (canvas.value) {
+    run(canvas.value).catch((error: unknown) => {
+      if (!unmounted) {
+        console.error(error);
+      }
+    });
+  }
 });
 
-onUnmounted(() => {
-  engine?.dispose();
-  engine = null;
+onBeforeUnmount(() => {
+  unmounted = true;
+  cleanup();
 });
 </script>
 
@@ -117,37 +181,71 @@ onUnmounted(() => {
 ```svelte
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
+  import { createVistaEngine } from "@vista-wasm/vista-wasm";
 
   let canvas: HTMLCanvasElement;
-  let engine: VistaEngine | null = null;
+  let unmounted = false;
+  let cleanup = () => {};
 
-  onMount(async () => {
-    engine = await createVistaEngine(canvas);
-
-    await engine.generateFractal({
-      seed: 3333,
-      size: 2048,
-      horizontalScaleMetres: 10,
-      verticalScale: 1,
-      noise: {
-        kind: "simplex",
-        octaves: 7,
-        gain: 0.5,
-        lacunarity: 2
+  async function run(target: HTMLCanvasElement) {
+    const engine = await createVistaEngine(target, {
+      render: {
+        width: target.clientWidth,
+        height: target.clientHeight,
+        devicePixelRatio: window.devicePixelRatio
       }
     });
 
+    if (unmounted) {
+      engine.dispose();
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      engine.resize(target.clientWidth, target.clientHeight, window.devicePixelRatio);
+    });
+    observer.observe(target);
+    cleanup = () => {
+      observer.disconnect();
+      engine.dispose();
+    };
+
+    const terrain = await engine.generateFractal({
+      seed: 3333,
+      size: 1024,
+      horizontalScaleMetres: 10,
+      verticalScale: 1,
+      noise: { kind: "simplex", octaves: 7, gain: 0.5, lacunarity: 2 }
+    });
+
+    if (unmounted) {
+      return;
+    }
+
+    const peak = terrain.metadata.maxHeightMetres;
+    engine.setCamera({
+      position: [0, peak + 400, 2500],
+      target: [0, peak * 0.4, 0],
+      fieldOfViewDegrees: 55
+    });
     engine.start();
+  }
+
+  onMount(() => {
+    run(canvas).catch((error: unknown) => {
+      if (!unmounted) {
+        console.error(error);
+      }
+    });
   });
 
   onDestroy(() => {
-    engine?.dispose();
-    engine = null;
+    unmounted = true;
+    cleanup();
   });
 </script>
 
-<canvas bind:this={canvas} class="vista-canvas" />
+<canvas bind:this={canvas} class="vista-canvas"></canvas>
 ```
 
 ## The pattern in any framework
@@ -157,6 +255,7 @@ onUnmounted(() => {
 3. Generate or load terrain, set the camera, and call `engine.start()`.
 4. Keep the render size in step with the canvas (see
     [`docs/getting-started.md`](getting-started.md#6-handle-resizing-and-disposal)).
-5. On unmount, call `engine.stop()` and `engine.dispose()`. `dispose()` is
-    safe to call more than once, and is safe while terrain is still
-    generating.
+5. On unmount, call `engine.dispose()`, which also stops the render loop.
+    It is safe to call more than once, and while terrain is still
+    generating: the engine finishes the in-flight call, then releases its
+    GPU resources.

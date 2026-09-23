@@ -328,7 +328,7 @@ export interface WaveOptions {
 export interface RiverOptions {
   /** Whether rivers and lakes are generated. Defaults to `true`. */
   enabled?: boolean;
-  /** Upstream catchment area, in km², before a channel becomes a river. Defaults to `1.2`. */
+  /** Upstream catchment area, in km², before a channel becomes a river. Defaults to `0.15`. */
   minCatchmentKm2?: number;
   /** Multiplier on the automatic river width. Defaults to `1`. */
   widthScale?: number;
@@ -724,8 +724,8 @@ export interface CloudsOptions {
 /**
  * Mist/ground-fog rendering fidelity.
  *
- * Distinct from `AtmosphereOptions.hazeDistanceMetres`, which is a uniform,
- * distance-only blend to sky colour. Mist is a height-based ground fog that
+ * Distinct from `AtmosphereOptions.hazeDistanceMetres`, which is distance
+ * haze that thins gently with altitude. Mist is a height-based ground fog that
  * pools in valleys and near water.
  */
 export type MistStyle = "off" | "flat" | "volumetric";

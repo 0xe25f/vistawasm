@@ -106,6 +106,16 @@ for changed defaults.
 
 ### Fixed
 
+- Documentation checked against the code. Corrected: `RenderQualityOptions.preset`
+  has no effect (the erosion cap is `ErosionOptions.quality`);
+  `RenderStats.frameTimeMs` covers CPU time only; the `"stats"` event also
+  fires for `renderOnce()` loops; the fly camera's `←`/`→` keys turn; the
+  default `RiverOptions.minCatchmentKm2` is `0.15`; `toVistaWasmError()` and
+  `assertVistaWasmSupport()` are not exported; `GPU_LIMIT_EXCEEDED` is not
+  raised. The framework components now render at the canvas size and clean
+  up when unmounted mid-load, the README and getting-started cameras no
+  longer start inside a hill, and every code example type-checks.
+
 - The `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views
   now render.
 - The sun disc no longer shines through thick cloud or an overcast sky.

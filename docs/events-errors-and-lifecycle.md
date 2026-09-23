@@ -46,7 +46,7 @@ unsubscribe();
 | `"progress"` | `{ phase: string; progress: number }` | Twice per `generateFractal()` call: `progress: 0` when it starts, `progress: 1` when it resolves. **Not** emitted by `loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap` — those only emit `"terrainLoaded"` (and `"warning"`, below). |
 | `"warning"` | `{ message: string; details?: unknown }` | Once per entry in `TerrainHandle.metadata.warnings`, after a successful `loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap`. **Not currently emitted after `generateFractal()`**, even though its returned handle has the same `warnings` field (fractal generation practically never produces warnings today). |
 | `"terrainLoaded"` | `TerrainHandle` | After every successful `generateFractal`/`loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap` call. |
-| `"stats"` | `RenderStats` | Once per frame, but **only** when the engine's own `start()` loop is driving rendering. If you call `renderOnce()` from your own loop instead (see [`docs/game-development.md`](game-development.md#1-where-vistawasm-fits-in-a-game-loop)), you already have the `RenderStats` as the method's return value and do not need this event. |
+| `"stats"` | `RenderStats` | After every rendered frame, whether `start()` or your own loop calls `renderOnce()` (see [`docs/game-development.md`](game-development.md#1-where-vistawasm-fits-in-a-game-loop)). `renderOnce()` also returns the same `RenderStats`. Not emitted while terrain is generating, when `renderOnce()` returns the previous stats without drawing. |
 | `"weatherChanged"` | `WeatherKind \| null` | When the dominant weather changes (halfway through a transition), and `null` when the weather system is switched off. Checked on every `renderOnce()`, whether called by `start()` or by you. See [`docs/weather.md`](weather.md#reading-the-weather). |
 | `"fatalError"` | `Error` (a `VistaWasmError`) | From the `start()` loop's internal catch, for any error other than a lost device. The loop stops itself before emitting this. |
 | `"deviceLost"` | `Error` (a `VistaWasmError` with code `WEBGPU_DEVICE_LOST`) | From the `start()` loop's internal catch, specifically for a lost GPU device. The loop stops itself before emitting this — VistaWASM does not attempt automatic device recreation; dispose and create a new engine. |
@@ -57,10 +57,15 @@ errors from that call directly instead — those events will not fire.
 
 ## Error codes
 
-Every thrown/rejected error is a `VistaWasmError` (`instanceof Error`, with
-a stable `.code: VistaErrorCode` and a human-readable `.message`):
+Engine errors are `VistaWasmError`s (`instanceof Error`, with a stable
+`.code: VistaErrorCode` and a human-readable `.message`). The replacement
+hooks (`setTreeModel()`, `setTreeInstances()`, `replaceTexture()`) throw a
+plain `TypeError` for arguments of the wrong type or an unknown species,
+before reaching the engine.
 
 ```ts
+import { VistaWasmError } from "@vista-wasm/vista-wasm";
+
 try {
   await engine.generateFractal(options);
 } catch (error) {
@@ -72,18 +77,18 @@ try {
 
 | Code | Typical cause |
 | --- | --- |
-| `WEBGPU_UNAVAILABLE` | The browser has no WebGPU support at all. Check with `detectVistaWasmSupport()`/`assertVistaWasmSupport()` *before* calling `createVistaEngine()` so you can show a fallback instead of a failed creation. |
+| `WEBGPU_UNAVAILABLE` | The browser has no WebGPU support at all. Check with `detectVistaWasmSupport()` *before* calling `createVistaEngine()` so you can show a fallback instead of a failed creation. |
 | `WEBGPU_DEVICE_REQUEST_FAILED` | WebGPU exists but the browser refused to grant a device (e.g. GPU driver blocklisting). |
 | `WEBGPU_DEVICE_LOST` | The active device was lost after startup (driver reset, tab discarded/restored, GPU switch). Only ever surfaced via the `"deviceLost"` event from the `start()` loop, or as a thrown error from your own `renderOnce()` call if you drive rendering yourself. |
 | `CANVAS_INVALID` | The supplied canvas is missing, not an `HTMLCanvasElement`, or its WebGPU surface configuration failed. |
 | `OPTIONS_INVALID` | A public option failed validation (see [`docs/options-reference.md`](options-reference.md) for every field's constraints) — this is a caller bug, not a transient failure; fix the offending value rather than retrying. |
-| `TERRAIN_GENERATION_FAILED` | An internal fault during fractal generation. |
+| `TERRAIN_GENERATION_FAILED` | `exportHeightmap()` was called before any terrain was generated or loaded. |
 | `DEM_FETCH_FAILED` | `loadDemFromUrl()`'s underlying `fetch()` failed or returned a non-OK status. Retryable (network issue), unlike `OPTIONS_INVALID`. |
 | `DEM_FORMAT_UNSUPPORTED` | The GeoTIFF is outside VistaWASM's supported subset (compressed, multi-band, tiled, or an otherwise unsupported format) — see [`docs/terrain-data.md`](terrain-data.md#exactly-what-is-supported). |
 | `DEM_METADATA_MISSING` | Required GeoTIFF tags were missing or contradictory. |
-| `GPU_LIMIT_EXCEEDED` | A request exceeded the active GPU's practical limits (for example, an instance count above the device's limits even after VistaWASM's own clamping). |
+| `GPU_LIMIT_EXCEEDED` | Reserved. The current release does not raise it: instance counts above the device's limits are clamped instead. |
 | `ENGINE_DISPOSED` | A call was made on an engine after `dispose()`. Guard against this in your own code if you hold a reference to the engine outside the component/module that owns its lifecycle. |
-| `INTERNAL_ERROR` | An unexpected internal fault, or any non-VistaWASM error the wrapper caught and normalised (see `toVistaWasmError()`, exported from the package root, if you need to normalise your own caught errors the same way). |
+| `INTERNAL_ERROR` | An unexpected internal fault, or any non-VistaWASM error the wrapper caught and normalised (the original error, when there is one, is kept in `.details`). |
 
 ## Reentrancy
 

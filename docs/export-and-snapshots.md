@@ -133,8 +133,8 @@ given MIME type for you), and `downloadRawHeightmap` specifically for the
 
 ## Putting it together
 
-The demo and every framework example wire up all four export buttons
-(screenshot, heightmap PNG, OBJ, raw heightmap) against a single
-`refreshExportData()` call made after every `generateFractal()`/DEM load —
-see `demo/src/main.ts` for the full wiring, including keeping a live
-minimap in sync with the current terrain.
+The demo and the vanilla, React, Vue, and Svelte examples wire up all
+four export buttons (screenshot, heightmap PNG, OBJ, raw heightmap)
+against a single `refreshExportData()` call made after every
+`generateFractal()`/DEM load — see `demo/src/main.js` for the full
+wiring, including keeping a live minimap in sync with the current terrain.

@@ -71,7 +71,7 @@ const engine = await createVistaEngine(canvas, {
   }
 });
 
-await engine.generateFractal({
+const terrain = await engine.generateFractal({
   seed: 12345,
   size: 2048,
   horizontalScaleMetres: 10,
@@ -79,9 +79,11 @@ await engine.generateFractal({
   noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
 });
 
+// Look across the terrain from above its highest peak, near one edge.
+const { maxHeightMetres, width, metresPerSample } = terrain.metadata;
 engine.setCamera({
-  position: [800, 300, 800],
-  target: [1200, 80, 1200],
+  position: [0, maxHeightMetres + 400, (width - 1) * metresPerSample * 0.45],
+  target: [0, maxHeightMetres * 0.3, 0],
   fieldOfViewDegrees: 55
 });
 

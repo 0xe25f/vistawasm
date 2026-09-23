@@ -27,7 +27,8 @@ One public `VistaEngine` owns one internal `EngineCore`.
 - Terrain data, plus cached per-sample normals and material weights (see
   [Terrain rendering and level of detail](#terrain-rendering-and-level-of-detail)).
 - Camera/projector matrices.
-- Sun, atmosphere, water, flora, grass, cloud, mist, biome, and quality controls.
+- Sun, atmosphere, water, flora, grass, cloud, mist, biome, weather,
+  shadow, surface, and quality controls.
 - The baked biome/surface map and the carved river network.
 - WebGPU context on browser builds.
 - Render statistics.
@@ -198,9 +199,12 @@ guards against this with a `pendingCall` mutex: `callAsync()` chains async
 calls sequentially (so overlapping async calls queue rather than racing),
 and every sync method that touches the raw engine (`setCamera`, `setSun`,
 `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`, `setMist`,
-`setBiomes`, `biomeAt`,
-`setRenderQuality`, `setDebugView`, `resize`) checks `pendingCall` first and
-silently no-ops while it is set, rather than throwing or queuing.
+`setWeather`, `setShadows`, `setSurface`, `setBiomes`, `setRenderQuality`,
+`setDebugView`, `resize`) checks `pendingCall` first and silently no-ops
+while it is set, rather than throwing or queuing; `biomeAt()` and
+`getWeather()` return `undefined`. The replacement hooks (`setTreeModel`,
+`setTreeInstances`, `replaceTexture`, and their resets) throw instead, so
+an asset change is never silently dropped.
 `renderOnce()` returns the last real `RenderStats` during that window
 instead of calling into the busy object. `exportHeightmap()` throws a
 clear, catchable error instead of silently reading stale/partial data.

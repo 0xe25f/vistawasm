@@ -123,9 +123,10 @@ practical approaches, depending on how much of the terrain you need
 colliders for:
 
 - **Heightfield collider (most physics engines support this natively).**
-  Export the heightmap once with `exportHeightmap()` and feed the raw
-  `Float32Array` (via `readHeightmapFloats`) directly into your physics
-  engine's heightfield/terrain collider (Rapier's `ColliderDesc.heightfield`,
+  Export the heightmap once with `exportHeightmap()`, read it with
+  `readHeightmapFloats()` (row-major, row 0 at −z), and give it to your
+  physics engine's heightfield/terrain collider, reordering it if the
+  engine expects column-major data (Rapier's `ColliderDesc.heightfield`,
   Ammo.js's `btHeightfieldTerrainShape`, Cannon-es's `Heightfield`). This
   is exact, fast, and — because it's the same data VistaWASM itself
   renders from — never drifts out of sync with what the player sees.
@@ -162,11 +163,12 @@ than a single heightmap comfortably supports:
 ## 5. Performance and async work
 
 - `generateFractal()`, `loadDemFromUrl()`, `loadDemFromArrayBuffer()`, and
-  `loadRawHeightmap()` are the only async engine calls, and they can take
-  anywhere from a few milliseconds (small terrain, no erosion) to hundreds
-  of milliseconds (large terrain with many erosion iterations). Always show
-  loading UI driven by the `"progress"` event while one is in flight, and
-  disable "Generate" buttons/inputs until it resolves.
+  `loadRawHeightmap()` are the only async engine calls. They take from
+  tens of milliseconds for a small terrain to much longer for a large one
+  with many erosion iterations. Show loading UI while the returned promise
+  is pending, and disable "Generate" buttons/inputs until it settles. (The
+  `"progress"` event only reports the start and end of `generateFractal()`,
+  so it cannot drive a progress bar.)
 - While an async call is in flight, sync setters (`setCamera`, `setSun`,
   `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`,
   `setMist`, `setWeather`, `setShadows`, `setSurface`, `setBiomes`,
@@ -177,10 +179,9 @@ than a single heightmap comfortably supports:
   and means your camera controller can keep calling `setCamera()` every frame without any
   special-casing around terrain generation. `renderOnce()` keeps returning
   the last real `RenderStats` during this window rather than blocking.
-- Use `RenderQualityOptions` to trade quality for frame time: `preset:
-  "preview"` for fast iteration (level editors, seed browsing), `"balanced"`
-  for normal play, `"high"`/`"offline"` for screenshots or offline renders.
-  `floraDensityScale` is the cheapest lever if flora/grass billboard
+- Trade quality for frame time feature by feature (`RenderQualityOptions.preset`
+  has no effect in this release).
+  `RenderQualityOptions.floraDensityScale` is the cheapest lever if flora/grass billboard
   fill-rate is your bottleneck — it scales both `FloraOptions.density` and
   `GrassOptions.density` together. `CloudsOptions.style: "volumetric"` and
   `MistOptions.style: "volumetric"` are the next things to turn off or
@@ -196,11 +197,12 @@ than a single heightmap comfortably supports:
   wetness, and wind every frame, and `"weatherChanged"` fires on each
   change, so gameplay (slippery roads, sound, NPC shelter) can follow the
   sky (see [`docs/weather.md`](weather.md)).
-- Watch `RenderStats.frameTimeMs` and
-  `terrainTriangles`/`floraInstances`/`grassInstances` from the `"stats"`
-  event to build your own performance HUD or adaptive quality logic (for
-  example, drop `floraDensityScale` if `frameTimeMs` stays above your
-  budget for a few seconds).
+- Time the gap between `"stats"` events, and watch
+  `terrainTriangles`/`floraInstances`/`grassInstances`, to build your own
+  performance HUD or adaptive quality logic (for example, drop
+  `floraDensityScale` if frames stay slow for a few seconds).
+  `RenderStats.frameTimeMs` only covers the CPU side of a frame; see
+  [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats).
 
 ## 6. Error handling in a shipped game
 

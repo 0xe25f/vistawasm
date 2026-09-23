@@ -68,7 +68,7 @@ on the terrain's own centre:
 
 - **`island`** — radial falloff toward the edges. `0.3` gives a soft
   coastline fade; `0.8`+ gives a hard island silhouette with flat ocean at
-  the edges. Combine with `Water.enabled` and a `seaLevelMetres` above the
+  the edges. Combine with `WaterOptions.enabled` and a `seaLevelMetres` above the
   lowest heights to actually see the coastline.
 - **`terrace`** — quantises height into flat steps. Small values (`0.05`)
   give subtle rock-strata banding on slopes; large values (`0.3`+) give
@@ -122,7 +122,7 @@ regeneration on every input change cheap.
 
 ## 5. Sea level, atmosphere, and mood
 
-- Set `waterOptions.seaLevelMetres` relative to the generated heightmap's
+- Set `WaterOptions.seaLevelMetres` relative to the generated heightmap's
   `minHeightMetres`/`meanHeightMetres` (from `TerrainMetadata`, returned by
   every generate/load call) rather than a hardcoded constant — the same sea
   level constant will flood a `verticalScale: 2` mountain range and look
@@ -140,9 +140,9 @@ regeneration on every input change cheap.
   (good for a dusty/humid look), higher `rayleighStrength` gives a more
   saturated blue-to-horizon gradient.
 - **Haze vs. mist** — these are two independent controls, easy to confuse.
-  `AtmosphereOptions.hazeDistanceMetres` is a uniform, distance-only blend
-  to sky colour: it does not care about height, so it fades a mountain
-  peak and the valley beneath it equally at the same distance.
+  `AtmosphereOptions.hazeDistanceMetres` sets distance haze (aerial
+  perspective). It thins gently with altitude (a 1.2 km scale height), so
+  it reads as distance, not as a fog layer.
   `MistOptions` is a height-based ground fog: it pools near
   `baseHeightMetres` and thins out over `heightFalloffMetres`, so a
   mountain peak can stand clear above a misty valley even at the same
@@ -206,56 +206,86 @@ naturally avoids rock, snow, mud, and underwater terrain without any
 extra tuning) and fades out smoothly over the last portion of
 `viewDistanceMetres` rather than popping — grass is not expected to
 render all the way to the terrain's horizon the way trees do. `style:
-"dense-blades"` raises instance density and is intended to be paired with
-a shorter `viewDistanceMetres`, since grass is small on screen at range
-and hyper-realistic density is best spent where it is actually visible.
+"dense-blades"` currently draws the same tufts as `"billboard-blades"`;
+for thicker grass, raise `density` and shorten `viewDistanceMetres`, since
+grass is small on screen at range and density is best spent where it is
+actually visible.
 
 ## 7. Recipes
 
-Concrete starting points — copy, then adjust to taste. All assume
-`Water.enabled: true` and reasonable defaults for anything not listed.
+Concrete starting points — copy, then adjust to taste. Each is a complete
+`generateFractal()` call; pick your own `seed`, `size`, and
+`horizontalScaleMetres`. Water is on by default, so set
+`WaterOptions.seaLevelMetres` from the returned metadata (see
+[section 5](#5-sea-level-atmosphere-and-mood)).
 
 **Alpine valley**
+
 ```ts
-noise: { kind: "ridged", octaves: 8, gain: 0.5, lacunarity: 2.1 },
-shape: { terrace: 0.05 },
-erosion: { hydraulicIterations: 40, thermalIterations: 15, talusAngleDegrees: 35 },
-verticalScale: 1.4
+await engine.generateFractal({
+  seed: 1, size: 1024, horizontalScaleMetres: 10, verticalScale: 1.4,
+  noise: { kind: "ridged", octaves: 8, gain: 0.5, lacunarity: 2.1 },
+  shape: { terrace: 0.05 },
+  erosion: { hydraulicIterations: 40, thermalIterations: 15, talusAngleDegrees: 35, quality: "balanced" }
+});
 ```
 
 **Archipelago**
+
 ```ts
-noise: { kind: "island", octaves: 7, gain: 0.5, lacunarity: 2 },
-shape: { island: 0.75 },
-erosion: { hydraulicIterations: 15, thermalIterations: 8 },
-verticalScale: 0.8,
-// set seaLevelMetres just above the generated minHeightMetres
+const archipelago = await engine.generateFractal({
+  seed: 2, size: 1024, horizontalScaleMetres: 10, verticalScale: 0.8,
+  noise: { kind: "island", octaves: 7, gain: 0.5, lacunarity: 2 },
+  shape: { island: 0.75 },
+  erosion: { hydraulicIterations: 15, thermalIterations: 8 }
+});
+// Put the sea just above the lowest ground.
+engine.setWater({
+  enabled: true,
+  seaLevelMetres: archipelago.metadata.minHeightMetres + 20,
+  waveScale: 0.8,
+  reflectivity: 0.35,
+  shorelineSoftnessMetres: 6
+});
 ```
 
 **Desert canyon**
+
 ```ts
-noise: { kind: "canyon", octaves: 6, gain: 0.55, lacunarity: 2 },
-shape: { canyon: 0.7, terrace: 0.12 },
-erosion: { hydraulicIterations: 60, thermalIterations: 10, talusAngleDegrees: 45 },
-verticalScale: 1.0
-// flora density near 0 — deserts have sparse vegetation
+await engine.generateFractal({
+  seed: 3, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
+  noise: { kind: "canyon", octaves: 6, gain: 0.55, lacunarity: 2 },
+  shape: { canyon: 0.7, terrace: 0.12 },
+  erosion: { hydraulicIterations: 60, thermalIterations: 10, talusAngleDegrees: 45, quality: "balanced" }
+});
+// Deserts have sparse vegetation: also push the climate hot and dry.
+engine.setBiomes({ temperatureBias: 0.8, moistureBias: -0.8 });
 ```
 
 **Volcanic crater island**
+
 ```ts
-noise: { kind: "cratered", octaves: 7, gain: 0.5, lacunarity: 2 },
-shape: { island: 0.6, crater: 0.5, basin: 0.2 },
-erosion: { hydraulicIterations: 25, thermalIterations: 20, talusAngleDegrees: 40 },
-verticalScale: 1.6
+await engine.generateFractal({
+  seed: 4, size: 1024, horizontalScaleMetres: 10, verticalScale: 1.6,
+  noise: { kind: "cratered", octaves: 7, gain: 0.5, lacunarity: 2 },
+  shape: { island: 0.6, crater: 0.5, basin: 0.2 },
+  erosion: { hydraulicIterations: 25, thermalIterations: 20, talusAngleDegrees: 40, quality: "balanced" }
+});
 ```
 
 **Rolling farmland**
+
 ```ts
-noise: { kind: "simplex", octaves: 5, gain: 0.5, lacunarity: 2 },
-shape: {},
-erosion: { hydraulicIterations: 10, thermalIterations: 5 },
-verticalScale: 0.35
+await engine.generateFractal({
+  seed: 5, size: 1024, horizontalScaleMetres: 10, verticalScale: 0.35,
+  noise: { kind: "simplex", octaves: 5, gain: 0.5, lacunarity: 2 },
+  erosion: { hydraulicIterations: 10, thermalIterations: 5 }
+});
 ```
+
+`ErosionOptions.quality` defaults to `"preview"`, which caps each erosion
+pass at 16 iterations; the recipes that ask for more set `"balanced"`
+(64). See [`docs/terrain-data.md`](terrain-data.md#erosion).
 
 ## 8. Real-world terrain (DEM import)
 

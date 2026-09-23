@@ -143,7 +143,8 @@ const LOOK_RIGHT_KEYS = new Set(["ArrowRight"]);
  *
  * Controls:
  * - Drag with the primary (left) pointer button to look around.
- * - `W`/`A`/`S`/`D` or arrow keys to move.
+ * - `W`/`A`/`S`/`D` to move, or up and down arrows to move forwards and backwards.
+ * - Left and right arrows to turn.
  * - `Space`/`E` to rise, `Shift`/`Q` to descend.
  * - Hold the middle mouse button and drag up or down to rise or descend.
  * - Scroll wheel to zoom in and out by adjusting the field of view.
