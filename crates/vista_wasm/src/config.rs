@@ -499,6 +499,15 @@ pub fn validate_quality(quality: &RenderQualityOptions) -> VistaResult<()> {
     }
   }
 
+  for (name, value) in [
+    ("quality.renderFadeMetres", quality.render_fade_metres),
+    ("quality.cloudFadeMetres", quality.cloud_fade_metres),
+  ] {
+    if let Some(value) = value {
+      validate_non_negative(name, value)?;
+    }
+  }
+
   Ok(())
 }
 
@@ -571,6 +580,32 @@ mod tests {
     assert!(validate_quality(&quality).is_err());
     quality.render_distance_metres = Some(3_000.0);
     assert!(validate_quality(&quality).is_ok());
+    quality.render_fade_metres = Some(-1.0);
+    assert!(validate_quality(&quality).is_err());
+    quality.render_fade_metres = Some(0.0);
+    assert!(validate_quality(&quality).is_ok());
+  }
+
+  #[test]
+  fn fades_default_to_a_share_of_their_distance_and_never_exceed_it() {
+    let quality = RenderQualityOptions {
+      render_distance_metres: Some(9_000.0),
+      cloud_distance_metres: Some(20_000.0),
+      ..Default::default()
+    };
+    let distances = quality.distances();
+    assert!((distances.render_fade_metres - 3_000.0).abs() < 1e-3);
+    assert!((distances.cloud_fade_metres - 6_000.0).abs() < 1e-3);
+
+    let custom = RenderQualityOptions {
+      render_distance_metres: Some(9_000.0),
+      render_fade_metres: Some(50_000.0),
+      cloud_fade_metres: Some(500.0),
+      ..quality
+    };
+    let distances = custom.distances();
+    assert!((distances.render_fade_metres - 9_000.0).abs() < 1e-3);
+    assert!((distances.cloud_fade_metres - 500.0).abs() < 1e-3);
   }
 
   #[test]

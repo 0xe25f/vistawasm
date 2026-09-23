@@ -310,9 +310,11 @@ Passed to `engine.setSurface()`. Every field is optional.
 | `preset` | `"preview" \| "balanced" \| "high" \| "offline"` | `"balanced"` | Fills in any distance below that is left unset (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#distances-and-presets-renderqualityoptions)). Does not affect erosion; that is `ErosionOptions.quality`. |
 | `maxClipmapLevels` | `number?` | `7` | Theoretical LOD-level budget used only by native/test builds without a GPU; browser builds report the real uploaded mesh's stats regardless of this value (see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)). |
 | `floraDensityScale` | `number?` | `1.0` | Global multiplier applied on top of both `FloraOptions.density` and `GrassOptions.density`. The cheapest performance lever for vegetation-heavy scenes. |
-| `renderDistanceMetres` | `number?` | from `preset` | At least `100`. Terrain, trees, and water beyond it are not shaded; everything fades into horizon-coloured fog between 60 % and 90 % of it. |
+| `renderDistanceMetres` | `number?` | from `preset` | At least `100`. Terrain, trees, and water beyond it are not shaded, hidden by horizon-coloured fog that is complete at this distance. |
+| `renderFadeMetres` | `number?` | a third of the render distance | `0` or more, capped at the render distance. Length of the fog band before the render distance; `0` is a hard edge. |
 | `detailDistanceMetres` | `number?` | from `preset` | At least `100`. Past it, terrain takes one far-scale texture sample per material instead of up to eight. |
-| `cloudDistanceMetres` | `number?` | from `preset` | At least `100`. Clouds and rain curtains are raymarched only this far, fading out from 70 % of it. |
+| `cloudDistanceMetres` | `number?` | from `preset` | At least `100`. Clouds and rain curtains are raymarched only this far. |
+| `cloudFadeMetres` | `number?` | 30 % of the cloud distance | `0` or more, capped at the cloud distance. Length of the band before the cloud distance over which clouds thin out. |
 
 ## `DebugView`
 

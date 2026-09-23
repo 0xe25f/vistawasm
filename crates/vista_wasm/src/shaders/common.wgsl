@@ -88,6 +88,9 @@ struct FrameUniforms {
   // x: render distance, y: terrain detail distance, z: cloud distance
   // (metres; 1e9 means unlimited), w: unused.
   distances: vec4<f32>,
+  // x: render distance fade length, y: cloud fade length (metres), zw:
+  // unused.
+  fades: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -494,9 +497,17 @@ fn apply_fog(colour: vec3<f32>, world_position: vec3<f32>, pixel: vec2<f32>) -> 
 
 // --- Render distance ----------------------------------------------------
 
-// Like a game's distance fog: nothing until 60 % of the render distance,
-// complete at 90 %, so the edge where the world stops being drawn is never
-// seen. Beyond 90 %, shaders skip their shading entirely.
+// A smooth 0-to-1 ramp over the `length` metres before `end`; a hard step
+// at `end` when `length` is 0.
+fn fade_in_before(end: f32, length: f32, distance: f32) -> f32 {
+  let t = saturate((distance - (end - length)) / max(length, 0.001));
+  return t * t * (3.0 - 2.0 * t);
+}
+
+// Like a game's distance fog: it thickens over the fade length
+// (`renderFadeMetres`) and is complete at the render distance, so the edge
+// where the world stops being drawn is never seen. Beyond it, shaders skip
+// their shading entirely.
 fn render_distance_fog(distance: f32) -> f32 {
   let limit = frame.distances.x;
 
@@ -504,12 +515,12 @@ fn render_distance_fog(distance: f32) -> f32 {
     return 0.0;
   }
 
-  return smoothstep(limit * 0.6, limit * 0.9, distance);
+  return fade_in_before(limit, frame.fades.x, distance);
 }
 
 // Whether a point is past the render distance, fully hidden by its fog.
 fn beyond_render_distance(distance: f32) -> bool {
-  return distance > frame.distances.x * 0.9;
+  return distance > frame.distances.x;
 }
 
 // The colour the render-distance fog fades to: the sky just above the

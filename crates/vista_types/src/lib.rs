@@ -1564,10 +1564,15 @@ pub struct RenderQualityOptions {
   /// Optional flora density multiplier.
   pub flora_density_scale: Option<f32>,
   /// Render distance in metres: terrain, trees, and water beyond it are not
-  /// drawn, and everything fades into horizon-coloured fog over the last
-  /// 30 % of it. Unset uses the preset's distance.
+  /// drawn, hidden by horizon-coloured fog that is complete at this
+  /// distance. Unset uses the preset's distance.
   #[serde(default)]
   pub render_distance_metres: Option<f32>,
+  /// Length in metres of the fog band before the render distance, over
+  /// which the fog thickens from none to complete. Unset uses a third of
+  /// the render distance.
+  #[serde(default)]
+  pub render_fade_metres: Option<f32>,
   /// Terrain detail distance in metres: beyond it, terrain uses one
   /// far-scale texture sample per material instead of up to eight. Unset
   /// uses the preset's distance.
@@ -1578,6 +1583,10 @@ pub struct RenderQualityOptions {
   /// preset's distance.
   #[serde(default)]
   pub cloud_distance_metres: Option<f32>,
+  /// Length in metres of the band before the cloud distance over which
+  /// clouds thin out to nothing. Unset uses 30 % of the cloud distance.
+  #[serde(default)]
+  pub cloud_fade_metres: Option<f32>,
 }
 
 /// Distances used when none is set; far enough to change nothing.
@@ -1592,6 +1601,12 @@ pub struct RenderDistances {
   pub detail_metres: f32,
   /// See [`RenderQualityOptions::cloud_distance_metres`].
   pub cloud_metres: f32,
+  /// See [`RenderQualityOptions::render_fade_metres`]; never longer than
+  /// the render distance.
+  pub render_fade_metres: f32,
+  /// See [`RenderQualityOptions::cloud_fade_metres`]; never longer than
+  /// the cloud distance.
+  pub cloud_fade_metres: f32,
 }
 
 impl RenderQualityOptions {
@@ -1608,10 +1623,21 @@ impl RenderQualityOptions {
       ),
     };
 
+    let render_metres = self.render_distance_metres.unwrap_or(render);
+    let cloud_metres = self.cloud_distance_metres.unwrap_or(cloud);
+
     RenderDistances {
-      render_metres: self.render_distance_metres.unwrap_or(render),
+      render_metres,
       detail_metres: self.detail_distance_metres.unwrap_or(detail),
-      cloud_metres: self.cloud_distance_metres.unwrap_or(cloud),
+      cloud_metres,
+      render_fade_metres: self
+        .render_fade_metres
+        .unwrap_or(render_metres / 3.0)
+        .min(render_metres),
+      cloud_fade_metres: self
+        .cloud_fade_metres
+        .unwrap_or(cloud_metres * 0.3)
+        .min(cloud_metres),
     }
   }
 }
@@ -1623,8 +1649,10 @@ impl Default for RenderQualityOptions {
       max_clipmap_levels: Some(7),
       flora_density_scale: Some(1.0),
       render_distance_metres: None,
+      render_fade_metres: None,
       detail_distance_metres: None,
       cloud_distance_metres: None,
+      cloud_fade_metres: None,
     }
   }
 }

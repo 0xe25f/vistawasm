@@ -24,9 +24,9 @@ for the exact fields.
 
 | Setting | What it does | Cost it saves |
 | --- | --- | --- |
-| `renderDistanceMetres` | Terrain, trees, and water past it are not shaded; everything fades into horizon-coloured fog between 60 % and 90 % of it, so the edge is never seen. | Terrain and tree shading in the distance. |
+| `renderDistanceMetres` | Terrain, trees, and water past it are not shaded; horizon-coloured fog thickens over the `renderFadeMetres` before it and is complete at it, so the edge is never seen. | Terrain and tree shading in the distance. |
 | `detailDistanceMetres` | Past it, terrain takes one far-scale texture sample per material instead of up to eight. Textures there are so minified that the two look the same. | Terrain texture sampling. |
-| `cloudDistanceMetres` | Clouds and rain curtains are raymarched only this far, fading out from 70 % of it. | The longest cloud marches, near the horizon. |
+| `cloudDistanceMetres` | Clouds and rain curtains are raymarched only this far, thinning out over the `cloudFadeMetres` before it. | The longest cloud marches, near the horizon. |
 
 `preset` fills in any distance you leave unset:
 
@@ -43,8 +43,19 @@ visible difference), `"preview"` 981 ms, and `"balanced"` with a 4 km
 render distance 957 ms. Most of the saving was terrain shading. Real GPUs
 are much faster, and the proportions differ, so check the profiler.
 
+Both fades are yours to set, in metres: `renderFadeMetres` (default a
+third of the render distance) and `cloudFadeMetres` (default 30 % of the
+cloud distance). A long fade hides the edge more gently; `0` gives a hard
+edge. Each is capped at its distance.
+
 ```ts
-engine.setRenderQuality({ preset: "balanced", renderDistanceMetres: 8000 });
+engine.setRenderQuality({
+  preset: "balanced",
+  renderDistanceMetres: 8000,
+  renderFadeMetres: 3000, // fog from 5 km, complete at 8 km
+  cloudDistanceMetres: 30000,
+  cloudFadeMetres: 10000 // clouds thin out from 20 km
+});
 ```
 
 `preset` does not change `FloraOptions.treeQuality`, `GrassOptions`,

@@ -587,7 +587,7 @@ fn clouds_along(ray: vec3<f32>, depth: f32, pixel: vec2<f32>) -> vec4<f32> {
   let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
   let sky = sky_radiance(ray);
   let limit = frame.distances.z;
-  let keep = 1.0 - smoothstep(limit * 0.7, limit, clouds.distance);
+  let keep = 1.0 - fade_in_before(limit, frame.fades.y, clouds.distance);
   let transmittance = mix(1.0, clouds.transmittance, keep);
   let scatter = mix(sky * (1.0 - transmittance), clouds.scatter * keep, haze);
   // Rain shafts hang below the clouds, so they sit in front of them.

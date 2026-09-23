@@ -69,10 +69,11 @@ for changed defaults.
   read back without stalling. The demo lists them in its stats panel.
 - **Distances, like a game's video settings.**
   `RenderQualityOptions.renderDistanceMetres` (terrain, trees, and water
-  beyond it are not shaded, hidden by distance fog),
+  beyond it are not shaded, hidden by distance fog over
+  `renderFadeMetres`),
   `detailDistanceMetres` (distant terrain takes one texture sample per
   material instead of up to eight), and `cloudDistanceMetres` (how far
-  clouds are marched). `preset` now fills in whichever are unset, and the
+  clouds are marched, thinning out over `cloudFadeMetres`). `preset` now fills in whichever are unset, and the
   demo has a control for each.
 - `CloudsOptions.temporal`: reuse distant clouds between frames. A
   quarter-size pass marches one sky pixel of every 2 x 2 block, a different

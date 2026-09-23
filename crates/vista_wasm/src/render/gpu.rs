@@ -65,9 +65,10 @@ struct FrameUniforms {
   previous_view_proj: [f32; 16],
   temporal: [f32; 4],
   distances: [f32; 4],
+  fades: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 720);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 736);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -2379,6 +2380,12 @@ impl GpuContext {
       params.distances.render_metres,
       params.distances.detail_metres,
       params.distances.cloud_metres,
+      0.0,
+    ];
+    u.fades = [
+      params.distances.render_fade_metres,
+      params.distances.cloud_fade_metres,
+      0.0,
       0.0,
     ];
     u.weather3 = [

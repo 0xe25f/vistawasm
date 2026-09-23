@@ -789,10 +789,16 @@ export interface RenderQualityOptions {
   floraDensityScale?: number;
   /**
    * Render distance in metres, at least 100: terrain, trees, and water
-   * beyond it are not drawn, and everything fades into horizon-coloured
-   * fog between 60 % and 90 % of it.
+   * beyond it are not drawn, hidden by horizon-coloured fog that is
+   * complete at this distance.
    */
   renderDistanceMetres?: number;
+  /**
+   * Length in metres of the fog band before the render distance, over which
+   * the fog thickens from none to complete; 0 or more, capped at the render
+   * distance. Defaults to a third of the render distance.
+   */
+  renderFadeMetres?: number;
   /**
    * Terrain detail distance in metres, at least 100: beyond it, terrain
    * takes one far-scale texture sample per material instead of up to
@@ -801,9 +807,15 @@ export interface RenderQualityOptions {
   detailDistanceMetres?: number;
   /**
    * Cloud render distance in metres, at least 100: clouds and rain
-   * curtains are raymarched only this far, fading out from 70 % of it.
+   * curtains are raymarched only this far.
    */
   cloudDistanceMetres?: number;
+  /**
+   * Length in metres of the band before the cloud distance over which
+   * clouds thin out to nothing; 0 or more, capped at the cloud distance.
+   * Defaults to 30 % of the cloud distance.
+   */
+  cloudFadeMetres?: number;
 }
 
 /**

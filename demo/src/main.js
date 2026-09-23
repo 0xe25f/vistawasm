@@ -139,6 +139,8 @@ const inputs = {
   renderDistance: select("renderDistance"),
   detailDistance: select("detailDistance"),
   cloudDistance: select("cloudDistance"),
+  renderFade: select("renderFade"),
+  cloudFade: select("cloudFade"),
   debugView: select("debugView")
 };
 
@@ -709,7 +711,7 @@ function wireWeatherChips() {
   syncWeatherChips();
 }
 
-// "From preset" leaves a distance unset, so the preset chooses it.
+// "From preset" and "Default" leave a value unset, so the engine chooses it.
 function optionalDistance(element) {
   return element.value === "" ? undefined : Number(element.value);
 }
@@ -720,8 +722,10 @@ function applyQuality() {
     maxClipmapLevels: 7,
     floraDensityScale: 1,
     renderDistanceMetres: optionalDistance(inputs.renderDistance),
+    renderFadeMetres: optionalDistance(inputs.renderFade),
     detailDistanceMetres: optionalDistance(inputs.detailDistance),
-    cloudDistanceMetres: optionalDistance(inputs.cloudDistance)
+    cloudDistanceMetres: optionalDistance(inputs.cloudDistance),
+    cloudFadeMetres: optionalDistance(inputs.cloudFade)
   });
 }
 
@@ -1011,7 +1015,13 @@ function wireLiveControls() {
 
   inputs.quality.addEventListener("change", applyQuality);
 
-  for (const element of [inputs.renderDistance, inputs.detailDistance, inputs.cloudDistance]) {
+  for (const element of [
+    inputs.renderDistance,
+    inputs.renderFade,
+    inputs.detailDistance,
+    inputs.cloudDistance,
+    inputs.cloudFade
+  ]) {
     element.addEventListener("change", applyQuality);
   }
   inputs.debugView.addEventListener("change", applyDebugView);
