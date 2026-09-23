@@ -193,6 +193,7 @@ React, Vue, and Svelte components.
 - [`docs/README.md`](README.md) — the full documentation index.
 - [`docs/frameworks.md`](frameworks.md) — React, Vue, and Svelte
   components.
+- [`docs/threejs.md`](threejs.md) — using VistaWASM with three.js.
 - [`docs/options-reference.md`](options-reference.md) — every public
   option, its type, default, and validation rule, in one table-driven
   reference.

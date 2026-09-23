@@ -39,11 +39,12 @@ Then pick the guides for the features you use.
 | --- | --- |
 | [Replacing trees, textures, and placement](hooks.md) | Custom tree models, species rules, hand-placed trees, and textures |
 | [React, Vue, and Svelte](frameworks.md) | Complete components for each framework |
+| [three.js](threejs.md) | three.js objects over a VistaWASM world, or VistaWASM terrain in a three.js scene |
 | [Camera and controls](camera-and-controls.md) | The camera model and the ready-made fly camera |
 | [Export and snapshots](export-and-snapshots.md) | Heightmap, PNG, OBJ, and screenshot export |
 | [Render quality and diagnostics](render-quality-and-diagnostics.md) | Quality presets, render statistics, and debug views |
 | [Building games](game-development.md) | Game loops, height queries, collision, and performance |
-| [Game engine integration](engine-integration.md) | Using VistaWASM alongside Three.js, Babylon.js, or PlayCanvas |
+| [Game engine integration](engine-integration.md) | Using VistaWASM alongside Babylon.js, PlayCanvas, and other engines |
 
 ## I want to change VistaWASM itself
 

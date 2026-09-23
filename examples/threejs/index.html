@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VistaWASM With three.js</title>
+    <link rel="stylesheet" href="./src/style.css">
+    <script type="module" src="./src/main.ts"></script>
+  </head>
+  <body>
+    <main class="viewer">
+      <!-- VistaWASM draws the landscape; three.js draws on a transparent canvas stacked on top. -->
+      <canvas id="vista" aria-label="VistaWASM landscape"></canvas>
+      <canvas id="three" aria-hidden="true"></canvas>
+      <div class="panel">
+        <strong>VistaWASM + three.js</strong>
+        <label>
+          <input id="occlusion" type="checkbox" checked>
+          Hills hide three.js objects
+        </label>
+        <p id="status" aria-live="polite">Starting...</p>
+      </div>
+      <div class="hint">Drag to look &middot; WASD to move &middot; Space/Shift to rise and fall</div>
+    </main>
+  </body>
+</html>

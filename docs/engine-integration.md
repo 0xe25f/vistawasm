@@ -37,35 +37,17 @@ non-terrain 2D/3D overlays.
   *is* the environment and other engines only render characters, effects,
   or UI on top. It does not give you shared depth-testing between
   VistaWASM's terrain and the other engine's objects (each renders to a
-  fully separate WebGPU/WebGL context with no shared depth buffer) — so
-  objects from the other engine will always draw fully in front of or
-  fully behind VistaWASM's terrain unless you fake it (e.g. hide a
-  character behind a hill by not rendering it, based on your own
-  height-query against the exported heightmap — see
-  [`docs/game-development.md`](game-development.md#2-player-movement-and-camera-control)).
+  fully separate WebGPU/WebGL context with no shared depth buffer). To let
+  hills hide the other engine's objects, give that engine an invisible,
+  depth-only copy of the terrain built from `engine.exportHeightmap()`.
+  This covers the terrain only, not VistaWASM's trees or water.
 
-```html
-<div style="position: relative; width: 100vw; height: 100vh;">
-  <canvas id="vista" style="position: absolute; inset: 0;"></canvas>
-  <canvas id="overlay" style="position: absolute; inset: 0; pointer-events: none;"></canvas>
-</div>
-```
-
-```ts
-const vista = await createVistaEngine(document.querySelector("#vista")!);
-const overlayRenderer = new THREE.WebGLRenderer({
-  canvas: document.querySelector("#overlay")!,
-  alpha: true
-});
-
-function tick() {
-  const camera = computeSharedCamera();
-  vista.setCamera(toVistaCamera(camera));
-  syncThreeCamera(threeCamera, camera);
-  overlayRenderer.render(overlayScene, threeCamera);
-  requestAnimationFrame(tick);
-}
-```
+[Using VistaWASM with three.js](threejs.md) walks through the whole
+pattern with tested code: stacked canvases, camera sync with the fly
+camera, a matching sun light, terrain height queries, and the depth-only
+occluder. `examples/threejs/` is the runnable version
+(`npm run dev:threejs`). The same steps apply to Babylon.js and
+PlayCanvas.
 
 ### A note on WebGPU device sharing
 
@@ -106,6 +88,10 @@ a "world designer" screen, then export once and hand the data to your
 runtime engine.
 
 ### Three.js: heightfield-displaced plane
+
+[Using VistaWASM with three.js](threejs.md#2-heightmap-mesh-threejs-draws-the-terrain)
+has a fuller version, with vertex colours and loading pre-generated terrain
+without WebGPU.
 
 ```ts
 import * as THREE from "three";

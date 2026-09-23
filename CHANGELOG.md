@@ -63,6 +63,11 @@ for changed defaults.
 - A rewritten README with a screenshot, a quick start, and clear paths for
   people using the package and people changing it; a documentation index
   (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
+- A three.js guide (`docs/threejs.md`) and example (`examples/threejs/`,
+  `npm run dev:threejs`): three.js objects drawn over a VistaWASM world
+  with a shared camera, a matching sun, and hills that hide them; and
+  VistaWASM terrain drawn by three.js, including in browsers without
+  WebGPU.
 - Benchmarks (`bench/`): production download size and terrain generation
   speed compared with THREE.Terrain and three-terrain, with the method,
   results, and a feature comparison. Run them with `npm run size` and

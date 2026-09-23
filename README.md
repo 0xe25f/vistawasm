@@ -106,7 +106,9 @@ use it.
 2. **[Options reference](docs/options-reference.md)**: every option, its
     default, and its valid range.
 3. **[React, Vue, and Svelte](docs/frameworks.md)**: complete components.
-4. The **[documentation index](docs/README.md)** has a guide for every
+4. **[three.js](docs/threejs.md)**: add three.js objects to a VistaWASM
+    world, or draw VistaWASM terrain in a three.js scene.
+5. The **[documentation index](docs/README.md)** has a guide for every
     feature: terrain, biomes, vegetation, water, weather, shadows, custom
     assets, games, and more.
 
@@ -153,7 +155,7 @@ choices for different needs:
 | | VistaWASM | THREE.Terrain | three-terrain |
 | --- | --- | --- | --- |
 | Runs on | WebGPU | WebGL 2 | WebGL |
-| Fits inside an existing three.js scene | No | Yes | Yes |
+| Fits inside an existing three.js scene | [As an overlay or exported mesh](docs/threejs.md) | Yes | Yes |
 | Water, sky, clouds, and weather | Included | Not included | Not included |
 | Modelled trees, biomes, and shadows | Included | Scattered meshes and grass | Not included |
 | Gzipped download, minimal app | 262 KB | 148 KB | 268 KB |

@@ -58,6 +58,7 @@ npm run dev:vanilla
 npm run dev:react
 npm run dev:vue
 npm run dev:svelte
+npm run dev:threejs
 ```
 
 Each starts a dev server on `http://127.0.0.1:5173`. The demo and
