@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>VistaWASM speed comparison</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+
+      table {
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 6px 12px;
+        border: 1px solid #ccc;
+        text-align: left;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Terrain generation speed</h1>
+    <p id="status">Running. This takes a minute or two.</p>
+    <table>
+      <thead>
+        <tr><th>Library</th><th>What is measured</th><th>Median (ms)</th><th>Fastest (ms)</th></tr>
+      </thead>
+      <tbody id="results"></tbody>
+    </table>
+    <p id="environment"></p>
+    <canvas id="view" width="320" height="180" aria-label="VistaWASM benchmark canvas"></canvas>
+    <script type="module" src="./speed.js"></script>
+  </body>
+</html>

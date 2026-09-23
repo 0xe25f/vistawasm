@@ -1,185 +1,59 @@
 # VistaWASM
 
-> VistaWASM turns a plain web canvas into a live 3D landscape — hills, trees, water, and sky. Point it at a canvas, call a few functions, and the engine does the rest.
+> Beautiful, living 3D landscapes in the browser. Give VistaWASM a canvas,
+> and it builds a world: mountains, forests, rivers, oceans, clouds, and
+> weather.
 
 [![GitHub Stars](https://img.shields.io/github/stars/0xe25f/vistawasm?style=social)](https://github.com/0xe25f/vistawasm/stargazers)
 [![npm](https://img.shields.io/npm/v/%40vista-wasm%2Fvista-wasm)](https://www.npmjs.com/package/@vista-wasm/vista-wasm)
 [![Licence: AGPL v3](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
 
-If VistaWASM saves you time, please ⭐ **[star it on GitHub](https://github.com/0xe25f/vistawasm)** — it helps others find the project.
+[![Islands under drifting cumulus and high cirrus, rendered by VistaWASM](docs/images/vistawasm-hero.jpg)](https://0xe25f.github.io/vistawasm/)
 
-VistaWASM is a Rust and WebAssembly terrain engine for modern browsers. It
-generates seeded fractal landscapes, loads terrain height data, and owns a
-WebGPU render surface from a canvas supplied by the host frontend.
+**[Try the live demo](https://0xe25f.github.io/vistawasm/)** ·
+[Quick start](#quick-start) ·
+[Documentation](docs/README.md) ·
+[Contributing](CONTRIBUTING.md) ·
+[How it compares](#how-it-compares)
 
-It is inspired by classic landscape projectors: choose or load a landscape,
-place a camera, set the light and atmosphere, then explore the result.
+If VistaWASM is useful to you, please
+**[⭐ star it on GitHub](https://github.com/0xe25f/vistawasm)**. It is the
+simplest way to help, and it helps other developers find the project.
 
-## Current Status
+## What you get
 
-This repository contains a working terrain engine with a browser-first API:
+VistaWASM is a terrain engine written in Rust, compiled to WebAssembly,
+and drawn with WebGPU. One package gives you:
 
-- Rust workspace with shared public types and a WASM engine crate.
-- `wasm-bindgen` browser API wrapped by TypeScript.
-- WebGPU device and surface setup through Rust `wgpu`.
-- Deterministic Rust terrain generation with seeded fractal controls,
-  including noise kind, island/terrace/basin/canyon/crater shaping, and
-  hydraulic/thermal erosion. Erosion runs as GPU compute passes on browser
-  builds (falling back to the CPU implementation automatically if the GPU
-  pass fails for any reason), and as CPU passes on native/test builds.
-- Raw heightmap loading.
-- Uncompressed GeoTIFF header, strip, scale, tiepoint, and no-data handling.
-- Camera/projector maths, plus a ready-made `attachFlyCameraControls()` fly
-  camera (drag to look, WASD to move, Space/Shift or middle-mouse-drag to
-  rise and fall, scroll wheel to zoom the field of view).
-- A real terrain render pipeline: CPU-baked height, normal, and material
-  data are uploaded as a single mesh and drawn with a lit, depth-tested
-  WebGPU pipeline (`shaders/clipmap_render.wgsl`). The mesh recentres on the
-  camera and uses exponentially increasing sample spacing with distance
-  from that centre, giving full detail near the camera and much greater
-  reach than a uniform mesh of the same vertex budget, without the seams a
-  multi-tier clipmap needs skirts to hide (see
-  [`docs/architecture.md`](docs/architecture.md#terrain-rendering-and-level-of-detail)).
-- Climate-driven biomes (`terrain/biomes.rs`): fifteen biomes — grassy
-  meadows, outer thicket, outer and inner forest, mountain foothills and
-  mountain proper, outer volcanic and caldera, savannah, sandy and rocky
-  coasts, outer and inner jungle, swamp wetlands, and ocean — classified
-  from height, slope, seeded temperature and moisture fields, and volcanic
-  hotspots. Query them with `biomeAt(x, z)`; tune them with `setBiomes()`.
-- Procedurally generated, high-quality textures, baked on the GPU at
-  start-up with nothing to download: eight ground materials (lush grass,
-  dry grass, forest floor, sand, rock, snow, mud, volcanic basalt), each
-  with albedo, height, normal, occlusion, and roughness, height-blended
-  with triplanar rock, detail normals, macro variation, and lava glow.
-- Real trees: eight procedurally modelled species (oak, pine, spruce, palm,
-  jungle emergent, swamp cypress, acacia, shrub) with curved, tapered
-  branches, leaf/needle/frond cards, translucent foliage, and gusting wind.
-  Species and density follow the biome. Near trees are full 3D meshes;
-  distant trees are impostors of the same meshes, cross-faded and culled
-  on the GPU with indirect draws.
-- Real water: a camera-following ocean with a toggleable, tunable Gerstner
-  wave simulation that shoals and breaks at the shore, surface currents,
-  depth-based colour and clarity, sky and cloud reflections, sun glitter,
-  and foam; plus rivers and lakes extracted from the terrain's drainage
-  network, carved into the terrain, with flowing currents and rapids.
-- A physically based sky: a single-scattering atmosphere shared by every
-  shader, and volumetric clouds with multiple-scattering light, silver
-  linings, wind drift, and moving shadows. Cloud types range from
-  fair-weather cumulus through grey sheets to towering storm clouds with
-  anvils and rain shafts, with a thin cirrus layer above. Drifting,
-  sun-lit ground mist is integrated along every view ray. Lighting is
-  linear HDR with ACES tone mapping.
-- A weather system: clear, partly cloudy, overcast, fog, rain, storm, and
-  snow, with smooth transitions and optional automatic cycling. It drives
-  clouds, mist, wind, waves, falling rain and snow, wet ground and
-  puddles, settled snow, and lightning, each of which can be left under
-  your own control (`setWeather()`, `getWeather()`).
-- Shadows from hills and mountains, trees, and clouds, each switchable and
-  tunable (`setShadows()`).
-- Replacement hooks for your own assets: tree models, per-biome species
-  mixes, hand-placed trees, and terrain and tree textures
-  (`setTreeModel()`, `setTreeInstances()`, `replaceTexture()`), plus
-  surface options for flat colours, texture scale, and material tints.
-- An opt-in grass ground-cover layer with climate-tinted blades.
-- Terrain export helpers: a top-down hypsometric minimap/PNG export
-  (`renderHeightmapToCanvas`/`exportHeightmapImage`), a Wavefront OBJ 3D
-  model export (`exportTerrainObj`), a raw heightmap download, and a canvas
-  PNG screenshot (`exportSnapshot`).
-- A fully-featured demo that exposes every option, including weather,
-  shadows, cloud types, surface controls, and a panel demonstrating each
-  replacement hook, plus a live minimap and every export button above.
-- Four framework examples (vanilla, React, Vue, Svelte) with a control
-  panel for the core features: terrain shape and erosion, sun and
-  atmosphere, water, vegetation, grass, clouds, mist, render quality, debug
-  views, and exports.
+- **Terrain from anywhere:** seeded fractal worlds with island, canyon,
+  crater, and terrace shaping and GPU erosion, or real elevation from
+  GeoTIFF files and raw heightmaps.
+- **Living landscapes:** fifteen climate-driven biomes, eight modelled tree
+  species that sway in the wind, grass, and procedural textures generated
+  on the GPU, with nothing to download.
+- **Water:** an ocean to the horizon with simulated waves and currents,
+  plus rivers and lakes that follow the terrain.
+- **Sky and weather:** a physically based sky, volumetric clouds from fair
+  cumulus to towering storm clouds, cirrus, drifting mist, and a weather
+  system with rain, snow, fog, storms, and lightning.
+- **Light and shadow:** hills, trees, and clouds all cast shadows.
+- **Your assets, your way:** every system can be switched off, tuned, or
+  replaced with your own tree models, textures, and placement.
+- **A small, typed API:** an async loader, typed options with clear
+  errors, and TypeScript declarations for everything.
 
-Unsupported DEM compression returns a clear error.
+## Quick start
 
-## Documentation
-
-**Start here:**
-
-- [`docs/getting-started.md`](docs/getting-started.md) — install, create an
-  engine, generate terrain, and render your first frame.
-- [`docs/options-reference.md`](docs/options-reference.md) — every public
-  option, its type, default, and validation rule, in one reference.
-
-**Guides, by system:**
-
-- [`docs/world-design-guide.md`](docs/world-design-guide.md) — what each
-  terrain/erosion/atmosphere control does, with worked recipes.
-- [`docs/terrain-data.md`](docs/terrain-data.md) — fractal generation data
-  model, GeoTIFF DEM import (exact supported subset), and raw heightmap
-  loading.
-- [`docs/biomes.md`](docs/biomes.md) — the fifteen biomes and how they are
-  classified.
-- [`docs/vegetation.md`](docs/vegetation.md) — tree species and grass:
-  placement, quality tiers, and performance.
-- [`docs/sky-atmosphere-and-weather.md`](docs/sky-atmosphere-and-weather.md) —
-  sun, atmosphere, clouds, and mist (and the haze-vs-mist distinction).
-- [`docs/weather.md`](docs/weather.md) — weather states, transitions,
-  automatic cycling, and choosing what the weather drives.
-- [`docs/shadows.md`](docs/shadows.md) — terrain, tree, and cloud
-  shadows and their costs.
-- [`docs/hooks.md`](docs/hooks.md) — replacing tree models, species mixes,
-  tree placement, and textures with your own.
-- [`docs/water.md`](docs/water.md) — ocean waves, currents, rivers, and
-  lakes.
-- [`docs/camera-and-controls.md`](docs/camera-and-controls.md) — the
-  camera model and the bundled fly-camera controller.
-- [`docs/render-quality-and-diagnostics.md`](docs/render-quality-and-diagnostics.md) —
-  quality presets, render statistics, and debug overlays (including which
-  are implemented today).
-- [`docs/export-and-snapshots.md`](docs/export-and-snapshots.md) —
-  heightmap, PNG, OBJ, and screenshot export helpers.
-- [`docs/events-errors-and-lifecycle.md`](docs/events-errors-and-lifecycle.md) —
-  the engine lifecycle, every event, and every error code.
-
-**Application integration:**
-
-- [`docs/game-development.md`](docs/game-development.md) — using VistaWASM
-  as the terrain layer under a game: camera/game-loop integration, height
-  queries, collision/physics, performance, and error handling.
-- [`docs/engine-integration.md`](docs/engine-integration.md) — integrating
-  with other web game engines (Three.js, Babylon.js, PlayCanvas), including
-  when to let VistaWASM render versus exporting terrain data to another
-  renderer.
-
-**Contributing to VistaWASM itself:**
-
-- [`docs/architecture.md`](docs/architecture.md) — internals: crate layout,
-  rendering pipeline, terrain LOD strategy, and engine lifecycle.
-- [`docs/testing-and-contributing.md`](docs/testing-and-contributing.md) —
-  build/test commands, code style, and the checklist for adding a new
-  public option end-to-end.
-
-## Browser Requirements
-
-VistaWASM targets modern 2025 and newer browsers with WebGPU support.
-
-You need:
-
-- HTTPS or localhost.
-- WebGPU support.
-- ES module support.
-- WebAssembly support.
-
-VistaWASM does not silently fall back to WebGL2. If WebGPU is missing, it
-returns a clear error.
-
-## Installation
+Install the package:
 
 ```bash
 npm install @vista-wasm/vista-wasm
 ```
 
-## Minimal Usage
+Give it a canvas and generate a world:
 
 ```ts
-import {
-  createVistaEngine,
-  initialiseVistaWasm
-} from "@vista-wasm/vista-wasm";
+import { createVistaEngine, initialiseVistaWasm } from "@vista-wasm/vista-wasm";
 
 await initialiseVistaWasm();
 
@@ -202,12 +76,7 @@ await engine.generateFractal({
   size: 2048,
   horizontalScaleMetres: 10,
   verticalScale: 1,
-  noise: {
-    kind: "ridged",
-    octaves: 7,
-    gain: 0.5,
-    lacunarity: 2
-  }
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
 });
 
 engine.setCamera({
@@ -219,308 +88,104 @@ engine.setCamera({
 engine.start();
 ```
 
-## Loading A DEM
-
-VistaWASM currently supports classic uncompressed GeoTIFF files with one sample
-per pixel, stripped storage, 16-bit or 32-bit integer samples, and 32-bit float
-samples. It reads `ModelPixelScaleTag`, `ModelTiepointTag`, `GeoKeyDirectoryTag`
-presence, and GDAL no-data values when present.
+Then make it yours:
 
 ```ts
-const response = await fetch("/terrain/yosemite.tif");
-const buffer = await response.arrayBuffer();
-
-await engine.loadDemFromArrayBuffer(buffer, {
-  verticalScale: 1,
-  generateNormals: true,
-  generateMaterialMasks: true
-});
+engine.setWeather({ enabled: true, state: "rain" });
+engine.setClouds({ style: "volumetric", coverage: 0.5, speed: 1, heightMetres: 1800, colour: [1, 1, 1], seedOffset: 1 });
+engine.setShadows({ trees: { distanceMetres: 400 } });
 ```
 
-For DEM files served from another origin, configure CORS on that origin.
+The package ships pre-built. You do not need Rust or any build tools to
+use it.
 
-## Loading A Raw Heightmap
+### What to read next
 
-```ts
-await engine.loadRawHeightmap(buffer, {
-  width: 1024,
-  height: 1024,
-  sampleFormat: "float32",
-  metresPerSample: 30,
-  heightScaleMetres: 1,
-  noDataValue: -9999
-});
-```
+1. **[Getting started](docs/getting-started.md)**: the full walkthrough,
+    covering resizing, disposal, and deployment.
+2. **[Options reference](docs/options-reference.md)**: every option, its
+    default, and its valid range.
+3. **[React, Vue, and Svelte](docs/frameworks.md)**: complete components.
+4. The **[documentation index](docs/README.md)** has a guide for every
+    feature: terrain, biomes, vegetation, water, weather, shadows, custom
+    assets, games, and more.
 
-## React Example
+### Browser requirements
 
-```tsx
-import { useEffect, useRef } from "react";
-import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
+VistaWASM needs a browser with WebGPU, such as current Chrome or Edge, and
+a secure context (HTTPS, or `localhost` while developing). It does not
+fall back to WebGL; without WebGPU, `createVistaEngine()` fails with a
+clear `WEBGPU_UNAVAILABLE` error, so you can check first with
+`detectVistaWasmSupport()` and show a fallback. Serve `.wasm` files as
+`application/wasm`.
 
-export function VistaPanel() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const engineRef = useRef<VistaEngine | null>(null);
+## Contributing
 
-  useEffect(() => {
-    let disposed = false;
-
-    async function run() {
-      const canvas = canvasRef.current;
-
-      if (!canvas) {
-        return;
-      }
-
-      const engine = await createVistaEngine(canvas);
-
-      if (disposed) {
-        engine.dispose();
-        return;
-      }
-
-      engineRef.current = engine;
-
-      await engine.generateFractal({
-        seed: 9876,
-        size: 2048,
-        horizontalScaleMetres: 12,
-        verticalScale: 1.1,
-        noise: {
-          kind: "simplex",
-          octaves: 8,
-          gain: 0.5,
-          lacunarity: 2
-        }
-      });
-
-      engine.start();
-    }
-
-    run().catch((error) => {
-      console.error(error);
-    });
-
-    return () => {
-      disposed = true;
-      engineRef.current?.dispose();
-      engineRef.current = null;
-    };
-  }, []);
-
-  return <canvas ref={canvasRef} className="vista-canvas" />;
-}
-```
-
-## Vue Example
-
-```vue
-<script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
-import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
-
-const canvas = ref<HTMLCanvasElement | null>(null);
-let engine: VistaEngine | null = null;
-
-onMounted(async () => {
-  if (!canvas.value) {
-    return;
-  }
-
-  engine = await createVistaEngine(canvas.value);
-
-  await engine.generateFractal({
-    seed: 2222,
-    size: 2048,
-    horizontalScaleMetres: 10,
-    verticalScale: 1,
-    noise: {
-      kind: "ridged",
-      octaves: 7,
-      gain: 0.5,
-      lacunarity: 2
-    }
-  });
-
-  engine.start();
-});
-
-onUnmounted(() => {
-  engine?.dispose();
-  engine = null;
-});
-</script>
-
-<template>
-  <canvas ref="canvas" class="vista-canvas" />
-</template>
-```
-
-## Svelte Example
-
-```svelte
-<script lang="ts">
-  import { onDestroy, onMount } from "svelte";
-  import { createVistaEngine, type VistaEngine } from "@vista-wasm/vista-wasm";
-
-  let canvas: HTMLCanvasElement;
-  let engine: VistaEngine | null = null;
-
-  onMount(async () => {
-    engine = await createVistaEngine(canvas);
-
-    await engine.generateFractal({
-      seed: 3333,
-      size: 2048,
-      horizontalScaleMetres: 10,
-      verticalScale: 1,
-      noise: {
-        kind: "simplex",
-        octaves: 7,
-        gain: 0.5,
-        lacunarity: 2
-      }
-    });
-
-    engine.start();
-  });
-
-  onDestroy(() => {
-    engine?.dispose();
-    engine = null;
-  });
-</script>
-
-<canvas bind:this={canvas} class="vista-canvas" />
-```
-
-## Resizing
-
-```ts
-const observer = new ResizeObserver(() => {
-  const rect = canvas.getBoundingClientRect();
-
-  engine.resize(
-    Math.max(1, Math.floor(rect.width)),
-    Math.max(1, Math.floor(rect.height)),
-    window.devicePixelRatio
-  );
-});
-
-observer.observe(canvas);
-```
-
-## Error Handling
-
-```ts
-import { VistaWasmError } from "@vista-wasm/vista-wasm";
-
-try {
-  const engine = await createVistaEngine(canvas);
-} catch (error) {
-  if (error instanceof VistaWasmError) {
-    console.error(error.code, error.message, error.details);
-  } else {
-    console.error(error);
-  }
-}
-```
-
-## Deployment Notes
-
-Serve the app over HTTPS or localhost.
-
-Serve `.wasm` files with:
-
-```text
-Content-Type: application/wasm
-```
-
-If future threaded builds are enabled, use:
-
-```text
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-DEM files loaded from other origins need CORS headers.
-
-### Deploying `demo/` as a static site (GitHub Pages)
-
-`demo/` is a plain static site — plain JS (no TypeScript build step, no
-bundler), loading `@vista-wasm/vista-wasm` via a native browser [import
-map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
-rather than a bundler alias. Once `demo/dist/` is populated (a copy of the
-real compiled package output — see `npm run build:demo` below), the whole
-`demo/` folder can be served by any static file server, including GitHub
-Pages, with no Node or build step at request time.
+Contributions of every size are welcome. With Rust 1.87+, Node.js 20.19+,
+and `wasm-pack` installed:
 
 ```bash
-npm run build:demo   # builds the wasm package + TS wrapper, then copies
-                      # the output into demo/dist/ (see scripts/build-demo.mjs)
-```
-
-`.github/workflows/deploy-demo.yml` runs this in CI (Rust + wasm-pack to
-compile the engine, Node + tsc to compile the TypeScript wrapper — both are
-build-time-only dependencies) and publishes `demo/` to GitHub Pages via
-`actions/upload-pages-artifact`/`actions/deploy-pages`. Enable "GitHub
-Actions" as the Pages source in the repository's Settings → Pages, and the
-demo deploys automatically on every push to `main`.
-
-## Disposal
-
-Always call `dispose()` when the canvas is removed.
-
-```ts
-engine.stop();
-engine.dispose();
-```
-
-## Development
-
-You need Rust 1.87 or newer (via rustup) with the `wasm32-unknown-unknown`
-target, Node.js 20.19+ or 22.12+, and `wasm-pack`. See
-[`docs/testing-and-contributing.md`](docs/testing-and-contributing.md#prerequisites)
-for details and offline builds.
-
-```bash
+git clone https://github.com/0xe25f/vistawasm.git
+cd vistawasm
 rustup target add wasm32-unknown-unknown
 npm ci
 npm run build
-npm test
-npm run dev
+npm run dev   # the demo, at http://127.0.0.1:5173/
 ```
 
-Rust checks:
+**[CONTRIBUTING.md](CONTRIBUTING.md)** covers the checks to run, where
+things live, and what makes a good pull request.
+[`docs/architecture.md`](docs/architecture.md) explains how the engine
+works.
 
-```bash
-cargo fmt --check
-cargo test --workspace
-```
+## How it compares
 
-## Running The Examples
+VistaWASM is a complete, WebGPU-only landscape engine. Two other
+open-source projects also make terrain for the web, and both are good
+choices for different needs:
 
-Every example under `examples/` is a real, runnable Vite project that shares
-this repository's single `npm install` and root `vite.config.ts`. Build the
-package once, then start whichever example you want:
+- **[THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain)**
+  generates terrain meshes inside a three.js scene, with many noise
+  generators and filters, and it runs anywhere WebGL 2 does.
+- **[three-terrain](https://github.com/danielesteban/terrain)** turns a
+  heightmap into a fast voxel mesh for three.js.
 
-```bash
-npm ci
-npm run build
-npm run dev:vanilla
-npm run dev:react
-npm run dev:vue
-npm run dev:svelte
-```
+| | VistaWASM | THREE.Terrain | three-terrain |
+| --- | --- | --- | --- |
+| Runs on | WebGPU | WebGL 2 | WebGL |
+| Fits inside an existing three.js scene | No | Yes | Yes |
+| Water, sky, clouds, and weather | Included | Not included | Not included |
+| Modelled trees, biomes, and shadows | Included | Scattered meshes and grass | Not included |
+| Gzipped download, minimal app | 262 KB | 148 KB | 268 KB |
+| Time to build a 512 × 512 terrain (median) | 161 ms | 256 ms | 67 ms (voxel mesh of a supplied heightmap) |
+| Licence | AGPL-3.0 | MIT | MIT |
 
-Each command starts a dev server on `http://127.0.0.1:5173`. Rebuild
-(`npm run build`) after changing Rust or `js/src` sources, since the examples
-load the built `dist/index.js` and `dist/pkg/vista_wasm.js`, matching exactly
-how a real consumer installing `@vista-wasm/vista-wasm` from npm would load
-the package.
+Choose VistaWASM for a complete, realistic landscape with little code.
+Choose THREE.Terrain to add terrain to a three.js scene, or to reach
+browsers without WebGPU. The numbers come from one machine; the
+[benchmark page](bench/README.md) explains exactly what each measures,
+includes the full feature comparison, and lets you run it yourself.
+
+## Project status
+
+VistaWASM 1.1.0 is stable, typed, and tested: Rust unit tests cover the
+terrain, weather, and engine logic, every shader is validated in
+`cargo test`, and the TypeScript wrapper has its own tests. See the
+[changelog](CHANGELOG.md) for what is new.
 
 ## Licence
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+VistaWASM is licensed under the GNU Affero General Public Licence,
+version 3 only (AGPL-3.0-only). See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
-Any application that uses this library and is distributed or offered as a network service must make its complete source code available under the same licence.
+If you distribute an application that includes VistaWASM, or offer it to
+people over a network, the licence requires you to make that
+application's complete source code available to them under the same
+licence.
+
+---
+
+Enjoying VistaWASM? **[Star it on GitHub](https://github.com/0xe25f/vistawasm)**,
+share what you build, and [open an issue](https://github.com/0xe25f/vistawasm/issues)
+if something could be better.

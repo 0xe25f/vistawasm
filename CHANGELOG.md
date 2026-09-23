@@ -57,8 +57,16 @@ for changed defaults.
 - `CloudsOptions.resolutionScale`: clouds render at a reduced resolution,
   half by default.
 - Mist wind drift and sun scattering.
-- New guides: `docs/weather.md`, `docs/shadows.md`, `docs/hooks.md`, and
-  `docs/biomes.md`.
+- New guides: `docs/weather.md`, `docs/shadows.md`, `docs/hooks.md`,
+  `docs/biomes.md`, and `docs/frameworks.md` (React, Vue, and Svelte
+  components, moved out of the README).
+- A rewritten README with a screenshot, a quick start, and clear paths for
+  people using the package and people changing it; a documentation index
+  (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
+- Benchmarks (`bench/`): production download size and terrain generation
+  speed compared with THREE.Terrain and three-terrain, with the method,
+  results, and a feature comparison. Run them with `npm run size` and
+  `npm run speed` inside `bench/`.
 - **Demo.** A link to the GitHub repository; collapsible sections with
   remembered state; value readouts on every slider; one-click weather
   presets; and controls for every option, including weather effects,
@@ -86,7 +94,7 @@ for changed defaults.
   codegen unit, size optimisation, and `panic = "abort"`; shaders are
   minified at build time, `common.wgsl` is embedded once instead of once
   per shader, and each shader module is compiled once. The optimised WASM
-  binary is 584 KB (226 KB gzipped).
+  binary is 585 KB (226 KB gzipped).
 - The minimum Rust version for building from source is 1.87, which wgpu
   30 requires. The development notes list exact tool versions and a
   fresh-setup sequence.
@@ -96,6 +104,10 @@ for changed defaults.
 - The `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views
   now render.
 - The sun disc no longer shines through thick cloud or an overcast sky.
+- Cloud edges no longer look hairy: the march bisects to each cloud's
+  edge and takes short steps just inside it.
+- The README gave the licence as AGPL-3.0-or-later; it is
+  AGPL-3.0-only, as `LICENSE`, `NOTICE`, and the package metadata say.
 - The declared minimum Rust version (1.82) was too old to build the
   project.
 

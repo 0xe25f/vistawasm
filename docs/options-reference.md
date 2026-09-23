@@ -110,7 +110,7 @@ projector model and the bundled fly-camera controller.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `style` | `"off" \| "painted" \| "volumetric"` | `"off"` | See [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#clouds). |
+| `style` | `"off" \| "painted" \| "volumetric"` | `"off"` | See [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#clouds-cloudsoptions). |
 | `coverage` | `number` | `0.45` | `0` clear to `1` overcast. Must be `>= 0`. |
 | `speed` | `number` | `1.0` | Wind speed multiplier; `1` is roughly 15 m/s, `0` freezes the clouds. |
 | `heightMetres` | `number` | `1800` | Altitude of the cloud base. |
@@ -138,7 +138,7 @@ for you (see [`docs/weather.md`](weather.md#cloud-types)).
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `style` | `"off" \| "flat" \| "volumetric"` | `"off"` | See [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#mist-and-ground-fog). |
+| `style` | `"off" \| "flat" \| "volumetric"` | `"off"` | See [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#mist-and-ground-fog-mistoptions). |
 | `density` | `number` | `0.5` | `0` to `1`. Must be `>= 0`. |
 | `baseHeightMetres` | `number` | `40` | Altitude mist is thickest at. Must be finite. |
 | `heightFalloffMetres` | `number` | `120` | How quickly mist thins with altitude. Must be `>= 0`. |
@@ -216,7 +216,7 @@ are unaffected until a host opts in.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `false` | |
-| `style` | `"billboard-blades" \| "dense-blades"` | `"billboard-blades"` | See [`docs/vegetation.md`](vegetation.md#grass). |
+| `style` | `"billboard-blades" \| "dense-blades"` | `"billboard-blades"` | See [`docs/vegetation.md`](vegetation.md#grass-grassoptions). |
 | `density` | `number` | `0.5` | `0` to `1`. Must be `>= 0`. Scaled by `RenderQualityOptions.floraDensityScale`. |
 | `viewDistanceMetres` | `number` | `220` | Distance from the camera at which grass fully fades out. Must be `> 0`. |
 | `seedOffset` | `number \| bigint` | `7331` | Deterministic placement seed. |
@@ -377,7 +377,7 @@ Passed to `engine.loadDemFromArrayBuffer(buffer, options)` /
 | `generateNormals` | `boolean?` | `true` | |
 | `generateMaterialMasks` | `boolean?` | `true` | |
 
-See [`docs/terrain-data.md`](terrain-data.md#dem-import) for the supported
+See [`docs/terrain-data.md`](terrain-data.md#dem-import-geotiff) for the supported
 GeoTIFF subset and what decode warnings mean.
 
 ## `RawHeightmapOptions`
@@ -430,7 +430,7 @@ These are never passed *in* — the engine returns them.
 | `source` | `string` | `"fractal"`, `"raw-heightmap"`, or `"geotiff"`. |
 | `generatorVersion` | `string` | |
 | `geospatial` | `GeospatialMetadata \| null` | Present for GeoTIFF sources with recognised tags. |
-| `warnings` | `string[]` | Non-fatal decode/generation warnings — see [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#warnings). |
+| `warnings` | `string[]` | Non-fatal decode/generation warnings — see [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#events). |
 
 ### `RenderStats` (from `engine.renderOnce()` and the `"stats"` event)
 

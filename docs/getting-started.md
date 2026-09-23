@@ -167,8 +167,32 @@ window.addEventListener("beforeunload", () => {
 Always call `stop()` (or stop your own render loop) before disposing so no
 frame renders against a disposed engine.
 
-## 7. Where to go next
+## 7. Deploy
 
+- Serve your site over HTTPS (or `localhost` while developing). WebGPU
+  only works in a secure context.
+- Serve `.wasm` files as `application/wasm`. Most hosts and CDNs do this
+  already; if yours does not, VistaWASM falls back to a slower load path
+  and still works, but fix the header for production.
+- Elevation files (`loadDemFromUrl()`) fetched from another origin need
+  CORS headers on that origin.
+- VistaWASM does not use threads today, so you do not need the
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers.
+  If a future release adds threaded builds, it will need:
+
+  ```text
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  ```
+
+Using a framework? See [`docs/frameworks.md`](frameworks.md) for complete
+React, Vue, and Svelte components.
+
+## 8. Where to go next
+
+- [`docs/README.md`](README.md) — the full documentation index.
+- [`docs/frameworks.md`](frameworks.md) — React, Vue, and Svelte
+  components.
 - [`docs/options-reference.md`](options-reference.md) — every public
   option, its type, default, and validation rule, in one table-driven
   reference.

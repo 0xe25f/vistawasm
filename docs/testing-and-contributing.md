@@ -104,7 +104,7 @@ Node/build step at request time. `npm run dev` (Vite) still works against
 own alias resolves the bare specifier during dev, and the import map is
 simply unused in that mode (the two do not conflict). See
 `.github/workflows/deploy-demo.yml` for the GitHub Pages deployment this
-enables, and [`README.md`](../README.md#deploying-demo-as-a-static-site-github-pages)
+enables, and [`CONTRIBUTING.md`](../CONTRIBUTING.md#deploying-the-demo)
 for the deployment-facing summary.
 
 If you change anything under `demo/` (new controls, wiring), mirror the

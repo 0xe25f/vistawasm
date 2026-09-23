@@ -5,3 +5,4 @@ demo/dist/
 js/pkg/
 *.log
 .DS_Store
+bench/dist-size/
