@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>VistaWASM visual check</title>
+  </head>
+  <body style="margin: 0">
+    <canvas id="canvas" width="960" height="600"></canvas>
+    <script>
+      // Software WebGPU in headless Chromium loses the device when it
+      // presents to a real canvas, so frames are drawn into an ordinary
+      // texture that `capture()` reads back instead.
+      (() => {
+        const proto = GPUCanvasContext.prototype;
+        proto.configure = function (descriptor) {
+          window.gpuDevice = descriptor.device;
+          window.gpuFormat = descriptor.format;
+          window.gpuCanvas = this.canvas;
+          window.gpuTexture = null;
+        };
+        proto.getCurrentTexture = function () {
+          const canvas = window.gpuCanvas;
+          let texture = window.gpuTexture;
+
+          if (!texture || texture.width !== canvas.width || texture.height !== canvas.height) {
+            texture = window.gpuDevice.createTexture({
+              size: [canvas.width, canvas.height],
+              format: window.gpuFormat,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING
+            });
+            window.gpuTexture = texture;
+          }
+
+          return texture;
+        };
+      })();
+    </script>
+    <script type="module">
+      import { createVistaEngine } from "../../dist/index.js";
+
+      window.log = [];
+      const canvas = document.querySelector("#canvas");
+      const config = JSON.parse(new URLSearchParams(location.search).get("config") || "{}");
+      const [width, height] = config.size || [960, 600];
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+
+      try {
+        const engine = await createVistaEngine(
+          canvas,
+          Object.assign({ render: { width, height, devicePixelRatio: 1 } }, config.engine || {})
+        );
+        window.engine = engine;
+        const started = performance.now();
+        const handle = await engine.generateFractal(Object.assign({
+          seed: 12345,
+          size: 512,
+          horizontalScaleMetres: 12,
+          verticalScale: 1,
+          seaLevelMetres: 0,
+          noise: { kind: "ridged", octaves: 7, gain: 0.52, lacunarity: 2.05, warp: 0.15 },
+          shape: { island: 0.35 }
+        }, config.terrain || {}));
+        window.log.push(`generation ms ${Math.round(performance.now() - started)}`);
+        window.metadata = handle.metadata;
+
+        for (const [method, value] of Object.entries(config.set || {})) {
+          engine[method](value);
+        }
+
+        engine.setCamera(Object.assign({
+          position: [0, 420, 900],
+          target: [0, 300, 0],
+          fieldOfViewDegrees: 55,
+          nearMetres: 0.5,
+          farMetres: 120000
+        }, config.camera || {}));
+        const heights = new Float32Array(engine.exportHeightmap().buffer.slice(0));
+        const metadata = handle.metadata;
+        window.heightAt = (x, z) => {
+          const sx = Math.round(x / metadata.metresPerSample + (metadata.width - 1) / 2);
+          const sz = Math.round(z / metadata.metresPerSample + (metadata.height - 1) / 2);
+
+          if (sx < 0 || sz < 0 || sx >= metadata.width || sz >= metadata.height) {
+            return 0;
+          }
+
+          return heights[sz * metadata.width + sx];
+        };
+        window.findBiome = (name) => {
+          for (let radius = 0; radius < 4000; radius += 60) {
+            for (let angle = 0; angle < 6.28; angle += 0.3) {
+              const x = Math.cos(angle) * radius;
+              const z = Math.sin(angle) * radius;
+
+              if (engine.biomeAt(x, z) === name) {
+                return [x, z];
+              }
+            }
+          }
+
+          return null;
+        };
+      } catch (error) {
+        window.log.push(`error ${error.code || ""} ${error.message}`);
+      }
+
+      // Render `frames` frames, waiting for the GPU after each, and return
+      // the last one as a PNG data URL with its stats.
+      window.capture = async (frames = 1) => {
+        const device = window.gpuDevice;
+        let stats;
+
+        for (let frame = 0; frame < frames - 1; frame += 1) {
+          stats = window.engine.renderOnce();
+          await device.queue.onSubmittedWorkDone();
+        }
+
+        await device.queue.onSubmittedWorkDone();
+        const started = performance.now();
+        stats = window.engine.renderOnce();
+        const texture = window.gpuTexture;
+        const { width: w, height: h } = texture;
+        const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+        const buffer = device.createBuffer({
+          size: bytesPerRow * h,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [w, h]);
+        device.queue.submit([encoder.finish()]);
+        await buffer.mapAsync(GPUMapMode.READ);
+        const gpuMs = performance.now() - started;
+        const source = new Uint8Array(buffer.getMappedRange());
+        const pixels = new Uint8ClampedArray(w * h * 4);
+        const bgra = String(window.gpuFormat).startsWith("bgra");
+
+        for (let y = 0; y < h; y += 1) {
+          for (let x = 0; x < w; x += 1) {
+            const from = y * bytesPerRow + x * 4;
+            const to = (y * w + x) * 4;
+            pixels[to] = source[from + (bgra ? 2 : 0)];
+            pixels[to + 1] = source[from + 1];
+            pixels[to + 2] = source[from + (bgra ? 0 : 2)];
+            pixels[to + 3] = 255;
+          }
+        }
+
+        buffer.unmap();
+        const image = document.createElement("canvas");
+        image.width = w;
+        image.height = h;
+        image.getContext("2d").putImageData(new ImageData(pixels, w, h), 0, 0);
+        return { stats, gpuMs, url: image.toDataURL("image/png") };
+      };
+
+      window.ready = true;
+    </script>
+  </body>
+</html>

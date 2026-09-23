@@ -161,6 +161,28 @@ control(s) in a real browser, toggle them through their full range, and
 visually confirm the result — a screenshot is the actual test here, not a
 green terminal.
 
+### Headless visual checks
+
+`scripts/visual-check/` renders the engine in headless Chromium with
+software WebGPU and saves PNGs, so rendering changes can be checked
+without a GPU. Build first, then serve the repository root:
+
+```bash
+npm run build
+python3 -m http.server 8124 &
+node scripts/visual-check/capture.mjs shot.png '{"size":[960,600]}' 3
+```
+
+The config JSON can set the engine options, the fractal terrain, setter
+calls (for example `{"set":{"setWeather":{"enabled":true,"state":"rain"}}}`),
+the camera, and a list of `shots`; see the header of `capture.mjs`. The
+script exits non-zero on any page or console error, which is how shaders
+rejected by Chrome's WGSL compiler show up. Playwright is not a
+dependency: set `PLAYWRIGHT_MODULE` to its `index.mjs` if it cannot be
+resolved, and `CHROMIUM_PATH` to a Chromium binary. Software rendering
+takes seconds per frame, so compare relative pass times, not absolute
+ones.
+
 ## Project structure
 
 ```text
