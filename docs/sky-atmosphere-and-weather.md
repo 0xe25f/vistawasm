@@ -87,8 +87,9 @@ when a mountain rises into the cloud layer.
     glow white inside, plus sky light that leaves the bases darker. A
     two-lobe phase function gives silver linings towards the sun.
   - The march is adaptive. Steps grow with distance, empty sky is crossed
-    in long steps, and when a step lands inside a cloud the march backs up
-    and approaches the edge in fine steps, so silhouettes stay crisp. The
+    in long steps, and when a step lands inside a cloud the march
+    bisects back to the cloud's edge and continues in fine steps, so
+    silhouettes stay crisp even at full resolution. The
     start of each ray is offset by a stable dither rather than per-frame
     noise, so clouds do not crawl with grain. Cost scales with
     `raymarchSteps` (`8..=64`, default `32`); the loop runs at most four

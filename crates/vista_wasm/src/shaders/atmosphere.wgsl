@@ -291,6 +291,8 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
   var fine = false;
   var misses = 0;
   var last_step = 0.0;
+  var was_empty = true;
+  var entry_samples = 0;
 
   for (var i = 0; i < iterations; i = i + 1) {
     if (t >= t1) {
@@ -298,8 +300,8 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     }
 
     let base_step = 30.0 + t * 0.02;
-    let p = camera + ray * t;
-    let weather = cloud_weather(p.xz);
+    var p = camera + ray * t;
+    var weather = cloud_weather(p.xz);
     var shape = 0.0;
 
     if (weather > 0.01) {
@@ -313,24 +315,48 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
         fine = misses < 6;
       }
 
+      was_empty = true;
       last_step = select(select(base_step, base_step * 2.0, weather <= 0.01), base_step * 0.5, fine);
       t = t + last_step;
       continue;
     }
 
-    if (!fine) {
-      // A coarse step landed inside a cloud. Back up and approach the edge
-      // in fine steps, so silhouettes stay crisp instead of jagged by a
-      // whole coarse step.
-      fine = true;
-      misses = 0;
-      t = max(t - last_step, t0);
-      continue;
+    if (was_empty && last_step > 0.0) {
+      // The ray just entered a cloud somewhere within the last step.
+      // Bisect to find the edge: otherwise every pixel's edge lands at a
+      // different point within a step of tens of metres, and silhouettes
+      // turn hairy.
+      var outside = t - last_step;
+      var inside = t;
+
+      for (var k = 0; k < 4; k = k + 1) {
+        let mid = (outside + inside) * 0.5;
+        let q = camera + ray * mid;
+        let w = cloud_weather(q.xz);
+        let hit = w > 0.01 && cloud_shape(q, w) > 0.0;
+        outside = select(mid, outside, hit);
+        inside = select(inside, mid, hit);
+      }
+
+      t = inside;
+      p = camera + ray * t;
+      weather = cloud_weather(p.xz);
+      shape = max(cloud_shape(p, weather), 0.0001);
     }
 
+    if (was_empty) {
+      entry_samples = 0;
+    }
+
+    was_empty = false;
+    fine = true;
     misses = 0;
     let density = cloud_density(p, shape, 1.0 - smoothstep(2500.0, 9000.0, t));
-    let step_length = base_step * 0.5;
+    // Short steps just inside an edge: a ray grazing the thin top of a
+    // cloud otherwise catches it at one pixel and misses it at the next,
+    // which reads as hair along the silhouette.
+    let step_length = base_step * select(0.5, 0.2, entry_samples < 4);
+    entry_samples = entry_samples + 1;
     last_step = step_length;
     t = t + step_length;
 
