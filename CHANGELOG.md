@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+- Climate-driven biomes: grassy meadows, outer thicket, outer and inner
+  forest, mountain foothills, mountain proper, outer volcanic, caldera,
+  savannah, coastal beach, coastal rocky, outer and inner jungle, swamp
+  wetlands, and ocean. New `BiomeOptions`, `engine.setBiomes()`,
+  `engine.biomeAt(x, z)`, and a `"biomes"` debug view.
+- Procedural textures generated on the GPU at start-up: eight terrain
+  materials with height, normal, occlusion, and roughness; bark, leaf,
+  needle, frond, and moss textures; water ripples; 2D and 3D noise.
+- Eight procedurally modelled tree species (oak, pine, spruce, palm,
+  jungle, cypress, acacia, shrub) with 3D meshes near the camera, baked
+  impostors in the distance, GPU culling, and indirect draws.
+- Gerstner wave simulation (`WaterOptions.waves`), surface currents,
+  depth-based colour and clarity, foam, and shoaling surf.
+- Rivers and lakes from the terrain drainage network, carved into the
+  terrain, with flowing currents (`WaterOptions.rivers`).
+- Volumetric clouds with Perlin-Worley shapes, self-shadowing, wind
+  direction, billowing evolution, thickness, density, and moving cloud
+  shadows.
+- Mist wind drift and sun scattering.
+- `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views now
+  render.
+
+### Changed
+
+- `FloraOptions.treeQuality` defaults to `"mesh"`, `speciesVariation` to
+  `0.6`, and `windStrength` to `0.3`. `"billboard"` and `"cross-quad"` now
+  draw impostors of the real tree models.
+- Rendering is linear HDR with ACES tone mapping and a single-scattering
+  sky model shared by every shader; haze and mist are applied in a
+  depth-aware composite pass.
+- `CloudsOptions.heightMetres` defaults to `1800` and `raymarchSteps` to
+  `32`.
+- Water now extends to the horizon instead of stopping at the terrain edge.
+- Animation uses a real-time clock instead of a frame counter.
+- `setWater`, `setFlora`, `setGrass`, `setClouds`, and `setMist` now
+  validate their input at the JavaScript boundary.
+
+### Removed
+
+- `shaders/flora_instances.wgsl` (replaced by `shaders/trees.wgsl`).
+
 ## [1.0.0] — 2026-07-10
 
 ### Added

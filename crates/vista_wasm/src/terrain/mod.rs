@@ -1,5 +1,6 @@
 //! Terrain storage, generation, erosion, normals, materials, and clipmap data.
 
+pub mod biomes;
 pub mod clipmap;
 pub mod erosion;
 pub mod fractal;

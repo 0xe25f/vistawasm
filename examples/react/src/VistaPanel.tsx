@@ -138,8 +138,8 @@ export function VistaPanel() {
       seedOffset: 3001,
       maxInstances: 20000,
       treeQuality: select("treeQuality").value as TreeQuality,
-      speciesVariation: readNumber(input("speciesVariation"), 0),
-      windStrength: readNumber(input("windStrength"), 0)
+      speciesVariation: readNumber(input("speciesVariation"), 0.6),
+      windStrength: readNumber(input("windStrength"), 0.3)
     });
   }
 
@@ -572,19 +572,19 @@ export function VistaPanel() {
           </label>
           <label>
             Tree quality
-            <select id="treeQuality" defaultValue="billboard">
-              <option value="billboard">Billboard (fast)</option>
+            <select id="treeQuality" defaultValue="mesh">
+              <option value="billboard">Billboard impostors (fastest)</option>
               <option value="cross-quad">Cross-quad</option>
-              <option value="mesh">Mesh (hyper-realistic)</option>
+              <option value="mesh">3D meshes + impostors (realistic)</option>
             </select>
           </label>
           <label>
             Species variation
-            <input id="speciesVariation" type="range" min={0} max={1} step={0.05} defaultValue={0} />
+            <input id="speciesVariation" type="range" min={0} max={1} step={0.05} defaultValue={0.6} />
           </label>
           <label>
             Wind strength
-            <input id="windStrength" type="range" min={0} max={1} step={0.05} defaultValue={0} />
+            <input id="windStrength" type="range" min={0} max={1} step={0.05} defaultValue={0.3} />
           </label>
         </fieldset>
 

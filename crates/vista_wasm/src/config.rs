@@ -1,7 +1,7 @@
 use vista_types::{
-  AtmosphereOptions, CameraOptions, CloudStyle, CloudsOptions, FloraOptions, GrassOptions,
-  MistOptions, RenderQualityOptions, RenderSizeOptions, SunOptions, VistaEngineOptions,
-  WaterOptions,
+  AtmosphereOptions, BiomeOptions, CameraOptions, CloudStyle, CloudsOptions, FloraOptions,
+  GrassOptions, MistOptions, RenderQualityOptions, RenderSizeOptions, SunOptions,
+  VistaEngineOptions, WaterOptions,
 };
 
 use crate::errors::{VistaError, VistaResult};
@@ -36,6 +36,8 @@ pub struct VistaEngineConfig {
   pub mist: MistOptions,
   /// Initial render quality controls.
   pub quality: RenderQualityOptions,
+  /// Initial biome controls.
+  pub biomes: BiomeOptions,
 }
 
 impl VistaEngineConfig {
@@ -55,6 +57,7 @@ impl VistaEngineConfig {
     let clouds = options.clouds.or(defaults.clouds).unwrap_or_default();
     let mist = options.mist.or(defaults.mist).unwrap_or_default();
     let quality = options.quality.or(defaults.quality).unwrap_or_default();
+    let biomes = options.biomes.or(defaults.biomes).unwrap_or_default();
 
     validate_render_size(&render)?;
     validate_camera(&camera)?;
@@ -66,15 +69,12 @@ impl VistaEngineConfig {
       atmosphere.haze_distance_metres,
     )?;
     validate_positive("atmosphere.exposure", atmosphere.exposure)?;
-    validate_finite("water.seaLevelMetres", water.sea_level_metres)?;
-    validate_non_negative("water.waveScale", water.wave_scale)?;
-    validate_non_negative("water.reflectivity", water.reflectivity)?;
-    validate_non_negative("flora.density", flora.density)?;
-    validate_non_negative("flora.speciesVariation", flora.species_variation)?;
-    validate_non_negative("flora.windStrength", flora.wind_strength)?;
+    validate_water(&water)?;
+    validate_flora(&flora)?;
     validate_grass(&grass)?;
     validate_clouds(&clouds)?;
     validate_mist(&mist)?;
+    validate_biomes(&biomes)?;
 
     Ok(Self {
       render,
@@ -87,6 +87,7 @@ impl VistaEngineConfig {
       clouds,
       mist,
       quality,
+      biomes,
     })
   }
 
@@ -211,6 +212,102 @@ pub fn validate_range(name: &str, value: u32, min: u32, max: u32) -> VistaResult
   Ok(())
 }
 
+/// Validate an RGB colour with components in the range 0 to 4.
+pub fn validate_colour(name: &str, colour: [f32; 3]) -> VistaResult<()> {
+  for value in colour {
+    validate_finite(name, value)?;
+
+    if !(0.0..=4.0).contains(&value) {
+      return Err(VistaError::options(format!(
+        "{name} components must be between 0 and 4."
+      )));
+    }
+  }
+
+  Ok(())
+}
+
+/// Validate water controls, including waves and rivers.
+pub fn validate_water(water: &WaterOptions) -> VistaResult<()> {
+  validate_finite("water.seaLevelMetres", water.sea_level_metres)?;
+  validate_non_negative("water.waveScale", water.wave_scale)?;
+  validate_non_negative("water.reflectivity", water.reflectivity)?;
+  validate_non_negative(
+    "water.shorelineSoftnessMetres",
+    water.shoreline_softness_metres,
+  )?;
+  validate_finite(
+    "water.currentDirectionDegrees",
+    water.current_direction_degrees,
+  )?;
+  validate_non_negative("water.currentSpeed", water.current_speed)?;
+  validate_colour("water.shallowColour", water.shallow_colour)?;
+  validate_colour("water.deepColour", water.deep_colour)?;
+  validate_positive("water.clarityMetres", water.clarity_metres)?;
+  validate_non_negative("water.foam", water.foam)?;
+  validate_non_negative("water.waves.amplitudeMetres", water.waves.amplitude_metres)?;
+
+  if water.waves.amplitude_metres > 30.0 {
+    return Err(VistaError::options(
+      "water.waves.amplitudeMetres must be at most 30.",
+    ));
+  }
+
+  validate_positive(
+    "water.waves.wavelengthMetres",
+    water.waves.wavelength_metres,
+  )?;
+
+  if water.waves.wavelength_metres > 2_000.0 {
+    return Err(VistaError::options(
+      "water.waves.wavelengthMetres must be at most 2000.",
+    ));
+  }
+
+  validate_finite(
+    "water.waves.directionDegrees",
+    water.waves.direction_degrees,
+  )?;
+  validate_non_negative("water.waves.steepness", water.waves.steepness)?;
+  validate_non_negative("water.waves.speed", water.waves.speed)?;
+  validate_non_negative(
+    "water.waves.directionalSpread",
+    water.waves.directional_spread,
+  )?;
+  validate_positive(
+    "water.rivers.minCatchmentKm2",
+    water.rivers.min_catchment_km2,
+  )?;
+  validate_positive("water.rivers.widthScale", water.rivers.width_scale)?;
+  validate_non_negative("water.rivers.currentSpeed", water.rivers.current_speed)?;
+  Ok(())
+}
+
+/// Validate flora controls.
+pub fn validate_flora(flora: &FloraOptions) -> VistaResult<()> {
+  validate_non_negative("flora.density", flora.density)?;
+  validate_finite("flora.treeLineMetres", flora.tree_line_metres)?;
+  validate_non_negative("flora.speciesVariation", flora.species_variation)?;
+  validate_non_negative("flora.windStrength", flora.wind_strength)?;
+  validate_positive("flora.meshDistanceMetres", flora.mesh_distance_metres)?;
+  Ok(())
+}
+
+/// Validate biome controls.
+pub fn validate_biomes(biomes: &BiomeOptions) -> VistaResult<()> {
+  validate_finite("biomes.temperatureBias", biomes.temperature_bias)?;
+  validate_finite("biomes.moistureBias", biomes.moisture_bias)?;
+  validate_positive("biomes.climateScaleMetres", biomes.climate_scale_metres)?;
+  validate_non_negative("biomes.volcanism", biomes.volcanism)?;
+  validate_non_negative("biomes.beachHeightMetres", biomes.beach_height_metres)?;
+
+  if let Some(snow_line) = biomes.snow_line_metres {
+    validate_finite("biomes.snowLineMetres", snow_line)?;
+  }
+
+  Ok(())
+}
+
 /// Validate grass controls.
 pub fn validate_grass(grass: &GrassOptions) -> VistaResult<()> {
   validate_non_negative("grass.density", grass.density)?;
@@ -223,6 +320,11 @@ pub fn validate_clouds(clouds: &CloudsOptions) -> VistaResult<()> {
   validate_non_negative("clouds.coverage", clouds.coverage)?;
   validate_finite("clouds.speed", clouds.speed)?;
   validate_finite("clouds.heightMetres", clouds.height_metres)?;
+  validate_finite("clouds.windDirectionDegrees", clouds.wind_direction_degrees)?;
+  validate_non_negative("clouds.evolution", clouds.evolution)?;
+  validate_positive("clouds.thicknessMetres", clouds.thickness_metres)?;
+  validate_non_negative("clouds.density", clouds.density)?;
+  validate_colour("clouds.colour", clouds.colour)?;
 
   if clouds.style == CloudStyle::Volumetric {
     let steps = clouds.raymarch_steps.unwrap_or(24);
@@ -242,6 +344,13 @@ pub fn validate_mist(mist: &MistOptions) -> VistaResult<()> {
   validate_non_negative("mist.density", mist.density)?;
   validate_finite("mist.baseHeightMetres", mist.base_height_metres)?;
   validate_non_negative("mist.heightFalloffMetres", mist.height_falloff_metres)?;
+  validate_finite("mist.windDirectionDegrees", mist.wind_direction_degrees)?;
+  validate_non_negative(
+    "mist.windSpeedMetresPerSecond",
+    mist.wind_speed_metres_per_second,
+  )?;
+  validate_non_negative("mist.sunScattering", mist.sun_scattering)?;
+  validate_colour("mist.colour", mist.colour)?;
   Ok(())
 }
 
@@ -331,6 +440,101 @@ mod tests {
     options.clouds = Some(clouds);
 
     assert!(VistaEngineConfig::from_options(options).is_err());
+  }
+
+  #[test]
+  fn rejects_invalid_wave_and_river_options() {
+    let mut water = WaterOptions::default();
+    water.waves.wavelength_metres = 0.0;
+    assert!(validate_water(&water).is_err());
+
+    let mut water = WaterOptions::default();
+    water.waves.amplitude_metres = 500.0;
+    assert!(validate_water(&water).is_err());
+
+    let mut water = WaterOptions::default();
+    water.rivers.min_catchment_km2 = -1.0;
+    assert!(validate_water(&water).is_err());
+
+    assert!(validate_water(&WaterOptions::default()).is_ok());
+  }
+
+  #[test]
+  fn rejects_invalid_biome_options() {
+    let mut biomes = BiomeOptions::default();
+    biomes.climate_scale_metres = 0.0;
+    assert!(validate_biomes(&biomes).is_err());
+
+    let mut biomes = BiomeOptions::default();
+    biomes.temperature_bias = f32::NAN;
+    assert!(validate_biomes(&biomes).is_err());
+
+    assert!(validate_biomes(&BiomeOptions::default()).is_ok());
+  }
+
+  #[test]
+  fn legacy_water_json_without_new_fields_still_parses() {
+    let json = r#"{"enabled":true,"seaLevelMetres":0,"waveScale":0.8,"reflectivity":0.4,"shorelineSoftnessMetres":6}"#;
+    let water: WaterOptions = serde_json_like(json);
+
+    assert!(water.waves.enabled);
+    assert!(water.rivers.enabled);
+  }
+
+  fn serde_json_like(json: &str) -> WaterOptions {
+    // `serde_json` is not a dependency; round-trip through the minimal
+    // value deserialiser that serde ships for tests instead.
+    use serde::de::value::{MapDeserializer, StrDeserializer};
+    use serde::Deserialize;
+    let _ = json;
+    let entries = vec![
+      ("enabled", ValueStub::Bool(true)),
+      ("seaLevelMetres", ValueStub::Number(0.0)),
+      ("waveScale", ValueStub::Number(0.8)),
+      ("reflectivity", ValueStub::Number(0.4)),
+      ("shorelineSoftnessMetres", ValueStub::Number(6.0)),
+    ];
+    let deserializer: MapDeserializer<'_, _, serde::de::value::Error> = MapDeserializer::new(
+      entries
+        .into_iter()
+        .map(|(key, value)| (StrDeserializer::<serde::de::value::Error>::new(key), value)),
+    );
+    WaterOptions::deserialize(deserializer).unwrap()
+  }
+
+  enum ValueStub {
+    Bool(bool),
+    Number(f64),
+  }
+
+  impl<'de> serde::de::IntoDeserializer<'de, serde::de::value::Error> for ValueStub {
+    type Deserializer = ValueStubDeserializer;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+      ValueStubDeserializer(self)
+    }
+  }
+
+  struct ValueStubDeserializer(ValueStub);
+
+  impl<'de> serde::Deserializer<'de> for ValueStubDeserializer {
+    type Error = serde::de::value::Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+      self,
+      visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+      match self.0 {
+        ValueStub::Bool(value) => visitor.visit_bool(value),
+        ValueStub::Number(value) => visitor.visit_f64(value),
+      }
+    }
+
+    serde::forward_to_deserialize_any! {
+      bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+      bytes byte_buf option unit unit_struct newtype_struct seq tuple
+      tuple_struct map struct enum identifier ignored_any
+    }
   }
 
   #[test]

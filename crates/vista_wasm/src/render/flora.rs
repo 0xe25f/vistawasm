@@ -1,6 +1,8 @@
-use vista_types::FloraOptions;
+use vista_types::{BiomeKind, FloraOptions};
 
 use crate::maths::hash_noise;
+use crate::render::tree_models::TreeSpecies;
+use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::heightmap::HeightMap;
 
 /// Clamp flora instances to a device or implementation limit.
@@ -12,22 +14,24 @@ pub fn clamp_flora_instances(options: &FloraOptions, device_limit: u32) -> u32 {
   options.max_instances.min(device_limit)
 }
 
-/// One GPU-ready flora instance transform.
+/// One GPU-ready grass tuft instance.
 ///
 /// Layout must stay in sync with the per-instance vertex attributes declared
-/// in `flora_instances.wgsl`.
+/// in `grass_instances.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FloraInstance {
   /// World position of the base of the plant, in terrain metres.
   pub position: [f32; 3],
-  /// Billboard scale in metres.
+  /// Tuft scale in metres.
   pub scale: f32,
-  /// A deterministic 0 to 1 tint variation used to vary foliage colour.
+  /// A deterministic 0 to 1 tint variation used to vary colour.
   pub tint: f32,
+  /// Climate dryness from 0 (lush green) to 1 (straw).
+  pub dryness: f32,
 }
 
-/// One base-geometry vertex shared by every flora billboard instance.
+/// One base-geometry vertex shared by every grass tuft instance.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FloraVertex {
@@ -39,78 +43,89 @@ pub struct FloraVertex {
   pub uv: [f32; 2],
 }
 
-/// The static two-triangle quad shared by every flora billboard instance.
-pub const FLORA_BASE_QUAD: [FloraVertex; 6] = [
-  FloraVertex {
-    local_offset: [-0.5, 0.0],
-    uv: [0.0, 0.0],
-  },
-  FloraVertex {
-    local_offset: [0.5, 0.0],
-    uv: [1.0, 0.0],
-  },
-  FloraVertex {
-    local_offset: [-0.5, 1.0],
-    uv: [0.0, 1.0],
-  },
-  FloraVertex {
-    local_offset: [0.5, 0.0],
-    uv: [1.0, 0.0],
-  },
-  FloraVertex {
-    local_offset: [0.5, 1.0],
-    uv: [1.0, 1.0],
-  },
-  FloraVertex {
-    local_offset: [-0.5, 1.0],
-    uv: [0.0, 1.0],
-  },
-];
-
-/// The `FLORA_BASE_QUAD` shape repeated twice (12 vertices).
-///
-/// This is the vertex buffer actually uploaded to the GPU for flora
-/// (`GpuContext::new`); the `Billboard` tree style only ever draws the
-/// first 6 vertices (byte-identical to `FLORA_BASE_QUAD`, so that style's
-/// rendering is unchanged), while `CrossQuad`/`Mesh` draw all 12. The
-/// second 6 vertices are the *same* local shape — `flora_instances.wgsl`
-/// decides each quad's world orientation from `@builtin(vertex_index)`
-/// rather than from any extra vertex data, so no new vertex attributes are
-/// needed to support the second quad.
-pub const FLORA_BASE_QUAD_CROSS: [FloraVertex; 12] = [
-  FLORA_BASE_QUAD[0],
-  FLORA_BASE_QUAD[1],
-  FLORA_BASE_QUAD[2],
-  FLORA_BASE_QUAD[3],
-  FLORA_BASE_QUAD[4],
-  FLORA_BASE_QUAD[5],
-  FLORA_BASE_QUAD[0],
-  FLORA_BASE_QUAD[1],
-  FLORA_BASE_QUAD[2],
-  FLORA_BASE_QUAD[3],
-  FLORA_BASE_QUAD[4],
-  FLORA_BASE_QUAD[5],
-];
-
-/// Candidate grid resolution used when scattering flora. Terrain larger than
-/// this is scanned at a coarser stride, keeping placement fast regardless of
-/// terrain size.
+/// Candidate grid resolution used when scattering trees. Terrain larger
+/// than this is scanned at a coarser stride, keeping placement fast
+/// regardless of terrain size.
 const MAX_CANDIDATE_SAMPLES_PER_SIDE: u32 = 512;
 
-/// Maximum fraction of local height difference treated as "flat enough" for
-/// planting, expressed as a slope ratio.
-const MAX_PLANTING_SLOPE: f32 = 0.6;
+/// Maximum slope (1 - normal.y equivalent, as a height-difference ratio)
+/// trees tolerate.
+const MAX_PLANTING_SLOPE: f32 = 0.75;
 
-/// Scatter deterministic flora instances across grass below the tree line.
+/// One GPU-ready tree instance (32 bytes).
 ///
-/// Placement is driven entirely by the terrain heightmap and `options`, so
-/// the same seed and options always scatter the same plants. `density_scale`
-/// applies an additional multiplier from the active render quality preset.
-pub fn build_flora_instances(
+/// Layout must stay in sync with `TreeInstance` in `tree_cull.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TreeInstance {
+  /// World position of the base of the trunk, in terrain metres.
+  pub position: [f32; 3],
+  /// Uniform scale applied to the species model.
+  pub scale: f32,
+  /// Rotation around the vertical axis in radians.
+  pub rotation: f32,
+  /// Colour variation from 0 to 1.
+  pub tint: f32,
+  /// [`TreeSpecies`] index.
+  pub species: u32,
+  /// Colour dryness from 0 (lush) to 1 (dry), from the local climate.
+  pub dryness: f32,
+}
+
+/// Pick a species for a tree growing in `biome`, or `None` when this
+/// biome should stay treeless at this roll.
+pub fn choose_species(biome: BiomeKind, temperature: f32, roll: f32) -> Option<TreeSpecies> {
+  use TreeSpecies::*;
+
+  let cold = temperature < 0.38;
+  let warm = temperature > 0.55;
+  let table: &[(TreeSpecies, f32)] = match biome {
+    BiomeKind::GrassyMeadows => &[(Oak, 0.65), (Shrub, 0.35)],
+    BiomeKind::OuterThicket if cold => &[(Shrub, 0.5), (Spruce, 0.25), (Pine, 0.25)],
+    BiomeKind::OuterThicket => &[(Shrub, 0.55), (Oak, 0.35), (Pine, 0.1)],
+    BiomeKind::OuterForest if cold => &[(Pine, 0.5), (Spruce, 0.4), (Shrub, 0.1)],
+    BiomeKind::OuterForest => &[(Oak, 0.55), (Pine, 0.3), (Shrub, 0.15)],
+    BiomeKind::InnerForest if cold => &[(Spruce, 0.65), (Pine, 0.35)],
+    BiomeKind::InnerForest => &[(Oak, 0.6), (Pine, 0.25), (Spruce, 0.15)],
+    BiomeKind::MountainFoothills => &[(Pine, 0.5), (Spruce, 0.4), (Shrub, 0.1)],
+    BiomeKind::MountainProper => &[(Spruce, 0.8), (Pine, 0.2)],
+    BiomeKind::OuterVolcanic => &[(Pine, 0.7), (Shrub, 0.3)],
+    BiomeKind::SavannahExpanse => &[(Acacia, 0.8), (Shrub, 0.2)],
+    BiomeKind::CoastalBeach if warm => &[(Palm, 1.0)],
+    BiomeKind::CoastalBeach => &[(Pine, 0.6), (Shrub, 0.4)],
+    BiomeKind::CoastalRocky if warm => &[(Palm, 0.4), (Shrub, 0.6)],
+    BiomeKind::CoastalRocky => &[(Pine, 0.6), (Shrub, 0.4)],
+    BiomeKind::OuterJungle => &[(Jungle, 0.5), (Palm, 0.3), (Shrub, 0.2)],
+    BiomeKind::InnerJungle => &[(Jungle, 0.85), (Palm, 0.15)],
+    BiomeKind::SwampWetlands => &[(Cypress, 0.8), (Shrub, 0.2)],
+    BiomeKind::CalderaVolcanic | BiomeKind::Ocean => &[],
+  };
+
+  let mut remaining = roll.clamp(0.0, 0.9999);
+
+  for (species, weight) in table {
+    if remaining < *weight {
+      return Some(*species);
+    }
+
+    remaining -= weight;
+  }
+
+  table.last().map(|(species, _)| *species)
+}
+
+/// Scatter deterministic tree instances according to the biome map.
+///
+/// Placement is driven entirely by the terrain heightmap, the baked
+/// `surface` samples, and `options`, so the same seed and options always
+/// scatter the same trees. `density_scale` applies an additional
+/// multiplier from the active render quality preset.
+pub fn build_tree_instances(
   map: &HeightMap,
+  surface: &[SurfaceSample],
   options: &FloraOptions,
   density_scale: f32,
-) -> Vec<FloraInstance> {
+) -> Vec<TreeInstance> {
   let density = (options.density * density_scale).clamp(0.0, 1.0);
 
   if !options.enabled || density <= 0.0 || options.max_instances == 0 {
@@ -120,7 +135,7 @@ pub fn build_flora_instances(
   let width = map.metadata.width;
   let height = map.metadata.height;
 
-  if width < 2 || height < 2 {
+  if width < 2 || height < 2 || surface.len() != map.heights.len() {
     return Vec::new();
   }
 
@@ -131,7 +146,12 @@ pub fn build_flora_instances(
   let half_width = (width as f32 - 1.0) * metres_per_sample * 0.5;
   let half_height = (height as f32 - 1.0) * metres_per_sample * 0.5;
   let seed = options.seed_offset;
-  let water_line = map.metadata.sea_level_metres + 1.0;
+  let water_line = map.metadata.sea_level_metres + 0.6;
+  let variation = options.species_variation.clamp(0.0, 1.0);
+  let cell_span = stride as f32 * metres_per_sample;
+  // Dense forests want more than one tree per 12 m cell; allow up to two
+  // candidates per cell on fine grids.
+  let per_cell = if cell_span > 9.0 { 2 } else { 1 };
 
   let mut candidates = Vec::new();
   let mut y = 0;
@@ -140,32 +160,38 @@ pub fn build_flora_instances(
     let mut x = 0;
 
     while x < width {
-      if let Some(instance) = candidate_at(
-        map,
-        x,
-        y,
-        width,
-        height,
-        metres_per_sample,
-        water_line,
-        options,
-        seed,
-      ) {
-        let placement_roll = unit_from_hash(hash_noise(seed, x as i32, y as i32));
+      for slot in 0..per_cell {
+        let slot_seed = seed ^ (slot as u64).wrapping_mul(0x632b_e59b_d9b4_e019);
+        let jitter_x =
+          unit_from_hash(hash_noise(slot_seed ^ 0x9e37_79b9, x as i32, y as i32)) - 0.5;
+        let jitter_z =
+          unit_from_hash(hash_noise(slot_seed ^ 0x85eb_ca6b, x as i32, y as i32)) - 0.5;
+        let sample_x = (x as f32 + jitter_x * stride as f32)
+          .clamp(0.0, (width - 1) as f32)
+          .round() as u32;
+        let sample_y = (y as f32 + jitter_z * stride as f32)
+          .clamp(0.0, (height - 1) as f32)
+          .round() as u32;
 
-        if placement_roll <= density {
-          let jitter_x = unit_from_hash(hash_noise(seed ^ 0x9e37_79b9, x as i32, y as i32)) - 0.5;
-          let jitter_z = unit_from_hash(hash_noise(seed ^ 0x85eb_ca6b, x as i32, y as i32)) - 0.5;
-          let cell_span = stride as f32 * metres_per_sample;
-
-          candidates.push(FloraInstance {
+        if let Some(instance) = candidate_at(
+          map,
+          surface,
+          sample_x,
+          sample_y,
+          metres_per_sample,
+          water_line,
+          options,
+          density,
+          variation,
+          slot_seed,
+        ) {
+          candidates.push(TreeInstance {
             position: [
-              instance.position[0] - half_width + jitter_x * cell_span,
+              x as f32 * metres_per_sample + jitter_x * cell_span - half_width,
               instance.position[1],
-              instance.position[2] - half_height + jitter_z * cell_span,
+              y as f32 * metres_per_sample + jitter_z * cell_span - half_height,
             ],
-            scale: instance.scale,
-            tint: instance.tint,
+            ..instance
           });
         }
       }
@@ -194,15 +220,18 @@ pub fn build_flora_instances(
 #[allow(clippy::too_many_arguments)]
 fn candidate_at(
   map: &HeightMap,
+  surface: &[SurfaceSample],
   x: u32,
   y: u32,
-  width: u32,
-  height: u32,
   metres_per_sample: f32,
   water_line: f32,
   options: &FloraOptions,
+  density: f32,
+  variation: f32,
   seed: u64,
-) -> Option<FloraInstance> {
+) -> Option<TreeInstance> {
+  let width = map.metadata.width;
+  let height = map.metadata.height;
   let index = (y * width + x) as usize;
 
   if map.no_data[index] {
@@ -210,8 +239,9 @@ fn candidate_at(
   }
 
   let elevation = map.heights[index];
+  let sample = surface[index];
 
-  if elevation <= water_line || elevation > options.tree_line_metres {
+  if elevation <= water_line || elevation > options.tree_line_metres || sample.river > 0 {
     return None;
   }
 
@@ -229,17 +259,35 @@ fn candidate_at(
     return None;
   }
 
+  // Thin trees out towards the tree line so forests fade rather than stop.
+  let tree_line_fade = ((options.tree_line_metres - elevation) / 150.0).clamp(0.0, 1.0);
+  let cover = sample.forest as f32 / 255.0 * tree_line_fade;
+  let placement_roll = unit_from_hash(hash_noise(seed, x as i32, y as i32));
+
+  if placement_roll > density * cover * 1.6 {
+    return None;
+  }
+
+  let species_roll = unit_from_hash(hash_noise(seed ^ 0x7f4a_7c15, x as i32, y as i32));
+  let species = choose_species(sample.biome_kind(), sample.temperature_unit(), species_roll)?;
   let scale_roll = unit_from_hash(hash_noise(seed ^ 0x1234_5678, x as i32, y as i32));
   let tint_roll = unit_from_hash(hash_noise(seed ^ 0x4321_dcba, x as i32, y as i32));
+  let rotation_roll = unit_from_hash(hash_noise(seed ^ 0x2468_ace0, x as i32, y as i32));
+  // Trees at the forest edge and on poor ground grow smaller.
+  let vigour = 0.8 + cover.min(1.0) * 0.2;
 
-  Some(FloraInstance {
+  Some(TreeInstance {
     position: [
       x as f32 * metres_per_sample,
       elevation,
       y as f32 * metres_per_sample,
     ],
-    scale: 6.0 + scale_roll * 6.0,
-    tint: tint_roll,
+    scale: (1.0 + (scale_roll - 0.5) * 0.55 * variation.max(0.15)) * vigour,
+    rotation: rotation_roll * std::f32::consts::TAU,
+    tint: 0.5 + (tint_roll - 0.5) * variation.max(0.1),
+    species: species as u32,
+    dryness: ((sample.temperature_unit() - 0.45) * 1.5 + (0.5 - sample.moisture_unit()) * 1.5)
+      .clamp(0.0, 1.0),
   })
 }
 
@@ -250,7 +298,9 @@ pub(crate) fn unit_from_hash(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use vista_types::TerrainMetadata;
+  use crate::terrain::biomes::classify_surface;
+  use crate::terrain::normals::generate_normals;
+  use vista_types::{BiomeOptions, TerrainMetadata};
 
   fn flat_map(size: u32, elevation: f32) -> HeightMap {
     let metadata = TerrainMetadata {
@@ -258,10 +308,21 @@ mod tests {
       height: size,
       metres_per_sample: 4.0,
       sea_level_metres: 0.0,
+      max_height_metres: 600.0,
       ..TerrainMetadata::default()
     };
 
     HeightMap::flat(size, size, elevation, metadata)
+  }
+
+  fn forest_surface(map: &HeightMap) -> Vec<SurfaceSample> {
+    let options = BiomeOptions {
+      moisture_bias: 1.0,
+      temperature_bias: -0.3,
+      volcanism: 0.0,
+      ..BiomeOptions::default()
+    };
+    classify_surface(map, &generate_normals(map), None, &options)
   }
 
   fn flora_options() -> FloraOptions {
@@ -281,7 +342,7 @@ mod tests {
     let mut options = flora_options();
     options.enabled = false;
 
-    assert!(build_flora_instances(&map, &options, 1.0).is_empty());
+    assert!(build_tree_instances(&map, &forest_surface(&map), &options, 1.0).is_empty());
   }
 
   #[test]
@@ -289,15 +350,15 @@ mod tests {
     let map = flat_map(32, -10.0);
     let options = flora_options();
 
-    assert!(build_flora_instances(&map, &options, 1.0).is_empty());
+    assert!(build_tree_instances(&map, &forest_surface(&map), &options, 1.0).is_empty());
   }
 
   #[test]
-  fn flat_grass_above_sea_level_produces_instances() {
+  fn forest_above_sea_level_produces_instances() {
     let map = flat_map(32, 50.0);
     let options = flora_options();
 
-    assert!(!build_flora_instances(&map, &options, 1.0).is_empty());
+    assert!(!build_tree_instances(&map, &forest_surface(&map), &options, 1.0).is_empty());
   }
 
   #[test]
@@ -306,21 +367,43 @@ mod tests {
     let mut options = flora_options();
     options.max_instances = 5;
 
-    assert!(build_flora_instances(&map, &options, 1.0).len() <= 5);
+    assert!(build_tree_instances(&map, &forest_surface(&map), &options, 1.0).len() <= 5);
   }
 
   #[test]
   fn same_seed_is_deterministic() {
     let map = flat_map(32, 50.0);
     let options = flora_options();
+    let surface = forest_surface(&map);
 
-    let first = build_flora_instances(&map, &options, 1.0);
-    let second = build_flora_instances(&map, &options, 1.0);
+    let first = build_tree_instances(&map, &surface, &options, 1.0);
+    let second = build_tree_instances(&map, &surface, &options, 1.0);
 
-    assert_eq!(first.len(), second.len());
+    assert_eq!(first, second);
+  }
 
-    for (a, b) in first.iter().zip(second.iter()) {
-      assert_eq!(a.position, b.position);
-    }
+  #[test]
+  fn species_follow_the_biome() {
+    assert_eq!(
+      choose_species(BiomeKind::SwampWetlands, 0.6, 0.1),
+      Some(TreeSpecies::Cypress)
+    );
+    assert_eq!(
+      choose_species(BiomeKind::InnerJungle, 0.8, 0.1),
+      Some(TreeSpecies::Jungle)
+    );
+    assert_eq!(
+      choose_species(BiomeKind::CoastalBeach, 0.8, 0.5),
+      Some(TreeSpecies::Palm)
+    );
+    assert_eq!(
+      choose_species(BiomeKind::InnerForest, 0.2, 0.1),
+      Some(TreeSpecies::Spruce)
+    );
+    assert_eq!(
+      choose_species(BiomeKind::SavannahExpanse, 0.8, 0.1),
+      Some(TreeSpecies::Acacia)
+    );
+    assert_eq!(choose_species(BiomeKind::Ocean, 0.5, 0.1), None);
   }
 }

@@ -22,6 +22,17 @@ background covered there.
 
 ## Implementation status
 
+> **Superseded in part.** The realism work described in
+> [`docs/architecture.md`](architecture.md), [`docs/biomes.md`](biomes.md),
+> [`docs/vegetation.md`](vegetation.md), [`docs/water.md`](water.md), and
+> [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md)
+> replaced several details below: the tree `mesh` tier now draws real
+> procedurally modelled species with impostors; clouds use baked 3D noise
+> and cast shadows; haze and mist are applied in a depth-aware composite
+> pass; and `FrameUniforms` is declared once in `shaders/common.wgsl`, which
+> is prepended to every render shader, so the append-only prefix rule in
+> §1.2 no longer applies. The notes below are kept as a historical record.
+
 Phases 1–5 of §14 (mist `flat`/`volumetric`, tree `cross-quad`, grass
 `billboard-blades`/`dense-blades`, clouds `painted`/`volumetric`) are
 implemented. A few details landed slightly differently from the sketch

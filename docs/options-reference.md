@@ -24,6 +24,7 @@ precise reference; those documents are the tour.
 - [`WaterOptions`](#wateroptions)
 - [`FloraOptions`](#floraoptions)
 - [`GrassOptions`](#grassoptions)
+- [`BiomeOptions`](#biomeoptions)
 - [`RenderQualityOptions`](#renderqualityoptions)
 - [`DebugView`](#debugview)
 - [`FractalTerrainOptions`](#fractalterrainoptions)
@@ -49,6 +50,7 @@ omitted fields use the defaults below.
 | `clouds` | `CloudsOptions` | see [`CloudsOptions`](#cloudsoptions) (off by default) |
 | `mist` | `MistOptions` | see [`MistOptions`](#mistoptions) (off by default) |
 | `quality` | `RenderQualityOptions` | see [`RenderQualityOptions`](#renderqualityoptions) |
+| `biomes` | `BiomeOptions` | see [`BiomeOptions`](#biomeoptions) (climate biomes on by default) |
 
 Always pass a real `render.width`/`render.height` matching your canvas's
 actual CSS size — the `{ width: 1, height: 1 }` default exists only so the
@@ -104,11 +106,16 @@ projector model and the bundled fly-camera controller.
 | --- | --- | --- | --- |
 | `style` | `"off" \| "painted" \| "volumetric"` | `"off"` | See [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#clouds). |
 | `coverage` | `number` | `0.45` | `0` clear to `1` overcast. Must be `>= 0`. |
-| `speed` | `number` | `1.0` | Drift speed multiplier. |
-| `heightMetres` | `number` | `4000` | Cloud layer altitude. |
+| `speed` | `number` | `1.0` | Wind speed multiplier; `1` is roughly 15 m/s, `0` freezes the clouds. |
+| `heightMetres` | `number` | `1800` | Altitude of the cloud base. |
 | `colour` | `[number, number, number]` | `[1, 1, 1]` | Base cloud tint. |
 | `seedOffset` | `number \| bigint` | `9007` | Deterministic cloud noise seed. |
-| `raymarchSteps` | `number?` | `24` | `"volumetric"` style only. **Hard-clamped server-side to `8..=64`** regardless of the requested value — an out-of-range value throws `OPTIONS_INVALID` rather than being silently clamped, since this value bounds a real shader loop. |
+| `raymarchSteps` | `number?` | `32` | `"volumetric"` style only. Must be within `8..=64`: an out-of-range value throws `OPTIONS_INVALID` rather than being silently clamped, since this value bounds a real shader loop. |
+| `windDirectionDegrees` | `number?` | `70` | Direction the wind carries clouds towards (0 = +Z, 90 = +X). |
+| `evolution` | `number?` | `0.35` | How quickly cloud shapes billow and change while drifting, `0` (rigid) to `1`. |
+| `thicknessMetres` | `number?` | `1600` | Vertical thickness of the cloud layer. Must be `> 0`. |
+| `density` | `number?` | `0.6` | Optical density, `0` (wispy) to `1` (dense cumulus). |
+| `castShadows` | `boolean?` | `true` | Moving cloud shadows on terrain, trees, grass, and water. |
 
 ## `MistOptions`
 
@@ -121,6 +128,9 @@ projector model and the bundled fly-camera controller.
 | `colour` | `[number, number, number]` | `[0.82, 0.85, 0.88]` | Mist tint. |
 | `riseAboveWater` | `boolean` | `true` | Adds extra mist near `WaterOptions.seaLevelMetres`, independent of `baseHeightMetres`. |
 | `seedOffset` | `number \| bigint` | `5303` | Deterministic mist noise seed (`"volumetric"` style only). |
+| `windDirectionDegrees` | `number?` | `70` | Direction fog banks drift towards. |
+| `windSpeedMetresPerSecond` | `number?` | `2.5` | Fog bank drift speed (`"volumetric"` style). |
+| `sunScattering` | `number?` | `0.6` | How strongly mist glows when looking towards the sun, `0` to `1`. |
 
 ## `WaterOptions`
 
@@ -128,9 +138,38 @@ projector model and the bundled fly-camera controller.
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | |
 | `seaLevelMetres` | `number` | `0` | Set relative to `TerrainMetadata.minHeightMetres`/`meanHeightMetres`, not a hardcoded constant — see [`docs/water.md`](water.md). Must be finite. |
-| `waveScale` | `number` | `0.8` | Procedural ripple amplitude. Must be `>= 0`. |
-| `reflectivity` | `number` | `0.35` | Fresnel/sky reflection strength. Must be `>= 0`. |
+| `waveScale` | `number` | `0.8` | Small-scale ripple strength. Large swell is `waves`. Must be `>= 0`. |
+| `reflectivity` | `number` | `0.35` | Sky reflection strength on top of physical Fresnel. Must be `>= 0`. |
 | `shorelineSoftnessMetres` | `number` | `6` | Shoreline blend distance. |
+| `waves` | `WaveOptions?` | see below | Gerstner swell simulation. |
+| `rivers` | `RiverOptions?` | see below | Rivers and lakes from the terrain drainage network. Changing these re-carves the terrain. |
+| `currentDirectionDegrees` | `number?` | `60` | Direction of the open-water surface current. |
+| `currentSpeed` | `number?` | `0.35` | Surface current in m/s; moves ripples and foam. `0` for still water. |
+| `shallowColour` | `[number, number, number]?` | `[0.1, 0.52, 0.5]` | sRGB colour of shallow water. Components `0` to `4`. |
+| `deepColour` | `[number, number, number]?` | `[0.015, 0.09, 0.16]` | sRGB colour of deep water. |
+| `clarityMetres` | `number?` | `6` | Depth at which the sea bed stops being visible. Must be `> 0`. |
+| `foam` | `number?` | `0.7` | Foam on crests, shorelines, and rapids, `0` to `1`. |
+
+### `WaveOptions`
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enabled` | `boolean?` | `true` | `false` keeps the surface flat (ripples only). |
+| `amplitudeMetres` | `number?` | `0.9` | Trough-to-crest height of the dominant swell, `0` to `30`. |
+| `wavelengthMetres` | `number?` | `38` | Dominant wavelength, `> 0` and at most `2000`. |
+| `directionDegrees` | `number?` | `35` | Direction the swell travels towards. |
+| `steepness` | `number?` | `0.55` | `0` rolling to `1` sharp, choppy crests. |
+| `speed` | `number?` | `1` | Animation speed multiplier (`1` = deep-water dispersion). |
+| `directionalSpread` | `number?` | `0.55` | `0` parallel swell to `1` confused, storm-like sea. |
+
+### `RiverOptions`
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enabled` | `boolean?` | `true` | Rivers and lakes on or off. |
+| `minCatchmentKm2` | `number?` | `0.15` | Upstream area before a channel becomes a river. Smaller draws more, thinner streams. Must be `> 0`. |
+| `widthScale` | `number?` | `1` | Multiplier on the automatic width. Must be `> 0`. |
+| `currentSpeed` | `number?` | `1` | River current speed multiplier. |
 
 ## `FloraOptions`
 
@@ -141,12 +180,14 @@ projector model and the bundled fly-camera controller.
 | `treeLineMetres` | `number` | `1800` | Altitude above which trees stop spawning. |
 | `seedOffset` | `number \| bigint` | `3001` | Deterministic placement seed. |
 | `maxInstances` | `number` | `500000` | Upper bound on instance count, also clamped to the active device's limits. |
-| `treeQuality` | `"billboard" \| "cross-quad" \| "mesh"` | `"billboard"` | See [`docs/vegetation.md`](vegetation.md#tree-quality). `"mesh"` currently renders identically to `"cross-quad"` (documented, not a bug — see that doc). |
-| `speciesVariation` | `number?` | `0` | `0` to `1`. Canopy silhouette/colour variety strength. Must be `>= 0`. |
-| `windStrength` | `number?` | `0` | `0` to `1`. Canopy sway strength (trunk never moves). Must be `>= 0`. |
+| `treeQuality` | `"billboard" \| "cross-quad" \| "mesh"` | `"mesh"` | See [`docs/vegetation.md`](vegetation.md#tree-quality). |
+| `speciesVariation` | `number?` | `0.6` | `0` to `1`. Per-tree size and colour variety. Must be `>= 0`. |
+| `windStrength` | `number?` | `0.3` | `0` to `1`. Wind sway strength. Must be `>= 0`. |
+| `meshDistanceMetres` | `number?` | `420` | Distance at which `"mesh"` trees cross-fade to impostors. Must be `> 0`. |
 
-Placement automatically avoids underwater and steep terrain; see
-[`docs/vegetation.md`](vegetation.md#placement) for the algorithm.
+Species and density follow the biome under each tree, and placement avoids
+underwater, river, and steep terrain; see
+[`docs/vegetation.md`](vegetation.md#placement).
 
 ## `GrassOptions`
 
@@ -163,6 +204,29 @@ are unaffected until a host opts in.
 | `seedOffset` | `number \| bigint` | `7331` | Deterministic placement seed. |
 | `maxInstances` | `number` | `200000` | Upper bound on instance count, also clamped to the active device's limits. |
 
+## `BiomeOptions`
+
+Passed at creation (`biomes`) or later with `engine.setBiomes()`. Every
+field is optional. See [`docs/biomes.md`](biomes.md).
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enabled` | `boolean?` | `true` | `false` uses height and slope only (a temperate world). |
+| `seedOffset` | `number \| bigint?` | `1733` | Seed for the climate fields. |
+| `temperatureBias` | `number?` | `0` | `-1` colder to `1` hotter. Must be finite. |
+| `moistureBias` | `number?` | `0` | `-1` drier to `1` wetter. Must be finite. |
+| `climateScaleMetres` | `number?` | `7000` | Typical climate region size. Must be `> 0`. |
+| `volcanism` | `number?` | `0.35` | `0` to `1`. Volcanic regions around high peaks. |
+| `beachHeightMetres` | `number?` | `5` | Height above sea level below which flat ground becomes beach. |
+| `snowLineMetres` | `number?` | 80% of sea-to-peak | Snow line; lowered further in cold climates. |
+
+`engine.biomeAt(x, z)` returns the biome name at a world position (or
+`undefined` outside the terrain): `"grassyMeadows"`, `"outerThicket"`,
+`"outerForest"`, `"innerForest"`, `"mountainFoothills"`, `"mountainProper"`,
+`"outerVolcanic"`, `"calderaVolcanic"`, `"savannahExpanse"`,
+`"coastalBeach"`, `"coastalRocky"`, `"outerJungle"`, `"innerJungle"`,
+`"swampWetlands"`, or `"ocean"`.
+
 ## `RenderQualityOptions`
 
 | Field | Type | Default | Notes |
@@ -174,10 +238,10 @@ are unaffected until a host opts in.
 ## `DebugView`
 
 A plain string, not an object: `"none" | "height" | "slope" | "normals" |
-"lod" | "flow" | "materials" | "no-data"`. Passed to `engine.setDebugView()`.
-**No value other than `"none"` currently changes what is rendered** — see
-[`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)
-for the current status of each mode.
+"lod" | "flow" | "materials" | "no-data" | "biomes"`. Passed to
+`engine.setDebugView()`. `"height"`, `"slope"`, `"normals"`, `"materials"`,
+and `"biomes"` are implemented; the rest currently render like `"none"` —
+see [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md).
 
 ## `FractalTerrainOptions`
 

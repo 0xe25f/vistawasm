@@ -2,6 +2,8 @@ import { VistaWasmError, toVistaWasmError } from "./errors.js";
 import { assertVistaWasmSupport, detectVistaWasmSupport } from "./feature-detect.js";
 import type {
   AtmosphereOptions,
+  BiomeKind,
+  BiomeOptions,
   CameraOptions,
   CloudsOptions,
   DebugView,
@@ -256,6 +258,22 @@ class VistaEngineWrapper implements VistaEngine {
     this.call(() => this.raw.setRenderQuality(quality));
   }
 
+  public setBiomes(biomes: BiomeOptions): void {
+    if (this.pendingCall) {
+      return;
+    }
+
+    this.call(() => this.raw.setBiomes(normaliseBiomeOptions(biomes)));
+  }
+
+  public biomeAt(x: number, z: number): BiomeKind | undefined {
+    if (this.pendingCall || !Number.isFinite(x) || !Number.isFinite(z)) {
+      return undefined;
+    }
+
+    return this.call(() => this.raw.biomeAt(x, z)) as BiomeKind | undefined;
+  }
+
   public setDebugView(debugView: DebugView): void {
     if (this.pendingCall) {
       return;
@@ -497,7 +515,8 @@ function normaliseEngineOptions(options: VistaEngineOptions): VistaEngineOptions
     flora: options.flora ? normaliseFloraOptions(options.flora) : undefined,
     grass: options.grass ? normaliseGrassOptions(options.grass) : undefined,
     clouds: options.clouds ? normaliseCloudsOptions(options.clouds) : undefined,
-    mist: options.mist ? normaliseMistOptions(options.mist) : undefined
+    mist: options.mist ? normaliseMistOptions(options.mist) : undefined,
+    biomes: options.biomes ? normaliseBiomeOptions(options.biomes) : undefined
   };
 }
 
@@ -534,6 +553,12 @@ function normaliseMistOptions(options: MistOptions): MistOptions {
     ...options,
     seedOffset: normaliseInteger(options.seedOffset)
   };
+}
+
+function normaliseBiomeOptions(options: BiomeOptions): BiomeOptions {
+  return options.seedOffset === undefined
+    ? { ...options }
+    : { ...options, seedOffset: normaliseInteger(options.seedOffset) };
 }
 
 function normaliseInteger(value: number | bigint): number {

@@ -1,42 +1,22 @@
-// Renders an analytic sky dome as a full-screen background pass drawn
-// before terrain, flora, and water. It approximates Rayleigh scattering
-// (blue sky brightening towards the zenith), Mie forward scattering (haze
-// and glow around the sun), a sun disc, horizon haze, and an optional
-// cloud layer, driven by the public atmosphere/cloud/sun controls. This is
-// a practical approximation, not a physically integrated scattering
-// simulation.
+// Full-screen composite pass: sky, sun, clouds, aerial perspective, and
+// ground mist, followed by tone mapping. `common.wgsl` is prepended.
 //
-// Clouds have two styles (see `CloudsOptions` in `vista_types` and
-// `docs/environment-upgrade-plan.md` §4): `Painted` samples a single 2-D
-// noise layer at the cloud altitude (cheap, the default once enabled);
-// `Volumetric` raymarches a thin density band around that altitude for
-// real depth and sun-facing shading. Both are folded into this one
-// fullscreen pass rather than a separate pipeline — the pass already
-// reconstructs a per-pixel view ray, and terrain drawn afterwards already
-// occludes distant sky/cloud pixels behind mountains via the depth buffer,
-// so no extra pipeline or depth-awareness is needed here.
+// Opaque geometry (terrain, trees, grass) is rendered first into a linear
+// HDR target. This pass reads that target and the depth buffer, so it can:
+//
+// - draw the analytic sky, sun disc, and clouds behind everything;
+// - march clouds in front of geometry too (mountains poking into cloud);
+// - apply haze and height-based mist with the true distance to every
+//   pixel, in one place, instead of each object shader approximating it.
+//
+// Clouds have two styles. `Painted` shades a single 2D weather layer with
+// a cheap sun-offset self-shadow. `Volumetric` raymarches a cloud slab
+// through baked 3D Perlin-Worley noise, with a short secondary march
+// towards the sun (Beer-powder lighting), a dual-lobe phase function for
+// silver linings, and wind drift plus slow billowing evolution.
 
-struct FrameUniforms {
-  view_proj: mat4x4<f32>,
-  camera_position: vec4<f32>,
-  sun_direction: vec4<f32>,
-  sun_colour_intensity: vec4<f32>,
-  fog: vec4<f32>,
-  water_params: vec4<f32>,
-  camera_forward: vec4<f32>,
-  camera_right: vec4<f32>,
-  camera_up: vec4<f32>,
-  camera_params: vec4<f32>,
-  sky_tint: vec4<f32>,
-  atmosphere_params: vec4<f32>,
-  mist_params: vec4<f32>,
-  mist_colour: vec4<f32>,
-  cloud_params: vec4<f32>,
-  cloud_colour: vec4<f32>,
-};
-
-@group(0) @binding(0)
-var<uniform> frame: FrameUniforms;
+@group(2) @binding(0) var scene_texture: texture_2d<f32>;
+@group(2) @binding(1) var depth_texture: texture_depth_2d;
 
 struct VertexOut {
   @builtin(position) clip_position: vec4<f32>,
@@ -58,151 +38,251 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
   return out;
 }
 
-fn hash21(p: vec2<f32>) -> f32 {
-  var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
-  p3 = p3 + dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+fn view_ray(ndc: vec2<f32>) -> vec3<f32> {
+  let tan_half_fov_y = max(frame.camera_forward.w, 0.0001);
+  let aspect = max(frame.camera_right.w, 0.0001);
+  return normalize(
+    frame.camera_forward.xyz
+      + frame.camera_right.xyz * ndc.x * tan_half_fov_y * aspect
+      + frame.camera_up.xyz * ndc.y * tan_half_fov_y
+  );
 }
 
-fn cloud_value_noise(p: vec2<f32>) -> f32 {
-  let i = floor(p);
-  let f = fract(p);
-  let a = hash21(i);
-  let b = hash21(i + vec2<f32>(1.0, 0.0));
-  let c = hash21(i + vec2<f32>(0.0, 1.0));
-  let d = hash21(i + vec2<f32>(1.0, 1.0));
-  let u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+fn linear_distance(depth: f32, ray: vec3<f32>) -> f32 {
+  let near = frame.water_deep.w;
+  let far = frame.water_current.w;
+  let view_depth = far * near / max(far - depth * (far - near), 0.0001);
+  return view_depth / max(dot(ray, frame.camera_forward.xyz), 0.0001);
 }
 
-fn cloud_fbm(p: vec2<f32>) -> f32 {
-  var value = 0.0;
-  var amplitude = 0.55;
-  var frequency = 1.0;
+// --- Clouds ---------------------------------------------------------------
 
-  for (var i = 0; i < 4; i = i + 1) {
-    value = value + cloud_value_noise(p * frequency) * amplitude;
-    amplitude = amplitude * 0.5;
-    frequency = frequency * 2.05;
+fn cloud_wind_offset() -> vec3<f32> {
+  return vec3<f32>(frame.cloud_motion.x, frame.cloud_motion.z, frame.cloud_motion.y);
+}
+
+fn cloud_shape(p: vec3<f32>, weather: f32) -> f32 {
+  let base = frame.cloud_params.y;
+  let thickness = max(frame.cloud_params.z, 1.0);
+  let h = (p.y - base) / thickness;
+
+  if (h <= 0.0 || h >= 1.0) {
+    return 0.0;
   }
 
-  return value;
+  // Denser weather grows taller clouds; bases are flat, tops rounded.
+  let top = mix(0.3, 1.0, weather);
+  let profile = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(top * 0.55, top, h));
+  let shape = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset()) / 5600.0, 0.0).r;
+  return saturate(remap(shape * profile, 1.0 - weather * 0.9, 1.0, 0.0, 1.0));
 }
 
-// Returns cloud density (0..1) for a view ray, using the cheap `Painted`
-// single-sample style or the raymarched `Volumetric` style depending on
-// `frame.cloud_params.w` (0 selects Painted; a validated 8..=64 step count
-// selects Volumetric — see `config.rs`'s `validate_clouds`).
-fn cloud_density(ray: vec3<f32>, drift: vec2<f32>) -> f32 {
+fn cloud_density(p: vec3<f32>, weather: f32) -> f32 {
+  var density = cloud_shape(p, weather);
+
+  if (density <= 0.0) {
+    return 0.0;
+  }
+
+  // Erode the edges with higher-frequency Worley detail: wispy at the
+  // base, billowing towards the top.
+  let base = frame.cloud_params.y;
+  let h = saturate((p.y - base) / max(frame.cloud_params.z, 1.0));
+  let detail = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset() * 1.35) / 1250.0, 0.0);
+  let detail_fbm = detail.g * 0.625 + detail.b * 0.25 + detail.a * 0.125;
+  let erosion = mix(detail_fbm, 1.0 - detail_fbm, saturate(h * 3.0));
+  density = saturate(remap(density, erosion * 0.38, 1.0, 0.0, 1.0));
+  return density * (0.35 + frame.cloud_motion.w * 1.3);
+}
+
+struct CloudResult {
+  scatter: vec3<f32>,
+  transmittance: f32,
+  distance: f32,
+};
+
+fn cloud_lighting_ambient(h: f32) -> vec3<f32> {
+  let sky = sky_radiance(vec3<f32>(0.0, 1.0, 0.0));
+  return sky * mix(0.55, 1.4, h) + sun_light() * 0.06;
+}
+
+fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudResult {
+  var result = CloudResult(vec3<f32>(0.0), 1.0, 0.0);
   let coverage = frame.cloud_params.x;
-  let cloud_height = frame.cloud_params.z;
-  let raymarch_steps = frame.cloud_params.w;
-  let height_above_camera = max(cloud_height - frame.camera_position.y, 50.0);
-  let travel = height_above_camera / max(ray.y, 0.02);
-  let sample_xz = vec2<f32>(frame.camera_position.x, frame.camera_position.z)
-    + vec2<f32>(ray.x, ray.z) * travel + drift;
 
-  if (raymarch_steps < 0.5) {
-    let noise = cloud_fbm(sample_xz * 0.00025);
-    return clamp((noise + coverage - 0.5) * 2.2, 0.0, 1.0);
+  if (coverage <= 0.001) {
+    return result;
   }
 
-  // Accumulate as `1 - transmittance` (a standard front-to-back opacity
-  // composite) rather than a plain sum of per-step densities, so the
-  // result always stays within 0..1 regardless of step count — a plain
-  // sum over many steps would saturate to a uniform overcast well before
-  // `coverage` reached 1, which is what an earlier version of this
-  // function did.
-  let steps = i32(raymarch_steps);
-  let band_half_thickness = max(cloud_height * 0.08, 150.0);
-  let step_length = (band_half_thickness * 2.0) / f32(steps);
+  let camera = frame.camera_position.xyz;
+  let base = frame.cloud_params.y;
+  let top = base + max(frame.cloud_params.z, 1.0);
+  var t0 = 0.0;
+  var t1 = 0.0;
+
+  if (camera.y < base) {
+    if (ray.y <= 0.004) {
+      return result;
+    }
+    t0 = (base - camera.y) / ray.y;
+    t1 = (top - camera.y) / ray.y;
+  } else if (camera.y > top) {
+    if (ray.y >= -0.004) {
+      return result;
+    }
+    t0 = (top - camera.y) / ray.y;
+    t1 = (base - camera.y) / ray.y;
+  } else {
+    t0 = 0.0;
+    if (ray.y > 0.004) {
+      t1 = (top - camera.y) / ray.y;
+    } else if (ray.y < -0.004) {
+      t1 = (base - camera.y) / ray.y;
+    } else {
+      t1 = 40000.0;
+    }
+  }
+
+  t1 = min(t1, min(max_distance, t0 + 25000.0));
+
+  if (t1 <= t0 || t0 > 90000.0) {
+    return result;
+  }
+
+  let sun = sun_dir();
+  let mu = dot(ray, sun);
+  // Dual-lobe phase: strong forward scattering (silver linings) plus some
+  // back scattering so clouds facing away from the sun are not flat.
+  let phase = mix(henyey_greenstein(mu, 0.75), henyey_greenstein(mu, -0.25), 0.3) * 4.0 * PI;
+  let sun_colour = sun_light() * frame.cloud_colour.rgb;
+  let steps = frame.cloud_params.w;
+  result.distance = t0;
+
+  if (steps < 0.5) {
+    // Painted: one layer at the middle of the slab.
+    let mid = (t0 + t1) * 0.5;
+    let p = camera + ray * mid;
+    let weather = cloud_weather(p.xz);
+    let fine = textureSampleLevel(noise_texture, linear_sampler, (p.xz + frame.cloud_motion.xy * 1.3) / 2600.0, 0.0);
+    let density = saturate(remap(weather * (0.55 + fine.a * 0.9), 0.08, 0.75, 0.0, 1.0)) * saturate(frame.cloud_motion.w * 1.6 + 0.2);
+    let towards_sun = cloud_weather(p.xz + sun.xz * 900.0);
+    let self_shadow = exp(-max(towards_sun - weather * 0.6, 0.0) * 3.0);
+    let light = sun_colour * self_shadow * phase * 0.5 + cloud_lighting_ambient(0.6) * 0.5;
+    let opacity = density * saturate(abs(ray.y) * 6.0);
+    result.scatter = light * opacity;
+    result.transmittance = 1.0 - opacity;
+    result.distance = mid;
+    return result;
+  }
+
+  let step_count = i32(steps);
+  // White-noise jitter: a structured dither lines up into visible hatching
+  // on long glancing rays, while grain is far less noticeable.
+  let jitter = hash12(pixel * 1.37 + vec2<f32>(fract(time_seconds() * 0.37) * 97.0, 11.0));
+  let span = t1 - t0;
+  let sigma = 0.045;
+  let light_step = max(frame.cloud_params.z, 1.0) * 0.12;
   var transmittance = 1.0;
-  var height_offset = -band_half_thickness;
+  var scatter = vec3<f32>(0.0);
+  var weighted_distance = 0.0;
+  var weight_total = 0.0;
 
-  for (var step = 0; step < steps; step = step + 1) {
-    let sample_travel = (cloud_height + height_offset - frame.camera_position.y) / max(ray.y, 0.02);
-    let sample_pos = vec2<f32>(frame.camera_position.x, frame.camera_position.z)
-      + vec2<f32>(ray.x, ray.z) * sample_travel + drift;
-    let noise = cloud_fbm(sample_pos * 0.00025 + f32(step) * 0.013);
-    let local_density = clamp((noise + coverage - 0.5) * 1.8, 0.0, 1.0);
-    let extinction = local_density * (2.5 / f32(steps));
-    transmittance = transmittance * clamp(1.0 - extinction, 0.0, 1.0);
-    height_offset = height_offset + step_length;
+  for (var i = 0; i < step_count; i = i + 1) {
+    // Steps grow with distance: fine detail close by, coverage far away.
+    let u0 = f32(i) / f32(step_count);
+    let u1 = f32(i + 1) / f32(step_count);
+    let t = t0 + span * pow((f32(i) + jitter) / f32(step_count), 1.6);
+    let step_length = span * (pow(u1, 1.6) - pow(u0, 1.6));
+    let p = camera + ray * t;
+    let weather = cloud_weather(p.xz);
+
+    if (weather <= 0.01) {
+      continue;
+    }
+
+    let density = cloud_density(p, weather);
+
+    if (density <= 0.001) {
+      continue;
+    }
+
+    // Secondary march towards the sun for self-shadowing.
+    var optical = 0.0;
+
+    for (var j = 0; j < 4; j = j + 1) {
+      let lp = p + sun * light_step * (f32(j) + 0.5) * (1.0 + f32(j) * 0.6);
+      optical = optical + cloud_shape(lp, cloud_weather(lp.xz)) * light_step * (1.0 + f32(j) * 0.6);
+    }
+
+    let beer = exp(-optical * sigma * 0.6);
+    let powder = 1.0 - exp(-optical * sigma * 1.2 - density * 0.8);
+    let h = saturate((p.y - frame.cloud_params.y) / max(frame.cloud_params.z, 1.0));
+    let light = sun_colour * beer * mix(1.0, powder, 0.55) * phase + cloud_lighting_ambient(h) * (0.35 + 0.65 * h);
+    let extinction = density * sigma;
+    let step_transmittance = exp(-extinction * step_length);
+    scatter = scatter + transmittance * light * (1.0 - step_transmittance);
+    weighted_distance = weighted_distance + t * transmittance * (1.0 - step_transmittance);
+    weight_total = weight_total + transmittance * (1.0 - step_transmittance);
+    transmittance = transmittance * step_transmittance;
+
+    if (transmittance < 0.02) {
+      break;
+    }
   }
 
-  return clamp(1.0 - transmittance, 0.0, 1.0);
+  result.scatter = scatter;
+  result.transmittance = transmittance;
+  result.distance = select(t0, weighted_distance / max(weight_total, 0.0001), weight_total > 0.0001);
+  return result;
+}
+
+fn sun_disc(ray: vec3<f32>) -> vec3<f32> {
+  let cos_angle = dot(ray, sun_dir());
+  let disc = smoothstep(0.99995, 0.999985, cos_angle);
+  let glow = pow(saturate(cos_angle), 2400.0) * 0.4;
+  return sun_transmittance(sun_dir().y) * frame.sun_direction.w * (disc * 900.0 + glow * 6.0);
 }
 
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
-  let tan_half_fov_y = max(frame.camera_params.x, 0.0001);
-  let aspect = max(frame.camera_params.y, 0.0001);
-  let tan_half_fov_x = tan_half_fov_y * aspect;
+  let pixel = vec2<i32>(in.clip_position.xy);
+  let depth = textureLoad(depth_texture, pixel, 0);
+  let ray = view_ray(in.ndc);
+  var colour: vec3<f32>;
 
-  let ray = normalize(
-    frame.camera_forward.xyz
-      + frame.camera_right.xyz * in.ndc.x * tan_half_fov_x
-      + frame.camera_up.xyz * in.ndc.y * tan_half_fov_y
-  );
+  if (depth >= 0.999999) {
+    // Background: sky, sun, and clouds.
+    var sky = sky_radiance(ray);
 
-  let sun_direction = normalize(frame.sun_direction.xyz);
-  let rayleigh_strength = frame.atmosphere_params.x;
-  let mie_strength = frame.atmosphere_params.y;
-  let sky_tint = frame.sky_tint.rgb;
-  let exposure = frame.fog.y;
+    if (ray.y < 0.0) {
+      // Below the horizon with no geometry (water disabled, or beyond the
+      // terrain): darken towards a hazy ground colour.
+      sky = mix(sky, sky * 0.35, saturate(-ray.y * 3.0));
+    }
 
-  // Rayleigh: a blue gradient that deepens towards the zenith and pales
-  // towards the horizon.
-  let elevation = clamp(ray.y, -1.0, 1.0);
-  let zenith_factor = clamp(elevation, 0.0, 1.0);
-  let rayleigh_colour = mix(
-    vec3<f32>(0.86, 0.90, 0.92),
-    vec3<f32>(0.10, 0.32, 0.70),
-    pow(zenith_factor, 0.45)
-  );
+    colour = sky + sun_disc(ray) * step(0.0, ray.y);
+    let clouds = march_clouds(ray, 1.0e9, in.clip_position.xy);
 
-  // Mie: forward scattering haze around the sun, using a Henyey-Greenstein
-  // style phase approximation.
-  let cos_theta = dot(ray, sun_direction);
-  let g = 0.82;
-  let mie_phase = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cos_theta, 0.0001), 1.5);
-  let mie_colour = vec3<f32>(1.0, 0.92, 0.78) * mie_phase * mie_strength * 0.06;
+    if (clouds.transmittance < 0.999) {
+      // Distant clouds fade into the haze near the horizon.
+      let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
+      let cloud_colour = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
+      colour = colour * clouds.transmittance + cloud_colour;
+    }
 
-  // A bright sun disc where the view ray closely aligns with the sun.
-  let sun_disc = smoothstep(0.9994, 0.9998, cos_theta);
-  let sun_colour = frame.sun_colour_intensity.rgb * frame.sun_colour_intensity.w * sun_disc;
+    let mist = atmospheric_fog(ray, 12000.0, in.clip_position.xy, false);
+    colour = colour * mist.transmittance + mist.inscatter;
+  } else {
+    let scene = textureLoad(scene_texture, pixel, 0).rgb;
+    let distance = linear_distance(depth, ray);
+    let fog = atmospheric_fog(ray, distance, in.clip_position.xy, true);
+    colour = scene * fog.transmittance + fog.inscatter;
+    let clouds = march_clouds(ray, distance, in.clip_position.xy);
 
-  // Horizon haze approximates aerial perspective for a sky that has no
-  // terrain in view, blending towards the sky tint near the horizon.
-  let horizon_haze = 1.0 - clamp(abs(elevation) * 3.0, 0.0, 1.0);
-  let haze_colour = sky_tint * horizon_haze * clamp(mie_strength, 0.0, 2.0) * 0.5;
-
-  var colour = rayleigh_colour * rayleigh_strength + mie_colour + haze_colour;
-  colour = colour * sky_tint;
-  colour = colour + sun_colour;
-
-  // Clouds: skipped entirely (cheaply, one branch) when coverage is 0,
-  // which is the default `Off` style's exact behaviour today.
-  let coverage = frame.cloud_params.x;
-
-  if (coverage > 0.0001 && ray.y > 0.02) {
-    let drift = vec2<f32>(1.0, 0.6) * frame.water_params.z * frame.cloud_params.y * 40.0;
-    let density = cloud_density(ray, drift);
-    let sun_facing = clamp(dot(ray, sun_direction) * 0.5 + 0.5, 0.0, 1.0);
-    let cloud_shade = mix(0.55, 1.15, sun_facing);
-    let cloud_rgb = frame.cloud_colour.rgb * cloud_shade * frame.sun_colour_intensity.w;
-    let horizon_fade = clamp(ray.y * 4.0, 0.0, 1.0);
-    colour = mix(colour, cloud_rgb, density * horizon_fade);
+    if (clouds.transmittance < 0.999) {
+      colour = colour * clouds.transmittance + clouds.scatter;
+    }
   }
 
-  colour = colour * exposure;
-
-  // Darken the sky slightly below the horizon so an unbounded view does not
-  // look like an infinite bright plane where terrain does not cover it.
-  let below_horizon = clamp(-elevation, 0.0, 1.0);
-  colour = mix(colour, colour * 0.35, below_horizon);
-
-  return vec4<f32>(colour, 1.0);
+  return vec4<f32>(finish_colour(colour), 1.0);
 }
-
-

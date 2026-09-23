@@ -3,9 +3,9 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use vista_types::{
-  AtmosphereOptions, CameraOptions, CloudsOptions, DebugView, DemLoadOptions, FloraOptions,
-  FractalTerrainOptions, GrassOptions, MistOptions, RawHeightmapOptions, RenderQualityOptions,
-  SunOptions, WaterOptions,
+  AtmosphereOptions, BiomeOptions, CameraOptions, CloudsOptions, DebugView, DemLoadOptions,
+  FloraOptions, FractalTerrainOptions, GrassOptions, MistOptions, RawHeightmapOptions,
+  RenderQualityOptions, SunOptions, WaterOptions,
 };
 
 use crate::config::VistaEngineConfig;
@@ -125,6 +125,7 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = setWater)]
   pub fn set_water(&mut self, water: JsValue) -> Result<(), JsValue> {
     let water = from_js::<WaterOptions>(water)?;
+    crate::config::validate_water(&water).map_err(|error| error.to_js_value())?;
     self
       .core_mut()?
       .set_water(water)
@@ -135,6 +136,7 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = setFlora)]
   pub fn set_flora(&mut self, flora: JsValue) -> Result<(), JsValue> {
     let flora = from_js::<FloraOptions>(flora)?;
+    crate::config::validate_flora(&flora).map_err(|error| error.to_js_value())?;
     self
       .core_mut()?
       .set_flora(flora)
@@ -145,6 +147,7 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = setGrass)]
   pub fn set_grass(&mut self, grass: JsValue) -> Result<(), JsValue> {
     let grass = from_js::<GrassOptions>(grass)?;
+    crate::config::validate_grass(&grass).map_err(|error| error.to_js_value())?;
     self
       .core_mut()?
       .set_grass(grass)
@@ -155,6 +158,7 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = setClouds)]
   pub fn set_clouds(&mut self, clouds: JsValue) -> Result<(), JsValue> {
     let clouds = from_js::<CloudsOptions>(clouds)?;
+    crate::config::validate_clouds(&clouds).map_err(|error| error.to_js_value())?;
     self
       .core_mut()?
       .set_clouds(clouds)
@@ -165,10 +169,32 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = setMist)]
   pub fn set_mist(&mut self, mist: JsValue) -> Result<(), JsValue> {
     let mist = from_js::<MistOptions>(mist)?;
+    crate::config::validate_mist(&mist).map_err(|error| error.to_js_value())?;
     self
       .core_mut()?
       .set_mist(mist)
       .map_err(|error| error.to_js_value())
+  }
+
+  /// Replace biome controls. Re-bakes terrain materials, trees, and grass.
+  #[wasm_bindgen(js_name = setBiomes)]
+  pub fn set_biomes(&mut self, biomes: JsValue) -> Result<(), JsValue> {
+    let biomes = from_js::<BiomeOptions>(biomes)?;
+    crate::config::validate_biomes(&biomes).map_err(|error| error.to_js_value())?;
+    self
+      .core_mut()?
+      .set_biomes(biomes)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Return the biome name at a world position, or `undefined` outside the
+  /// terrain.
+  #[wasm_bindgen(js_name = biomeAt)]
+  pub fn biome_at(&self, x: f32, z: f32) -> Result<JsValue, JsValue> {
+    match self.core_ref()?.biome_at(x, z) {
+      Some(biome) => to_js(&biome),
+      None => Ok(JsValue::UNDEFINED),
+    }
   }
 
   /// Replace render quality controls.

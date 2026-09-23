@@ -162,6 +162,79 @@
             Reflectivity
             <input id="reflectivity" type="range" min="0" max="1" step="0.05" value="0.4">
           </label>
+          <label class="checkbox">
+            <input id="wavesEnabled" type="checkbox" checked>
+            Simulate waves
+          </label>
+          <label>
+            Swell height (m)
+            <input id="waveAmplitude" type="range" min="0" max="6" step="0.1" value="0.9">
+          </label>
+          <label>
+            Swell wavelength (m)
+            <input id="waveLength" type="range" min="4" max="200" value="38">
+          </label>
+          <label>
+            Swell direction (°)
+            <input id="waveDirection" type="range" min="0" max="360" value="35">
+          </label>
+          <label>
+            Choppiness
+            <input id="waveSteepness" type="range" min="0" max="1" step="0.05" value="0.55">
+          </label>
+          <label>
+            Current speed (m/s)
+            <input id="currentSpeed" type="range" min="0" max="3" step="0.05" value="0.35">
+          </label>
+          <label>
+            Current direction (°)
+            <input id="currentDirection" type="range" min="0" max="360" value="60">
+          </label>
+          <label>
+            Water clarity (m)
+            <input id="waterClarity" type="range" min="0.5" max="30" step="0.5" value="6">
+          </label>
+          <label>
+            Foam
+            <input id="waterFoam" type="range" min="0" max="1" step="0.05" value="0.7">
+          </label>
+          <label class="checkbox">
+            <input id="riversEnabled" type="checkbox" checked>
+            Rivers and lakes
+          </label>
+          <label>
+            River catchment (km²)
+            <input id="riverCatchment" type="range" min="0.02" max="3" step="0.01" value="0.15">
+          </label>
+          <label>
+            River current
+            <input id="riverCurrent" type="range" min="0" max="3" step="0.1" value="1">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Biomes</legend>
+          <label class="checkbox">
+            <input id="biomesEnabled" type="checkbox" checked>
+            Climate biomes
+          </label>
+          <label>
+            Temperature
+            <input id="biomeTemperature" type="range" min="-1" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Moisture
+            <input id="biomeMoisture" type="range" min="-1" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Climate region size (m)
+            <input id="biomeScale" type="range" min="1000" max="30000" step="500" value="7000">
+          </label>
+          <label>
+            Volcanism
+            <input id="biomeVolcanism" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <p id="biomeReadout" class="readout">Biome: –</p>
         </fieldset>
 
         <fieldset>
@@ -181,25 +254,25 @@
           <label>
             Tree quality
             <select id="treeQuality">
-              <option value="billboard" selected>Billboard (fast)</option>
-              <option value="cross-quad">Cross-quad</option>
-              <option value="mesh">Mesh (hyper-realistic)</option>
+              <option value="billboard">Billboard impostors (fastest)</option>
+              <option value="cross-quad">Crossed impostors</option>
+              <option value="mesh" selected>3D meshes + impostors (realistic)</option>
             </select>
           </label>
           <label>
             Species variation
-            <input id="speciesVariation" type="range" min="0" max="1" step="0.05" value="0">
+            <input id="speciesVariation" type="range" min="0" max="1" step="0.05" value="0.6">
           </label>
           <label>
             Wind strength
-            <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0">
+            <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0.3">
           </label>
         </fieldset>
 
         <fieldset>
           <legend>Grass</legend>
           <label class="checkbox">
-            <input id="grassEnabled" type="checkbox">
+            <input id="grassEnabled" type="checkbox" checked>
             Enabled
           </label>
           <label>
@@ -224,9 +297,9 @@
           <label>
             Style
             <select id="cloudStyle">
-              <option value="off" selected>Off</option>
+              <option value="off">Off</option>
               <option value="painted">Painted</option>
-              <option value="volumetric">Volumetric (hyper-realistic)</option>
+              <option value="volumetric" selected>Volumetric (hyper-realistic)</option>
             </select>
           </label>
           <label>
@@ -234,12 +307,32 @@
             <input id="cloudCoverage" type="range" min="0" max="1" step="0.05" value="0.45">
           </label>
           <label>
-            Drift speed
+            Wind speed
             <input id="cloudSpeed" type="range" min="0" max="3" step="0.1" value="1">
           </label>
           <label>
-            Layer height (m)
-            <input id="cloudHeight" type="range" min="500" max="12000" value="4000">
+            Wind direction (°)
+            <input id="cloudWindDirection" type="range" min="0" max="360" value="70">
+          </label>
+          <label>
+            Billowing
+            <input id="cloudEvolution" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label>
+            Cloud base (m)
+            <input id="cloudHeight" type="range" min="300" max="8000" value="1800">
+          </label>
+          <label>
+            Thickness (m)
+            <input id="cloudThickness" type="range" min="200" max="4000" step="50" value="1600">
+          </label>
+          <label>
+            Density
+            <input id="cloudDensity" type="range" min="0" max="1" step="0.05" value="0.6">
+          </label>
+          <label class="checkbox">
+            <input id="cloudShadows" type="checkbox" checked>
+            Cast shadows
           </label>
         </fieldset>
 
@@ -269,6 +362,18 @@
             <input id="mistRiseAboveWater" type="checkbox" checked>
             Rise above water
           </label>
+          <label>
+            Drift speed (m/s)
+            <input id="mistWindSpeed" type="range" min="0" max="15" step="0.5" value="2.5">
+          </label>
+          <label>
+            Drift direction (°)
+            <input id="mistWindDirection" type="range" min="0" max="360" value="70">
+          </label>
+          <label>
+            Sun glow
+            <input id="mistSunScattering" type="range" min="0" max="1" step="0.05" value="0.6">
+          </label>
         </fieldset>
 
         <fieldset>
@@ -292,6 +397,7 @@
               <option value="lod">LOD</option>
               <option value="flow">Flow</option>
               <option value="materials">Materials</option>
+              <option value="biomes">Biomes</option>
               <option value="no-data">No data</option>
             </select>
           </label>

@@ -172,20 +172,18 @@ most: `density` scales instance count, `treeLineMetres` sets the height
 above which trees stop spawning (use your terrain's real height range from
 `TerrainMetadata` to set this sensibly — a `treeLineMetres` above your
 terrain's `maxHeightMetres` means no visible tree line at all). Flora
-automatically avoids underwater and very steep terrain, so you rarely need
+automatically avoids underwater, river, and very steep terrain, so you rarely need
 to hand-tune placement beyond these two values plus `RenderQualityOptions.
 floraDensityScale` for a performance-driven global multiplier.
 
-`FloraOptions.treeQuality` is a separate, purely visual dial: `"billboard"`
-(the default) is the cheapest, a single camera-facing quad; `"cross-quad"`
-draws two static, world-oriented quads per tree instead, which reads as
-real volume/parallax from any angle rather than a flat cutout, at roughly
-double the vertex cost. `"mesh"` is accepted but currently renders as
-`"cross-quad"` — a true instanced 3-D tree mesh is tracked as future work,
-see `docs/environment-upgrade-plan.md`. `speciesVariation` (0 to 1)
-perturbs each tree's canopy silhouette so a forest does not look like one
-shape copy-pasted everywhere; `windStrength` (0 to 1) sways the canopy
-(never the trunk) in time with the same clock that animates water ripples.
+`FloraOptions.treeQuality` is a separate, purely visual dial: `"mesh"`
+(the default) draws full 3D species models near the camera and impostors
+in the distance; `"cross-quad"` and `"billboard"` draw impostors only and
+are cheaper. Which species grow where is decided by the biome map — to
+change the character of a forest, shift the climate with
+`setBiomes({ temperatureBias, moistureBias })` (see
+[`docs/biomes.md`](biomes.md)). `speciesVariation` (0 to 1) controls size
+and colour variety; `windStrength` (0 to 1) drives gusting sway.
 
 `GrassOptions` is a separate, independent ground-cover layer — unlike the
 other environmental options it defaults fully `enabled: false`, since it

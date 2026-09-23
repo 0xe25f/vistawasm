@@ -27,7 +27,8 @@ One public `VistaEngine` owns one internal `EngineCore`.
 - Terrain data, plus cached per-sample normals and material weights (see
   [Terrain rendering and level of detail](#terrain-rendering-and-level-of-detail)).
 - Camera/projector matrices.
-- Sun, atmosphere, water, flora, grass, cloud, mist, and quality controls.
+- Sun, atmosphere, water, flora, grass, cloud, mist, biome, and quality controls.
+- The baked biome/surface map and the carved river network.
 - WebGPU context on browser builds.
 - Render statistics.
 
@@ -63,68 +64,67 @@ error.
 ## Rendering
 
 Rust creates the WebGPU instance, adapter, device, queue, surface, and surface
-configuration through `wgpu`. Five pipelines run per frame, in this order:
+configuration through `wgpu` (`render/gpu.rs`).
 
-1. **Atmosphere** (`shaders/atmosphere.wgsl`) — a fullscreen-triangle sky
-    dome, drawn first with depth writes disabled and a `Less` depth test
-    (so terrain/flora/water drawn afterward occlude it normally). It
-    reconstructs a view ray per pixel from the camera basis vectors in
-    `FrameUniforms`, then computes an analytic Rayleigh gradient, a
-    Henyey-Greenstein Mie phase term for the sun disc/glare, a horizon
-    haze blend toward `AtmosphereOptions.skyTint`, and — when
-    `CloudsOptions.style` is not `"off"` — an optional cloud layer. Both
-    cloud styles (`"painted"`, a single noise sample; `"volumetric"`, a
-    raymarched density band) are implemented as one function in this same
-    shader/pipeline rather than a separate pass, since the atmosphere pass
-    already reconstructs the view ray it needs and terrain drawn
-    afterwards already occludes clouds behind mountains via the depth
-    buffer.
-2. **Terrain** — a single CPU-baked mesh (`render/terrain_mesh.rs` +
-    `shaders/clipmap_render.wgsl`), see below for its LOD strategy. Also
-    applies the height-based ground mist term (`MistOptions`) on top of
-    the existing distance-haze blend.
-3. **Flora** — tree instances (`render/flora.rs::build_flora_instances` +
-    `shaders/flora_instances.wgsl`). `FloraOptions.treeQuality` selects
-    between a camera-facing billboard (`"billboard"`, the default, drawing
-    6 vertices per instance) and two static, world-oriented crossed quads
-    (`"cross-quad"`/`"mesh"`, drawing 12 vertices per instance from the
-    same base vertex buffer) — see
-    [`docs/vegetation.md`](vegetation.md) for the visual difference this
-    makes. Also applies mist tinting and wind sway.
-4. **Grass** — an independent, opt-in ground-cover layer
-    (`render/grass.rs::build_grass_instances` +
-    `shaders/grass_instances.wgsl`), reusing the same `FloraInstance`
-    layout as flora but always drawing three crossed, world-oriented blade
-    quads (18 vertices per instance). Alpha-blended with depth writes off
-    (like water) so it can fade out smoothly at
-    `GrassOptions.viewDistanceMetres`, and placement reuses the terrain's
-    cached material weights (see [Terrain rendering and level of
-    detail](#terrain-rendering-and-level-of-detail)) rather than
-    recomputing slope/height thresholds independently.
-5. **Water** — an animated, fresnel-shaded plane
-    (`render/water.rs::build_water_plane` + `shaders/water.wgsl`). Also
-    applies mist tinting.
+### Start-up work
 
-All five share one `FrameUniforms` uniform buffer/bind group (320 bytes):
-`view_proj, camera_position, camera_forward, camera_right, camera_up,
-camera_params (tan_half_fov_y, aspect), sun_direction, sun_colour_intensity,
-fog, water_params, sky_tint, atmosphere_params, mist_params, mist_colour,
-cloud_params, cloud_colour, vegetation_params`. `water_params.z` is an
-internal frame-counter-based clock (`frame_counter / 60.0`), not wall
-clock, and is reused by flora/grass wind sway and cloud/mist drift rather
-than each shader carrying its own animation time. Each WGSL shader file
-only declares as much of this struct as the fields it actually reads
-require — the fields are laid out in the same order in every file, so a
-shader can stop declaring the struct partway through, but never skip or
-reorder a field, since that would misalign every field after it. New
-fields are always appended at the end of the Rust struct for the same
-reason (see the doc comment on `FrameUniforms` in `render/gpu.rs`, and
-`docs/environment-upgrade-plan.md` §1.2 for the full rationale). Flora,
-grass, and water regenerate on terrain change and on
-`setFlora`/`setGrass`/`setWater`/`setRenderQuality` via
-`EngineCore::refresh_flora`/`refresh_grass`/`refresh_water`; clouds and
-mist have no terrain-dependent placement, so `setClouds`/`setMist` simply
-replace state for the next rendered frame.
+When the engine is created, and never again:
+
+1. **Procedural textures** (`render/textures.rs` +
+    `shaders/texture_gen.wgsl`, mipmapped by `shaders/mipgen.wgsl`): eight
+    terrain materials (albedo + height, normal + occlusion + roughness),
+    ten bark and foliage layers, water ripples and foam, general 2D noise,
+    and a 64³ Perlin-Worley volume for clouds and mist. All are generated
+    from seamlessly tiling noise on the GPU; no image files are shipped.
+2. **Tree species** (`render/tree_models.rs`): eight species meshes built
+    from code with fixed seeds, merged into one vertex/index buffer.
+3. **Impostors**: each species mesh is rendered once, orthographically,
+    into a texture array used for distant trees.
+4. **Ocean grid** (`render/water.rs::build_ocean_grid`): a camera-following
+    grid whose spacing doubles every 16 steps and whose outer ring reaches
+    the horizon.
+
+### Per-terrain work
+
+`EngineCore::install_terrain` → `rebuild_world` → `rebake_surface`:
+
+1. Rivers and lakes are extracted from the drainage network and carved
+    into the heightmap (reversibly; see [`docs/water.md`](water.md)).
+2. Normals and the biome/surface map are baked
+    (`terrain/biomes.rs::classify_surface`).
+3. The LOD terrain mesh, tree and grass instances, river geometry, and a
+    height texture (for water depth) are uploaded.
+
+`setBiomes` repeats steps 2–3; changing `WaterOptions.rivers` repeats all
+three. Other setters only change uniforms.
+
+### Per frame
+
+1. **Tree culling** (compute, `shaders/tree_cull.wgsl`) frustum-tests every
+    tree and appends it to per-species mesh and/or impostor lists by
+    distance, writing the instance counts of the indirect draw arguments.
+2. **Opaque pass** into a linear `rgba16float` target plus depth:
+    - terrain (`shaders/clipmap_render.wgsl`), texture-splatting the three
+      strongest of eight materials with height blending, triplanar rock,
+      detail normals, and climate tinting;
+    - tree meshes and impostors (`shaders/trees.wgsl`) via indirect draws;
+    - grass (`shaders/grass_instances.wgsl`), alpha-tested.
+3. **Composite pass** (`shaders/atmosphere.wgsl`) onto the canvas: reads
+    the HDR target and depth, draws sky, sun, and clouds behind (and in front
+    of) geometry, applies haze and mist along each pixel's true view ray,
+    and tone maps (ACES).
+4. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
+    depth-tested against the opaque scene, alpha-blended, fogged, and tone
+    mapped in the same way.
+
+Every render shader is compiled with `shaders/common.wgsl` prepended, which
+declares the one `FrameUniforms` struct (432 bytes), the shared world
+textures (bind group 1), the sky model, lighting, fog integrals, and cloud
+shadows. Because there is exactly one declaration, the Rust struct in
+`render/gpu.rs` and the WGSL struct cannot drift apart per shader, and a
+compile-time size assertion guards the Rust side. Animation uses a
+real-time clock (`camera_position.w`), so wind, water, clouds, and mist
+move at the same speed regardless of frame rate.
 
 ### Terrain rendering and level of detail
 
@@ -175,6 +175,7 @@ guards against this with a `pendingCall` mutex: `callAsync()` chains async
 calls sequentially (so overlapping async calls queue rather than racing),
 and every sync method that touches the raw engine (`setCamera`, `setSun`,
 `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`, `setMist`,
+`setBiomes`, `biomeAt`,
 `setRenderQuality`, `setDebugView`, `resize`) checks `pendingCall` first and
 silently no-ops while it is set, rather than throwing or queuing.
 `renderOnce()` returns the last real `RenderStats` during that window

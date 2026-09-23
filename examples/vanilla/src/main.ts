@@ -207,8 +207,8 @@ function applyFlora(): void {
     seedOffset: 3001,
     maxInstances: 20000,
     treeQuality: inputs.treeQuality.value as TreeQuality,
-    speciesVariation: readNumber(inputs.speciesVariation, 0),
-    windStrength: readNumber(inputs.windStrength, 0)
+    speciesVariation: readNumber(inputs.speciesVariation, 0.6),
+    windStrength: readNumber(inputs.windStrength, 0.3)
   });
 }
 

@@ -14,17 +14,18 @@
 //! detail near the camera and reaching far beyond what a uniform mesh of
 //! the same vertex count could cover.
 
+use crate::terrain::biomes::{classify_surface, SurfaceSample};
 use crate::terrain::heightmap::HeightMap;
-use crate::terrain::materials::{generate_material_masks, MaterialWeights};
 use crate::terrain::normals::generate_normals;
-use vista_types::Vec3;
+use vista_types::{BiomeOptions, Vec3};
 
-/// One GPU-ready terrain vertex.
+/// One GPU-ready terrain vertex (40 bytes).
 ///
 /// The layout is tightly packed and matches the vertex buffer layout used by
 /// `clipmap_render.wgsl`. Position and normal are stored in terrain metres.
-/// Material weights follow the `grass, rock, snow, wetMud` order produced by
-/// [`crate::terrain::materials::generate_material_masks`].
+/// The eight surface material weights follow the `MAT_*` order in
+/// [`crate::terrain::biomes`] and are normalised `u8`s so the whole vertex
+/// stays the same size as the previous four-float material layout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainVertex {
@@ -32,8 +33,34 @@ pub struct TerrainVertex {
   pub position: [f32; 3],
   /// Unit surface normal.
   pub normal: [f32; 3],
-  /// Material weights in `grass, rock, snow, wetMud` order.
-  pub material: [f32; 4],
+  /// Lush grass, dry grass, forest floor, and sand weights.
+  pub materials_a: [u8; 4],
+  /// Rock, snow, mud, and volcanic weights.
+  pub materials_b: [u8; 4],
+  /// Moisture, temperature, volcanic heat, and ambient occlusion.
+  pub climate: [u8; 4],
+  /// Biome index, tree cover, river flag, and a reserved byte.
+  pub biome: [u8; 4],
+}
+
+impl TerrainVertex {
+  fn new(position: [f32; 3], normal: Vec3, surface: &SurfaceSample) -> Self {
+    let m = surface.materials;
+
+    Self {
+      position,
+      normal,
+      materials_a: [m[0], m[1], m[2], m[3]],
+      materials_b: [m[4], m[5], m[6], m[7]],
+      climate: [
+        surface.moisture,
+        surface.temperature,
+        surface.heat,
+        surface.occlusion,
+      ],
+      biome: [surface.biome, surface.forest, surface.river, 0],
+    }
+  }
 }
 
 /// CPU-baked terrain mesh ready for GPU upload.
@@ -97,8 +124,7 @@ pub fn build_terrain_mesh(map: &HeightMap) -> TerrainMeshData {
   }
 
   let stride = (width.max(height).saturating_sub(1) / (MAX_MESH_SAMPLES_PER_SIDE - 1)).max(1);
-  let normals = generate_normals(map);
-  let materials = generate_material_masks(map, map.metadata.sea_level_metres + 1_400.0);
+  let (normals, surface) = bake_terrain_shading(map, &BiomeOptions::default(), None);
 
   let samples_x = (width - 1) / stride + 1;
   let samples_y = (height - 1) / stride + 1;
@@ -116,13 +142,11 @@ pub fn build_terrain_mesh(map: &HeightMap) -> TerrainMeshData {
       let index = (y * width + x) as usize;
       let world_x = x as f32 * metres_per_sample - half_width;
       let world_z = y as f32 * metres_per_sample - half_height;
-      let weights = materials[index];
-
-      vertices.push(TerrainVertex {
-        position: [world_x, map.heights[index], world_z],
-        normal: normals[index],
-        material: [weights.grass, weights.rock, weights.snow, weights.wet_mud],
-      });
+      vertices.push(TerrainVertex::new(
+        [world_x, map.heights[index], world_z],
+        normals[index],
+        &surface[index],
+      ));
     }
   }
 
@@ -163,16 +187,20 @@ pub fn band_count(half_span_samples: u32) -> u32 {
   bands.max(1)
 }
 
-/// Precompute per-sample normals and material weights for a heightmap.
+/// Precompute per-sample normals and biome/surface data for a heightmap.
 ///
 /// Both are relatively expensive full-heightmap passes, so the engine calls
-/// this once per active terrain and reuses the result every time
-/// [`build_terrain_mesh_centred`] recentres the LOD mesh on the camera,
-/// instead of recomputing them on every rebuild.
-pub fn bake_terrain_shading(map: &HeightMap) -> (Vec<Vec3>, Vec<MaterialWeights>) {
+/// this once per active terrain (and again only when biome or river
+/// settings change) and reuses the result every time
+/// [`build_terrain_mesh_centred`] recentres the LOD mesh on the camera.
+pub fn bake_terrain_shading(
+  map: &HeightMap,
+  biomes: &BiomeOptions,
+  river_mask: Option<&[bool]>,
+) -> (Vec<Vec3>, Vec<SurfaceSample>) {
   let normals = generate_normals(map);
-  let materials = generate_material_masks(map, map.metadata.sea_level_metres + 1_400.0);
-  (normals, materials)
+  let surface = classify_surface(map, &normals, river_mask, biomes);
+  (normals, surface)
 }
 
 /// Convert a world-space position (in the same terrain-centred metres used
@@ -191,12 +219,12 @@ pub fn world_to_sample_coordinates(map: &HeightMap, world_x: f32, world_z: f32) 
 /// grows with distance from the centre. See the module documentation and
 /// [`band_sample_offset`] for the LOD strategy.
 ///
-/// `normals` and `materials` must be the full per-sample arrays for `map`,
+/// `normals` and `surface` must be the full per-sample arrays for `map`,
 /// as produced by [`bake_terrain_shading`].
 pub fn build_terrain_mesh_centred(
   map: &HeightMap,
   normals: &[Vec3],
-  materials: &[MaterialWeights],
+  surface: &[SurfaceSample],
   centre_sample_x: f32,
   centre_sample_z: f32,
   samples_per_side: u32,
@@ -204,7 +232,7 @@ pub fn build_terrain_mesh_centred(
   let width = map.metadata.width;
   let height = map.metadata.height;
 
-  if width == 0 || height == 0 || samples_per_side < 2 {
+  if width == 0 || height == 0 || samples_per_side < 2 || surface.len() != normals.len() {
     return TerrainMeshData {
       vertices: Vec::new(),
       indices: Vec::new(),
@@ -230,13 +258,11 @@ pub fn build_terrain_mesh_centred(
       let index = (sample_z * width + sample_x) as usize;
       let world_x = (sample_x as f32 - half_width) * metres_per_sample;
       let world_z = (sample_z as f32 - half_height) * metres_per_sample;
-      let weights = materials[index];
-
-      vertices.push(TerrainVertex {
-        position: [world_x, map.heights[index], world_z],
-        normal: normals[index],
-        material: [weights.grass, weights.rock, weights.snow, weights.wet_mud],
-      });
+      vertices.push(TerrainVertex::new(
+        [world_x, map.heights[index], world_z],
+        normals[index],
+        &surface[index],
+      ));
     }
   }
 
@@ -261,6 +287,8 @@ pub fn build_terrain_mesh_centred(
 
   TerrainMeshData { vertices, indices }
 }
+
+const _: () = assert!(std::mem::size_of::<TerrainVertex>() == 40);
 
 #[cfg(test)]
 mod tests {
@@ -317,11 +345,11 @@ mod tests {
   #[test]
   fn centred_mesh_reaches_further_than_a_uniform_mesh_of_the_same_size() {
     let map = HeightMap::flat(4096, 4096, 10.0, TerrainMetadata::default());
-    let (normals, materials) = bake_terrain_shading(&map);
+    let (normals, surface) = bake_terrain_shading(&map, &BiomeOptions::default(), None);
     let mesh = build_terrain_mesh_centred(
       &map,
       &normals,
-      &materials,
+      &surface,
       2048.0,
       2048.0,
       MAX_MESH_SAMPLES_PER_SIDE,
@@ -342,10 +370,10 @@ mod tests {
   #[test]
   fn centred_mesh_clamps_to_heightmap_bounds_near_the_edge() {
     let map = HeightMap::flat(64, 64, 1.0, TerrainMetadata::default());
-    let (normals, materials) = bake_terrain_shading(&map);
+    let (normals, surface) = bake_terrain_shading(&map, &BiomeOptions::default(), None);
     // Centre right at the corner so most of the mesh would fall outside
     // the heightmap without clamping.
-    let mesh = build_terrain_mesh_centred(&map, &normals, &materials, 0.0, 0.0, 65);
+    let mesh = build_terrain_mesh_centred(&map, &normals, &surface, 0.0, 0.0, 65);
 
     assert_eq!(mesh.vertices.len(), 65 * 65);
     assert!(mesh

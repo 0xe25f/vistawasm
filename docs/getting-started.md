@@ -180,7 +180,8 @@ frame renders against a disposed engine.
   and performance.
 - [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md) —
   sun, atmosphere, clouds, and mist.
-- [`docs/water.md`](water.md) — the water plane.
+- [`docs/biomes.md`](biomes.md) — biomes and how to shape them.
+- [`docs/water.md`](water.md) — ocean waves, currents, rivers, and lakes.
 - [`docs/camera-and-controls.md`](camera-and-controls.md) — camera model
   and the bundled fly-camera controller.
 - [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md) —

@@ -40,24 +40,34 @@ This repository contains a working terrain engine with a browser-first API:
   reach than a uniform mesh of the same vertex budget, without the seams a
   multi-tier clipmap needs skirts to hide (see
   [`docs/architecture.md`](docs/architecture.md#terrain-rendering-and-level-of-detail)).
-- A real atmosphere: an analytic Rayleigh/Mie sky dome
-  (`shaders/atmosphere.wgsl`) with a sun disc/glare, horizon haze blend,
-  below-horizon darkening, and an optional cloud layer (`off`/`painted`/
-  `volumetric`), driven by the same sun/atmosphere controls as the terrain
-  fog.
-- Ground mist: an independent height-based ground fog (`off`/`flat`/
-  `volumetric`, distinct from the distance-only haze above) that pools in
-  valleys and can rise off the water surface, applied consistently across
-  terrain, flora, grass, and water.
-- Real vegetation: deterministic flora placement (`render/flora.rs`) drawn
-  as tree billboards (`shaders/flora_instances.wgsl`) with a `billboard`/
-  `cross-quad`/`mesh` quality dial, per-tree canopy variety, and wind sway,
-  respecting slope, tree line, water level, and density. An independent
-  grass ground-cover layer (`render/grass.rs`, opt-in) scatters crossed
-  blade tufts driven by the terrain's own material weights, with a
-  configurable view-distance fade.
-- Real water: an animated, fresnel-shaded water plane (`shaders/water.wgsl`)
-  sized to the terrain footprint and driven by the live sea level control.
+- Climate-driven biomes (`terrain/biomes.rs`): fifteen biomes — grassy
+  meadows, outer thicket, outer and inner forest, mountain foothills and
+  mountain proper, outer volcanic and caldera, savannah, sandy and rocky
+  coasts, outer and inner jungle, swamp wetlands, and ocean — classified
+  from height, slope, seeded temperature and moisture fields, and volcanic
+  hotspots. Query them with `biomeAt(x, z)`; tune them with `setBiomes()`.
+- Procedurally generated, high-quality textures, baked on the GPU at
+  start-up with nothing to download: eight ground materials (lush grass,
+  dry grass, forest floor, sand, rock, snow, mud, volcanic basalt), each
+  with albedo, height, normal, occlusion, and roughness, height-blended
+  with triplanar rock, detail normals, macro variation, and lava glow.
+- Real trees: eight procedurally modelled species (oak, pine, spruce, palm,
+  jungle emergent, swamp cypress, acacia, shrub) with curved, tapered
+  branches, leaf/needle/frond cards, translucent foliage, and gusting wind.
+  Species and density follow the biome. Near trees are full 3D meshes;
+  distant trees are impostors of the same meshes, cross-faded and culled
+  on the GPU with indirect draws.
+- Real water: a camera-following ocean with a toggleable, tunable Gerstner
+  wave simulation that shoals and breaks at the shore, surface currents,
+  depth-based colour and clarity, sky and cloud reflections, sun glitter,
+  and foam; plus rivers and lakes extracted from the terrain's drainage
+  network, carved into the terrain, with flowing currents and rapids.
+- A physically based sky and weather: a single-scattering atmosphere
+  shared by every shader, volumetric Perlin-Worley clouds with
+  self-shadowing, silver linings, wind drift, billowing, and moving cloud
+  shadows, and drifting, sun-lit ground mist integrated along every view
+  ray. Lighting is linear HDR with ACES tone mapping.
+- An opt-in grass ground-cover layer with climate-tinted blades.
 - Terrain export helpers: a top-down hypsometric minimap/PNG export
   (`renderHeightmapToCanvas`/`exportHeightmapImage`), a Wavefront OBJ 3D
   model export (`exportTerrainObj`), a raw heightmap download, and a canvas
@@ -86,11 +96,14 @@ Unsupported DEM compression returns a clear error.
 - [`docs/terrain-data.md`](docs/terrain-data.md) — fractal generation data
   model, GeoTIFF DEM import (exact supported subset), and raw heightmap
   loading.
-- [`docs/vegetation.md`](docs/vegetation.md) — trees and grass: placement,
-  quality tiers, and performance.
+- [`docs/biomes.md`](docs/biomes.md) — the fifteen biomes and how they are
+  classified.
+- [`docs/vegetation.md`](docs/vegetation.md) — tree species and grass:
+  placement, quality tiers, and performance.
 - [`docs/sky-atmosphere-and-weather.md`](docs/sky-atmosphere-and-weather.md) —
   sun, atmosphere, clouds, and mist (and the haze-vs-mist distinction).
-- [`docs/water.md`](docs/water.md) — the water plane.
+- [`docs/water.md`](docs/water.md) — ocean waves, currents, rivers, and
+  lakes.
 - [`docs/camera-and-controls.md`](docs/camera-and-controls.md) — the
   camera model and the bundled fly-camera controller.
 - [`docs/render-quality-and-diagnostics.md`](docs/render-quality-and-diagnostics.md) —

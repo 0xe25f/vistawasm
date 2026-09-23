@@ -178,3 +178,9 @@ button + button {
     border-left: 0;
   }
 }
+
+.readout {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.85;
+}

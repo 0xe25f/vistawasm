@@ -140,8 +140,8 @@ function applyFlora(): void {
     seedOffset: 3001,
     maxInstances: 20000,
     treeQuality: select("treeQuality").value as TreeQuality,
-    speciesVariation: readNumber(input("speciesVariation"), 0),
-    windStrength: readNumber(input("windStrength"), 0)
+    speciesVariation: readNumber(input("speciesVariation"), 0.6),
+    windStrength: readNumber(input("windStrength"), 0.3)
   });
 }
 
@@ -544,18 +544,18 @@ onUnmounted(() => {
         <label>
           Tree quality
           <select id="treeQuality">
-            <option value="billboard" selected>Billboard (fast)</option>
+            <option value="billboard">Billboard impostors (fastest)</option>
             <option value="cross-quad">Cross-quad</option>
-            <option value="mesh">Mesh (hyper-realistic)</option>
+            <option value="mesh" selected>3D meshes + impostors (realistic)</option>
           </select>
         </label>
         <label>
           Species variation
-          <input id="speciesVariation" type="range" min="0" max="1" step="0.05" value="0">
+          <input id="speciesVariation" type="range" min="0" max="1" step="0.05" value="0.6">
         </label>
         <label>
           Wind strength
-          <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0">
+          <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0.3">
         </label>
       </fieldset>
 

@@ -67,6 +67,8 @@ export interface VistaWasmRawEngine {
   setClouds(clouds: unknown): void;
   setMist(mist: unknown): void;
   setRenderQuality(quality: unknown): void;
+  setBiomes(biomes: unknown): void;
+  biomeAt(x: number, z: number): unknown;
   setDebugView(debugView: unknown): void;
   renderOnce(): unknown;
   resize(width: number, height: number, devicePixelRatio?: number): void;
@@ -89,6 +91,7 @@ export interface VistaEngineOptions {
   clouds?: CloudsOptions;
   mist?: MistOptions;
   quality?: RenderQualityOptions;
+  biomes?: BiomeOptions;
 }
 
 /**
@@ -280,14 +283,65 @@ export interface AtmosphereOptions {
 }
 
 /**
+ * Gerstner wave simulation for open water.
+ */
+export interface WaveOptions {
+  /** Whether swell is simulated. Defaults to `true`. */
+  enabled?: boolean;
+  /** Trough-to-crest height of the dominant swell, 0 to 30 metres. Defaults to `0.9`. */
+  amplitudeMetres?: number;
+  /** Wavelength of the dominant swell, up to 2000 metres. Defaults to `38`. */
+  wavelengthMetres?: number;
+  /** Direction the swell travels towards (0 = +Z, 90 = +X). Defaults to `35`. */
+  directionDegrees?: number;
+  /** Crest sharpness, 0 (rolling) to 1 (choppy). Defaults to `0.55`. */
+  steepness?: number;
+  /** Animation speed multiplier. Defaults to `1`. */
+  speed?: number;
+  /** Spread of secondary waves, 0 (parallel) to 1 (confused sea). Defaults to `0.55`. */
+  directionalSpread?: number;
+}
+
+/**
+ * Rivers and lakes extracted from the terrain drainage network.
+ */
+export interface RiverOptions {
+  /** Whether rivers and lakes are generated. Defaults to `true`. */
+  enabled?: boolean;
+  /** Upstream catchment area, in km², before a channel becomes a river. Defaults to `1.2`. */
+  minCatchmentKm2?: number;
+  /** Multiplier on the automatic river width. Defaults to `1`. */
+  widthScale?: number;
+  /** River current speed multiplier. Defaults to `1`. */
+  currentSpeed?: number;
+}
+
+/**
  * Water controls.
  */
 export interface WaterOptions {
   enabled: boolean;
   seaLevelMetres: number;
+  /** Small-scale ripple strength. Large swell is controlled by `waves`. */
   waveScale: number;
   reflectivity: number;
   shorelineSoftnessMetres: number;
+  /** Gerstner swell simulation. */
+  waves?: WaveOptions;
+  /** Rivers and lakes. Changing these re-carves the terrain. */
+  rivers?: RiverOptions;
+  /** Direction of the open-water surface current. Defaults to `60`. */
+  currentDirectionDegrees?: number;
+  /** Surface current speed in metres per second. Defaults to `0.35`. */
+  currentSpeed?: number;
+  /** Colour of shallow water. Defaults to `[0.1, 0.52, 0.5]`. */
+  shallowColour?: [number, number, number];
+  /** Colour of deep water. Defaults to `[0.015, 0.09, 0.16]`. */
+  deepColour?: [number, number, number];
+  /** Depth at which the sea bed stops being visible. Defaults to `6`. */
+  clarityMetres?: number;
+  /** Foam strength, 0 to 1. Defaults to `0.7`. */
+  foam?: number;
 }
 
 /**
@@ -300,21 +354,65 @@ export interface FloraOptions {
   seedOffset: number | bigint;
   maxInstances: number;
   /**
-   * Tree rendering fidelity. Defaults to `"billboard"`, today's rendering.
-   * `"mesh"` is accepted but currently renders as `"cross-quad"` — see
-   * `docs/environment-upgrade-plan.md` ("Trees (Mesh tier)").
+   * Tree rendering fidelity. Defaults to `"mesh"`: full 3D species meshes
+   * near the camera, impostors of the same meshes in the distance.
+   * `"cross-quad"` and `"billboard"` draw only impostors (cheaper).
    */
   treeQuality?: TreeQuality;
-  /** Canopy silhouette/colour variety strength, 0 to 1. Defaults to `0`. */
+  /** Per-tree size and colour variety, 0 to 1. Defaults to `0.6`. */
   speciesVariation?: number;
-  /** Canopy wind sway strength, 0 to 1. Defaults to `0` (static). */
+  /** Wind sway strength, 0 to 1. Defaults to `0.3`. */
   windStrength?: number;
+  /** Distance at which meshes cross-fade to impostors. Defaults to `420`. */
+  meshDistanceMetres?: number;
 }
 
 /**
  * Tree rendering fidelity.
  */
 export type TreeQuality = "billboard" | "cross-quad" | "mesh";
+
+/**
+ * Biome names reported by `biomeAt()`.
+ */
+export type BiomeKind =
+  | "grassyMeadows"
+  | "outerThicket"
+  | "outerForest"
+  | "innerForest"
+  | "mountainFoothills"
+  | "mountainProper"
+  | "outerVolcanic"
+  | "calderaVolcanic"
+  | "savannahExpanse"
+  | "coastalBeach"
+  | "coastalRocky"
+  | "outerJungle"
+  | "innerJungle"
+  | "swampWetlands"
+  | "ocean";
+
+/**
+ * Climate-driven biome controls. Every field is optional.
+ */
+export interface BiomeOptions {
+  /** Use climate-driven biomes. When `false`, only height and slope are used. Defaults to `true`. */
+  enabled?: boolean;
+  /** Seed offset for the climate fields. */
+  seedOffset?: number | bigint;
+  /** -1 (colder) to 1 (hotter). Defaults to `0`. */
+  temperatureBias?: number;
+  /** -1 (drier) to 1 (wetter). Defaults to `0`. */
+  moistureBias?: number;
+  /** Typical climate region size in metres. Defaults to `7000`. */
+  climateScaleMetres?: number;
+  /** Volcanic regions around high peaks, 0 to 1. Defaults to `0.35`. */
+  volcanism?: number;
+  /** Height above sea level below which flat ground is beach. Defaults to `5`. */
+  beachHeightMetres?: number;
+  /** Snow line in metres. Defaults to 80% of the way from sea level to the highest peak. */
+  snowLineMetres?: number;
+}
 
 /**
  * Grass rendering fidelity.
@@ -345,16 +443,28 @@ export type CloudStyle = "off" | "painted" | "volumetric";
 export interface CloudsOptions {
   style: CloudStyle;
   coverage: number;
+  /** Wind speed multiplier (1 is roughly 15 m/s). */
   speed: number;
+  /** Altitude of the cloud base in metres. */
   heightMetres: number;
   colour: [number, number, number];
   seedOffset: number | bigint;
   /**
-   * Raymarch step count for the `"volumetric"` style only. Always clamped
-   * server-side to `8..=64` regardless of the requested value — this bounds
-   * a real shader loop, see `docs/environment-upgrade-plan.md` §1.6.
+   * Raymarch step count for the `"volumetric"` style only. Must be within
+   * `8..=64` — this bounds a real shader loop, see
+   * `docs/environment-upgrade-plan.md` §1.6.
    */
   raymarchSteps?: number;
+  /** Direction the wind carries clouds towards. Defaults to `70`. */
+  windDirectionDegrees?: number;
+  /** How quickly cloud shapes billow and change, 0 to 1. Defaults to `0.35`. */
+  evolution?: number;
+  /** Vertical thickness of the cloud layer in metres. Defaults to `1600`. */
+  thicknessMetres?: number;
+  /** Optical density, 0 (wispy) to 1 (dense cumulus). Defaults to `0.6`. */
+  density?: number;
+  /** Whether clouds cast moving shadows. Defaults to `true`. */
+  castShadows?: boolean;
 }
 
 /**
@@ -378,6 +488,12 @@ export interface MistOptions {
   /** Adds extra mist near `WaterOptions.seaLevelMetres`. */
   riseAboveWater: boolean;
   seedOffset: number | bigint;
+  /** Direction the wind pushes fog banks towards. Defaults to `70`. */
+  windDirectionDegrees?: number;
+  /** Fog bank drift speed in metres per second. Defaults to `2.5`. */
+  windSpeedMetresPerSecond?: number;
+  /** Glow when looking towards the sun, 0 to 1. Defaults to `0.6`. */
+  sunScattering?: number;
 }
 
 /**
@@ -405,7 +521,8 @@ export type DebugView =
   | "lod"
   | "flow"
   | "materials"
-  | "no-data";
+  | "no-data"
+  | "biomes";
 
 /**
  * Render statistics.
@@ -478,6 +595,8 @@ export interface VistaEngine {
   setClouds(clouds: CloudsOptions): void;
   setMist(mist: MistOptions): void;
   setRenderQuality(quality: RenderQualityOptions): void;
+  setBiomes(biomes: BiomeOptions): void;
+  biomeAt(x: number, z: number): BiomeKind | undefined;
   setDebugView(debugView: DebugView): void;
   renderOnce(): RenderStats;
   start(): void;

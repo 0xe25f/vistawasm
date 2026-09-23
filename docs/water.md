@@ -1,20 +1,21 @@
 # Water
 
-VistaWASM's water is one flat, animated plane (`render/water.rs::build_water_plane`
-+ `shaders/water.wgsl`), sized to cover the active terrain's footprint at a
-fixed sea level. There is no wave simulation, no rivers, no waterfalls, and
-no flow-following geometry — all visual detail (ripples, fresnel blend,
-specular highlight) comes from the shader, not from mesh geometry or a
-texture.
+VistaWASM draws three kinds of water, all shaded by `shaders/water.wgsl`:
+
+- **Ocean** — a camera-following grid at `seaLevelMetres` that reaches the
+  horizon, displaced by a simulated Gerstner swell.
+- **Rivers** — ribbons traced along the terrain's own drainage network and
+  carved into the terrain, with an animated current that runs downstream.
+- **Lakes** — flat water filling closed basins in the terrain.
 
 For the exact field list, see
 [`docs/options-reference.md`](options-reference.md#wateroptions).
 
 ## Sea level
 
-`WaterOptions.seaLevelMetres` positions the plane in world space. Set it
-relative to the *generated* terrain's real height range from
-`TerrainMetadata`, not a hardcoded constant:
+`WaterOptions.seaLevelMetres` positions the ocean. Set it relative to the
+generated terrain's real height range from `TerrainMetadata`, not a
+hardcoded constant:
 
 ```ts
 const handle = await engine.generateFractal(options);
@@ -28,54 +29,95 @@ engine.setWater({
 });
 ```
 
-The same hardcoded sea level constant will flood a `verticalScale: 2`
-mountain range and look wrong on a `verticalScale: 0.3` plain, since
-`TerrainMetadata`'s height range scales with `verticalScale`. This also
-matters for [`FractalTerrainOptions.seaLevelMetres`](options-reference.md#fractalterrainoptions),
-a *separate* field that seeds the initial `TerrainMetadata.seaLevelMetres`
-(used by flora/grass placement's underwater check) — the two are
-independent, and it is normal to set both to the same value.
+[`FractalTerrainOptions.seaLevelMetres`](options-reference.md#fractalterrainoptions)
+is a separate field that seeds `TerrainMetadata.seaLevelMetres`, which
+biomes, rivers, and vegetation use. It is normal to set both to the same
+value.
 
-## Visual controls
+## Waves (`waves`)
 
-- `waveScale` — procedural ripple amplitude. `0` gives a flat, mirror-like
-  plane; higher values give choppier water and a more disturbed normal for
-  the fresnel/specular terms.
-- `reflectivity` — how strongly the water blends towards the sky colour at
-  grazing angles (a fresnel term), versus showing its own deep/shallow
-  colour gradient.
-- `shorelineSoftnessMetres` — blend distance near the shoreline. There is
-  no separate foam/wave-breaking effect; this only softens the colour
-  transition.
+The swell is a sum of eight Gerstner waves spread around
+`directionDegrees`. Secondary waves are shorter and keep roughly the same
+steepness as the dominant swell, which gives a natural, non-repeating sea.
 
-Ripple animation reads the same per-frame clock shared with wind sway on
-flora/grass and cloud/mist drift (`water_params.z`, an internal
-frame-counter-based clock, not wall-clock time — see
-[`docs/architecture.md`](architecture.md#rendering)), so all of VistaWASM's
-animated systems stay in phase with each other.
+- `amplitudeMetres` and `wavelengthMetres` set the dominant swell.
+- `steepness` sharpens crests; high values produce choppy water and
+  whitecaps where crests fold.
+- `directionalSpread` goes from a clean, parallel swell (`0`) to a
+  confused, storm-like sea (`1`).
+- `speed` scales animation; `1` uses deep-water dispersion, so long waves
+  travel faster than short ones.
+- `enabled: false` keeps the surface flat and leaves only ripples.
+
+Waves shoal as the water gets shallow: they shrink towards the shore and
+break into rolling bands of surf foam. Each wave also fades out wherever
+the grid is too coarse to represent it, so distant water never aliases.
+The whole simulation is analytic and runs in the vertex and fragment
+shaders; it costs nothing on the CPU.
+
+```ts
+engine.setWater({
+  enabled: true,
+  seaLevelMetres: 0,
+  waveScale: 1.2,
+  reflectivity: 0.4,
+  shorelineSoftnessMetres: 6,
+  waves: { amplitudeMetres: 3, wavelengthMetres: 90, steepness: 0.8, directionalSpread: 0.8 },
+  currentSpeed: 1.2,
+  foam: 1
+});
+```
+
+## Currents
+
+`currentDirectionDegrees` and `currentSpeed` move small ripples and foam
+across open water and lakes. Rivers carry their own current (below).
+
+## Rivers and lakes (`rivers`)
+
+When a terrain is installed (and whenever `rivers` changes), the engine:
+
+1. Fills closed depressions with a priority-flood. Filled basins with real
+    depth become lakes; tiny pits stay dry.
+2. Routes flow downhill and accumulates upstream catchment area.
+3. Traces every channel whose catchment exceeds `minCatchmentKm2` into a
+    smoothed polyline running to the sea or into a larger river.
+4. Carves the channel into the heightmap, so the river sits in a real bed
+    with sloping banks, and marks the bed as sand and mud for the biome map.
+5. Builds a ribbon whose width grows with catchment (`widthScale`) and
+    whose vertices carry the flow direction and speed. Steep reaches run
+    fast and turn white with rapids; flat lowland reaches drift slowly.
+
+The water surface never runs uphill. Carving is fully reversible: turning
+rivers off restores the original heights exactly, and `exportHeightmap()`
+returns the carved terrain while rivers are on.
+
+Rivers are extracted on a grid of at most 512 × 512 samples, so the cost is
+bounded (tens of milliseconds) regardless of terrain size.
+
+## Shading
+
+- **Depth colour.** The shader reads the real water depth from the
+  terrain heights. Shallow water shows the sea bed through
+  `shallowColour`; it fades to `deepColour` by `clarityMetres`.
+- **Reflections.** Schlick Fresnel reflects the same analytic sky as the
+  sky pass, including cloud reflections, plus a GGX sun glitter.
+  `reflectivity` scales reflection strength.
+- **Subsurface light** glows through thin wave crests facing the sun.
+- **Foam** appears on folding crests, along shorelines, and in rapids,
+  scaled by `foam`.
+- **Cloud shadows** and fog apply to water like everything else.
 
 ## Interaction with mist
 
-When `MistOptions.riseAboveWater` is enabled, extra ground mist appears
-near `WaterOptions.seaLevelMetres` regardless of the mist's own
-`baseHeightMetres` — see
-[`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#mist-and-ground-fog)
-for the full mist system. This only takes effect while `WaterOptions.enabled`
-is `true`.
+When `MistOptions.riseAboveWater` is enabled, extra mist appears near
+`seaLevelMetres`. This only takes effect while `WaterOptions.enabled` is
+`true`.
 
 ## What water does not do
 
-- No buoyancy, swimming, or gameplay interaction of any kind — VistaWASM
-  has no physics. If your game needs to know whether a position is
-  underwater, compare your own gameplay height query (see
+- No buoyancy or gameplay interaction. Compare your own height query (see
   [`docs/game-development.md`](game-development.md#querying-terrain-height-for-gameplay))
-  against `WaterOptions.seaLevelMetres` yourself.
-- No rivers or flowing water — only one flat plane per terrain, at one sea
-  level.
-- No reflections of scene geometry (trees, terrain relief) — the "sky
-  reflection" is the analytic sky-dome colour blended in via the fresnel
-  term, not a real reflection pass.
-- Disabling water (`enabled: false`) removes the plane entirely — it is not
-  drawn transparent-and-invisible, it is simply not uploaded to the GPU
-  that frame (see `EngineCore::refresh_water` in
-  [`docs/architecture.md`](architecture.md#rendering)).
+  against `seaLevelMetres` yourself.
+- No reflections of scene geometry; reflections show the sky and clouds.
+- Rivers do not change sea level or flood terrain.

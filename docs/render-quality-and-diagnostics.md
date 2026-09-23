@@ -28,7 +28,10 @@ of this value (the terrain mesh's actual vertex budget is fixed — see
 
 `preset` does **not** automatically change `FloraOptions.treeQuality`,
 `GrassOptions`, `CloudsOptions.style`, or `MistOptions.style` — those
-default independently and a host must opt into each explicitly. If you want
+default independently and a host sets each explicitly. The most effective
+per-feature levers are `CloudsOptions.raymarchSteps` (or `style:
+"painted"`), `FloraOptions.meshDistanceMetres`, and
+`GrassOptions.viewDistanceMetres`. If you want
 "one dial" behaviour (cheap tiers at `"preview"`/`"balanced"`, expensive
 tiers at `"high"`/`"offline"`), implement that mapping yourself in your own
 UI/settings code.
@@ -63,21 +66,19 @@ Native/test builds without a GPU report a theoretical estimate from
 ## Debug views (`DebugView`)
 
 `engine.setDebugView(view)` accepts `"none" | "height" | "slope" |
-"normals" | "lod" | "flow" | "materials" | "no-data"`, and the value is
-validated, stored, and returned unchanged by the engine. **As of this
-release, no `DebugView` value other than `"none"` currently changes what is
-rendered** — every mode currently produces the same output as `"none"`. The
-type and setter exist as a stable, forward-compatible API surface (the demo
-and every example already expose a "Debug view" selector wired up to it),
-but the corresponding shader/rendering logic for each overlay has not been
-implemented yet.
+"normals" | "lod" | "flow" | "materials" | "no-data" | "biomes"`. These
+modes replace the terrain's textured shading with a flat-lit overlay:
 
-If you are relying on a specific debug overlay for your own workflow today,
-do not — check back once this is implemented, or, in the meantime, use
-[`docs/export-and-snapshots.md`](export-and-snapshots.md)'s heightmap
-export (which does give you real height data you can visualise yourself,
-via `renderHeightmapToCanvas`'s hypsometric colouring) as a substitute for
-a height/slope overlay.
+| View | Shows |
+| --- | --- |
+| `"height"` | Height above sea level, green lowlands to pale peaks. |
+| `"slope"` | Flat (green) to steep (red). |
+| `"normals"` | World-space normals as colour. |
+| `"materials"` | The dominant surface material (lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic). |
+| `"biomes"` | The biome map, one colour per biome (see [`docs/biomes.md`](biomes.md)). |
+
+`"lod"`, `"flow"`, and `"no-data"` are accepted but currently render like
+`"none"`. Trees, water, sky, and fog render normally in every mode.
 
 ## Building your own performance HUD
 

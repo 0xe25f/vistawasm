@@ -484,6 +484,108 @@ impl Default for AtmosphereOptions {
   }
 }
 
+fn default_true() -> bool {
+  true
+}
+
+/// Gerstner wave simulation controls for open water.
+///
+/// Waves are an analytic sum of directional Gerstner waves spread around
+/// `directionDegrees`, so they are deterministic, cost nothing on the CPU,
+/// and shoal (shrink and steepen into breaking foam) as the water gets
+/// shallower near the shore.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WaveOptions {
+  /// Whether vertex-displaced waves are simulated. When `false` the surface
+  /// stays flat and only small procedural ripples are shaded.
+  pub enabled: bool,
+  /// Height of the dominant swell from trough to crest, in metres.
+  pub amplitude_metres: f32,
+  /// Wavelength of the dominant swell, in metres.
+  pub wavelength_metres: f32,
+  /// Direction the swell travels towards, in degrees (0 = +Z, 90 = +X).
+  pub direction_degrees: f32,
+  /// Crest sharpness from 0 (rolling sine waves) to 1 (sharp, choppy
+  /// crests).
+  pub steepness: f32,
+  /// Animation speed multiplier (1 = physically based deep-water speed).
+  pub speed: f32,
+  /// Spread of the secondary waves around the main direction, from 0
+  /// (parallel swell) to 1 (confused, storm-like sea).
+  pub directional_spread: f32,
+}
+
+impl Default for WaveOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      amplitude_metres: 0.9,
+      wavelength_metres: 38.0,
+      direction_degrees: 35.0,
+      steepness: 0.55,
+      speed: 1.0,
+      directional_spread: 0.55,
+    }
+  }
+}
+
+/// River and current controls.
+///
+/// Rivers are extracted from the terrain's own drainage network (flow
+/// accumulation over the heightmap), so they always run downhill along
+/// valleys towards the sea or a basin. Each river vertex carries its flow
+/// direction and speed, which drives the animated current.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RiverOptions {
+  /// Whether rivers are generated.
+  pub enabled: bool,
+  /// Minimum upstream catchment area, in square kilometres, before a
+  /// channel is drawn as a river. Smaller values draw more, thinner
+  /// streams.
+  pub min_catchment_km2: f32,
+  /// Multiplier applied to the automatic river width.
+  pub width_scale: f32,
+  /// Current speed multiplier for river flow animation.
+  pub current_speed: f32,
+}
+
+impl Default for RiverOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      min_catchment_km2: 0.15,
+      width_scale: 1.0,
+      current_speed: 1.0,
+    }
+  }
+}
+
+fn default_shallow_colour() -> Rgb {
+  [0.10, 0.52, 0.50]
+}
+
+fn default_deep_colour() -> Rgb {
+  [0.015, 0.09, 0.16]
+}
+
+fn default_clarity_metres() -> f32 {
+  6.0
+}
+
+fn default_foam() -> f32 {
+  0.7
+}
+
+fn default_current_direction() -> f32 {
+  60.0
+}
+
+fn default_current_speed() -> f32 {
+  0.35
+}
+
 /// Water rendering controls.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -492,12 +594,38 @@ pub struct WaterOptions {
   pub enabled: bool,
   /// Sea level in metres.
   pub sea_level_metres: f32,
-  /// Procedural wave scale.
+  /// Small-scale ripple strength multiplier. Large swell is controlled by
+  /// `waves`.
   pub wave_scale: f32,
   /// Reflection strength.
   pub reflectivity: f32,
   /// Shoreline blend distance in metres.
   pub shoreline_softness_metres: f32,
+  /// Gerstner wave simulation. Defaults to a gentle swell.
+  #[serde(default)]
+  pub waves: WaveOptions,
+  /// Rivers extracted from the terrain drainage network.
+  #[serde(default)]
+  pub rivers: RiverOptions,
+  /// Direction of the open-water surface current, in degrees.
+  #[serde(default = "default_current_direction")]
+  pub current_direction_degrees: f32,
+  /// Speed of the open-water surface current in metres per second. Moves
+  /// ripples and foam; set to 0 for still water.
+  #[serde(default = "default_current_speed")]
+  pub current_speed: f32,
+  /// Colour of shallow, sunlit water.
+  #[serde(default = "default_shallow_colour")]
+  pub shallow_colour: Rgb,
+  /// Colour of deep water.
+  #[serde(default = "default_deep_colour")]
+  pub deep_colour: Rgb,
+  /// Depth in metres at which the sea bed stops being visible.
+  #[serde(default = "default_clarity_metres")]
+  pub clarity_metres: f32,
+  /// Foam strength on crests, shorelines, and rapids, from 0 to 1.
+  #[serde(default = "default_foam")]
+  pub foam: f32,
 }
 
 impl Default for WaterOptions {
@@ -508,48 +636,67 @@ impl Default for WaterOptions {
       wave_scale: 0.8,
       reflectivity: 0.35,
       shoreline_softness_metres: 6.0,
+      waves: WaveOptions::default(),
+      rivers: RiverOptions::default(),
+      current_direction_degrees: default_current_direction(),
+      current_speed: default_current_speed(),
+      shallow_colour: default_shallow_colour(),
+      deep_colour: default_deep_colour(),
+      clarity_metres: default_clarity_metres(),
+      foam: default_foam(),
     }
   }
 }
 
 /// Tree rendering fidelity.
 ///
-/// `Billboard` is the original, cheapest rendering (a single camera-facing
-/// quad) and stays the default so existing scenes are unaffected. `CrossQuad`
-/// renders two static, world-oriented quads per tree (not camera-facing),
-/// giving real parallax/volume from any angle. `Mesh` is accepted by the
-/// public API but currently falls back to `CrossQuad` rendering — a true
-/// instanced 3D tree mesh is tracked as future work in
-/// `docs/environment-upgrade-plan.md` ("Trees (Mesh tier)", deliberately the
-/// last phase of that plan) rather than shipped partially.
+/// Every tier draws the same procedurally modelled tree species (palm,
+/// jungle, swamp cypress, pine, oak, spruce, acacia, and shrub). `Mesh`
+/// (the default) draws full 3D meshes near the camera and switches to
+/// pre-rendered impostors of the very same meshes in the distance.
+/// `CrossQuad` draws only the impostors as two crossed quads, and
+/// `Billboard` draws them as one camera-facing quad — both are cheaper
+/// fallbacks for low-end devices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TreeQuality {
-  /// A single camera-facing billboard quad (default, cheapest).
+  /// A single camera-facing impostor quad per tree (cheapest).
   Billboard,
-  /// Two static, crossed quads per tree for parallax and volume.
+  /// Two static, crossed impostor quads per tree.
   CrossQuad,
-  /// Reserved for a future full instanced mesh tier; renders as `CrossQuad`.
+  /// Full 3D meshes near the camera, impostors in the distance (default).
   Mesh,
 }
 
 impl Default for TreeQuality {
   fn default() -> Self {
-    Self::Billboard
+    Self::Mesh
   }
 }
 
 fn default_species_variation() -> f32 {
-  0.0
+  0.6
+}
+
+fn default_wind_strength() -> f32 {
+  0.3
+}
+
+fn default_mesh_distance() -> f32 {
+  420.0
 }
 
 /// Flora placement controls.
+///
+/// Tree species and density follow the biome under each tree, so jungles
+/// fill with jungle trees and palms, swamps with cypress, cold forests
+/// with pine and spruce, and so on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloraOptions {
   /// Whether flora is enabled.
   pub enabled: bool,
-  /// Placement density from 0 to 1.
+  /// Placement density from 0 to 1. Multiplies each biome's own density.
   pub density: f32,
   /// Tree line altitude in metres.
   pub tree_line_metres: f32,
@@ -557,17 +704,19 @@ pub struct FloraOptions {
   pub seed_offset: u64,
   /// Maximum instance count requested by the host.
   pub max_instances: u32,
-  /// Tree rendering fidelity. Defaults to `Billboard`, today's rendering,
-  /// so existing callers see no change unless they opt in.
+  /// Tree rendering fidelity. Defaults to `Mesh`.
   #[serde(default)]
   pub tree_quality: TreeQuality,
-  /// Canopy silhouette and colour variety strength, from 0 to 1. Defaults
-  /// to `0.0` (today's uniform look).
+  /// Per-tree size, shape, and colour variety strength, from 0 to 1.
   #[serde(default = "default_species_variation")]
   pub species_variation: f32,
-  /// Canopy wind sway strength, from 0 to 1. Defaults to `0.0` (static).
-  #[serde(default)]
+  /// Wind sway strength, from 0 to 1.
+  #[serde(default = "default_wind_strength")]
   pub wind_strength: f32,
+  /// Distance in metres at which `Mesh` quality trees cross-fade from full
+  /// 3D meshes to impostors.
+  #[serde(default = "default_mesh_distance")]
+  pub mesh_distance_metres: f32,
 }
 
 impl Default for FloraOptions {
@@ -580,7 +729,8 @@ impl Default for FloraOptions {
       max_instances: 500_000,
       tree_quality: TreeQuality::default(),
       species_variation: default_species_variation(),
-      wind_strength: 0.0,
+      wind_strength: default_wind_strength(),
+      mesh_distance_metres: default_mesh_distance(),
     }
   }
 }
@@ -654,6 +804,22 @@ impl Default for CloudStyle {
   }
 }
 
+fn default_cloud_wind_direction() -> f32 {
+  70.0
+}
+
+fn default_cloud_evolution() -> f32 {
+  0.35
+}
+
+fn default_cloud_thickness() -> f32 {
+  1_600.0
+}
+
+fn default_cloud_density() -> f32 {
+  0.6
+}
+
 /// Cloud layer controls.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -662,9 +828,10 @@ pub struct CloudsOptions {
   pub style: CloudStyle,
   /// Cloud coverage from 0 (clear) to 1 (overcast).
   pub coverage: f32,
-  /// Drift speed. Larger values drift faster.
+  /// Wind speed multiplier. 1 moves clouds at roughly 15 metres per
+  /// second; 0 freezes them in place.
   pub speed: f32,
-  /// Cloud layer altitude in metres.
+  /// Altitude of the cloud base in metres.
   pub height_metres: f32,
   /// Base cloud tint, blended with sun/sky colour.
   pub colour: Rgb,
@@ -676,6 +843,22 @@ pub struct CloudsOptions {
   /// loop and untrusted callers must not be able to request an unbounded
   /// one.
   pub raymarch_steps: Option<u32>,
+  /// Direction the wind blows clouds towards, in degrees.
+  #[serde(default = "default_cloud_wind_direction")]
+  pub wind_direction_degrees: f32,
+  /// How quickly cloud shapes billow and change while they drift, from 0
+  /// (rigid) to 1 (fast-changing).
+  #[serde(default = "default_cloud_evolution")]
+  pub evolution: f32,
+  /// Vertical thickness of the cloud layer in metres.
+  #[serde(default = "default_cloud_thickness")]
+  pub thickness_metres: f32,
+  /// Optical density of the clouds, from 0 (wispy) to 1 (dense cumulus).
+  #[serde(default = "default_cloud_density")]
+  pub density: f32,
+  /// Whether clouds cast moving shadows on the terrain and water.
+  #[serde(default = "default_true")]
+  pub cast_shadows: bool,
 }
 
 impl Default for CloudsOptions {
@@ -684,10 +867,15 @@ impl Default for CloudsOptions {
       style: CloudStyle::default(),
       coverage: 0.45,
       speed: 1.0,
-      height_metres: 4_000.0,
+      height_metres: 1_800.0,
       colour: [1.0, 1.0, 1.0],
       seed_offset: 9_007,
-      raymarch_steps: Some(24),
+      raymarch_steps: Some(32),
+      wind_direction_degrees: default_cloud_wind_direction(),
+      evolution: default_cloud_evolution(),
+      thickness_metres: default_cloud_thickness(),
+      density: default_cloud_density(),
+      cast_shadows: true,
     }
   }
 }
@@ -714,6 +902,18 @@ impl Default for MistStyle {
   }
 }
 
+fn default_mist_wind_direction() -> f32 {
+  70.0
+}
+
+fn default_mist_wind_speed() -> f32 {
+  2.5
+}
+
+fn default_mist_sun_scattering() -> f32 {
+  0.6
+}
+
 /// Mist/ground-fog controls.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -733,6 +933,15 @@ pub struct MistOptions {
   pub rise_above_water: bool,
   /// Seed offset for deterministic mist noise (`Volumetric` style only).
   pub seed_offset: u64,
+  /// Direction the wind pushes fog banks towards, in degrees.
+  #[serde(default = "default_mist_wind_direction")]
+  pub wind_direction_degrees: f32,
+  /// Speed at which fog banks drift, in metres per second.
+  #[serde(default = "default_mist_wind_speed")]
+  pub wind_speed_metres_per_second: f32,
+  /// How strongly mist glows when looking towards the sun, from 0 to 1.
+  #[serde(default = "default_mist_sun_scattering")]
+  pub sun_scattering: f32,
 }
 
 impl Default for MistOptions {
@@ -745,6 +954,139 @@ impl Default for MistOptions {
       colour: [0.82, 0.85, 0.88],
       rise_above_water: true,
       seed_offset: 5_303,
+      wind_direction_degrees: default_mist_wind_direction(),
+      wind_speed_metres_per_second: default_mist_wind_speed(),
+      sun_scattering: default_mist_sun_scattering(),
+    }
+  }
+}
+
+/// A named biome.
+///
+/// Biomes are classified per terrain sample from height, slope, and two
+/// seeded climate fields (temperature and moisture), plus volcanic
+/// hotspots. They drive ground textures, tree species and density, and
+/// grass colour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[repr(u8)]
+pub enum BiomeKind {
+  /// Open temperate grassland with scattered trees.
+  GrassyMeadows = 0,
+  /// Scrub and young trees at the edge of forests.
+  OuterThicket = 1,
+  /// The open fringe of a temperate or boreal forest.
+  OuterForest = 2,
+  /// Dense forest interior.
+  InnerForest = 3,
+  /// Rolling uplands below the mountains.
+  MountainFoothills = 4,
+  /// High, steep, rocky mountains.
+  MountainProper = 5,
+  /// Ash and basalt slopes around a volcano.
+  OuterVolcanic = 6,
+  /// The summit caldera of a volcano, with glowing lava.
+  CalderaVolcanic = 7,
+  /// Hot, dry grassland with sparse acacia.
+  SavannahExpanse = 8,
+  /// Flat sandy shoreline.
+  CoastalBeach = 9,
+  /// Steep, rocky shoreline.
+  CoastalRocky = 10,
+  /// The fringe of a tropical rainforest.
+  OuterJungle = 11,
+  /// Dense tropical rainforest.
+  InnerJungle = 12,
+  /// Low, waterlogged ground with cypress trees.
+  SwampWetlands = 13,
+  /// Terrain below sea level.
+  Ocean = 14,
+}
+
+impl BiomeKind {
+  /// Every biome, in `repr(u8)` order.
+  pub const ALL: [BiomeKind; 15] = [
+    Self::GrassyMeadows,
+    Self::OuterThicket,
+    Self::OuterForest,
+    Self::InnerForest,
+    Self::MountainFoothills,
+    Self::MountainProper,
+    Self::OuterVolcanic,
+    Self::CalderaVolcanic,
+    Self::SavannahExpanse,
+    Self::CoastalBeach,
+    Self::CoastalRocky,
+    Self::OuterJungle,
+    Self::InnerJungle,
+    Self::SwampWetlands,
+    Self::Ocean,
+  ];
+
+  /// Convert a stored biome index back to a biome.
+  pub fn from_index(index: u8) -> Self {
+    Self::ALL
+      .get(index as usize)
+      .copied()
+      .unwrap_or(Self::GrassyMeadows)
+  }
+}
+
+fn default_climate_scale() -> f32 {
+  7_000.0
+}
+
+fn default_volcanism() -> f32 {
+  0.35
+}
+
+fn default_beach_height() -> f32 {
+  5.0
+}
+
+/// Biome classification controls.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BiomeOptions {
+  /// Whether climate-driven biomes are used. When `false`, only height and
+  /// slope are used (a temperate world of meadows, forests, and
+  /// mountains).
+  pub enabled: bool,
+  /// Seed offset for the climate noise fields.
+  pub seed_offset: u64,
+  /// Shifts the whole world colder (negative) or hotter (positive), from
+  /// -1 to 1.
+  pub temperature_bias: f32,
+  /// Shifts the whole world drier (negative) or wetter (positive), from
+  /// -1 to 1.
+  pub moisture_bias: f32,
+  /// Typical size of a climate region in metres.
+  #[serde(default = "default_climate_scale")]
+  pub climate_scale_metres: f32,
+  /// Likelihood and size of volcanic regions around high peaks, from 0
+  /// (none) to 1 (many, large).
+  #[serde(default = "default_volcanism")]
+  pub volcanism: f32,
+  /// Height above sea level, in metres, below which flat ground becomes
+  /// beach.
+  #[serde(default = "default_beach_height")]
+  pub beach_height_metres: f32,
+  /// Optional snow line in metres. Defaults to 80% of the way from sea
+  /// level to the highest peak.
+  pub snow_line_metres: Option<f32>,
+}
+
+impl Default for BiomeOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      seed_offset: 1_733,
+      temperature_bias: 0.0,
+      moisture_bias: 0.0,
+      climate_scale_metres: default_climate_scale(),
+      volcanism: default_volcanism(),
+      beach_height_metres: default_beach_height(),
+      snow_line_metres: None,
     }
   }
 }
@@ -811,6 +1153,8 @@ pub enum DebugView {
   Materials,
   /// DEM no-data overlay.
   NoData,
+  /// Biome map overlay.
+  Biomes,
 }
 
 impl Default for DebugView {
@@ -880,6 +1224,9 @@ pub struct VistaEngineOptions {
   pub mist: Option<MistOptions>,
   /// Optional quality controls.
   pub quality: Option<RenderQualityOptions>,
+  /// Optional initial biome controls.
+  #[serde(default)]
+  pub biomes: Option<BiomeOptions>,
 }
 
 impl Default for VistaEngineOptions {
@@ -895,6 +1242,7 @@ impl Default for VistaEngineOptions {
       clouds: Some(CloudsOptions::default()),
       mist: Some(MistOptions::default()),
       quality: Some(RenderQualityOptions::default()),
+      biomes: Some(BiomeOptions::default()),
     }
   }
 }

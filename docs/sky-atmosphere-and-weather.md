@@ -1,124 +1,115 @@
 # Sky, Atmosphere, and Weather
 
-VistaWASM's sky is one analytic, texture-free shader
-(`shaders/atmosphere.wgsl`) drawn as a fullscreen background pass before
-terrain, flora, grass, and water. This document covers everything that
-shader (and the terrain/flora/grass/water shaders it shares state with)
-renders: the sun, the sky dome itself, clouds, and ground mist.
+VistaWASM's sky, clouds, and fog are drawn by one full-screen composite
+pass (`shaders/atmosphere.wgsl`) after the opaque scene, reading its depth
+buffer. The sky model itself lives in `shaders/common.wgsl`, shared by every
+shader. This document covers the sun, the sky, clouds, and ground mist.
 
 For the exact field list of every option mentioned here, see
 [`docs/options-reference.md`](options-reference.md).
 
 ## Sun (`SunOptions`)
 
-The sun is a single directional light with no shadows (VistaWASM has no
-shadow-mapping pass today — every surface is lit purely by
-`max(dot(normal, sunDirection), 0) * intensity` plus a small constant
-ambient term). Three controls:
+The sun is a single directional light. Its colour comes from the
+atmosphere model (white at midday, golden and red near the horizon);
+surfaces also receive hemispherical sky light, and clouds cast moving
+shadows. There is no terrain self-shadowing pass. Three controls:
 
 - `azimuthDegrees` — compass direction the light comes from.
 - `elevationDegrees` — angle above the horizon. Low values (below ~10°)
-  give long shadows-equivalent raking light and warm colour from the sky
-  dome's horizon gradient; negative values put the sun below the horizon
-  entirely (a dusk/night look, though there is no separate night sky/star
-  rendering).
+  give raking, golden light; negative values put the sun below the
+  horizon for a dusk look (there is no star field).
 - `intensity` — brightness multiplier, applied to both direct lighting and
   the sun disc/glare in the sky dome.
 
 ## The sky dome (`AtmosphereOptions`)
 
-The sky is a practical approximation of real-world scattering, not a
-physically integrated simulation:
+The sky is a compact single-scattering model shared by every shader in
+`shaders/common.wgsl`, so the visible sky, water reflections, fog, and the
+ambient light on terrain and trees always agree:
 
-- **Rayleigh term** (`rayleighStrength`) — a blue gradient that deepens
-  towards the zenith and pales towards the horizon.
-- **Mie term** (`mieStrength`) — a forward-scattering haze/glow around the
-  sun, using a Henyey-Greenstein phase approximation. Higher values give a
-  bigger, hazier sun disc — good for a dusty/humid look.
-- **Sun disc** — a bright disc where the view ray closely aligns with the
-  sun direction, coloured and scaled by `SunOptions.intensity`.
-- **Horizon haze** — blends the sky towards `skyTint` near the horizon,
-  approximating aerial perspective where no terrain is in view.
-- **`exposure`** — an overall brightness multiplier applied after every
-  other term, including clouds and the sun disc.
-- **`skyTint`** — an RGB multiplier applied to the whole sky/haze/cloud
-  result. Push it warm for golden hour, cool/blue for a crisp midday look.
+- **Rayleigh scattering** (`rayleighStrength`) — wavelength-dependent
+  scattering that makes the zenith deep blue and the horizon pale.
+- **Mie scattering** (`mieStrength`) — grey aerosol haze with a strong
+  forward lobe, which gives the glow around the sun. Higher values give a
+  hazier, more humid look.
+- **Sunlight** is attenuated through the same atmosphere, using the real
+  air mass for the sun's elevation, so direct light and the sky both turn
+  golden and then red as the sun sets, and fade after sunset.
+- **Sun disc** — a bright disc with a soft corona, hidden by clouds in
+  front of it.
+- **`exposure`** — scales the linear scene before ACES filmic tone
+  mapping.
+- **`skyTint`** — an RGB multiplier on the sky light.
 
-### Haze vs. mist — read this before using either
+All lighting is computed in linear light in a floating-point target and
+tone mapped once, so bright skies roll off naturally instead of clipping.
+
+### Haze vs. mist
 
 `AtmosphereOptions.hazeDistanceMetres` and `MistOptions` are two
-**independent** controls that are easy to confuse:
+independent controls:
 
 | | Haze (`AtmosphereOptions`) | Mist (`MistOptions`) |
 | --- | --- | --- |
-| What it responds to | Distance from the camera only | Height above `baseHeightMetres`, plus optional proximity to sea level |
-| Effect | Fades everything to sky colour equally at a given distance, regardless of height | Pools near the ground/valleys; a mountain peak can stay clear while the valley beneath it is buried in fog, even at the same camera distance |
-| Applies to | Terrain only | Terrain, flora, grass, and water — see below |
+| What it responds to | Distance, thinning with altitude (1.2 km scale height), plus blue Rayleigh scattering | Height above `baseHeightMetres` (with a steep falloff), plus optional proximity to sea level |
+| Effect | Distant ranges fade into blue-grey aerial perspective | Fog pools in valleys; a peak can stay clear above a buried valley |
 | Default | Always on (`60000` m) | Off (`style: "off"`) |
 
-Use haze for "how far can I see" (and to hide LOD pop-in on very large
-terrain — lower it for that). Use mist for "how much of the low ground is
-buried in fog", independent of view distance.
+Both are integrated analytically along each pixel's true view ray in the
+composite pass, using the depth buffer, so they apply identically to
+terrain, trees, grass, and (in its own pass) water.
 
 ## Clouds (`CloudsOptions`)
 
-Clouds have two styles, both implemented inside the *same* atmosphere
-shader/pipeline (no separate pass) — the fullscreen pass already
-reconstructs a per-pixel view ray, and terrain drawn afterwards already
-occludes distant sky/cloud pixels behind mountains via the depth buffer, so
-no extra pipeline or depth-awareness is needed:
+Clouds are drawn by the composite pass (`shaders/atmosphere.wgsl`) after
+the opaque scene, so they appear behind terrain and also in front of it
+when a mountain rises into the cloud layer.
 
-- **`"off"`** (default) — no cloud layer at all, and the shader skips the
-  cloud branch entirely (one cheap check per pixel), so leaving clouds off
-  costs effectively nothing.
-- **`"painted"`** — a single 2-D noise sample at `heightMetres`, turned into
-  a soft-edged cloud/clear mask by a `coverage`-controlled threshold. Cheap:
-  one noise sample per pixel. The recommended default once you enable
-  clouds at all.
-- **`"volumetric"`** — a raymarched density band around `heightMetres`,
-  composited with a proper `1 - transmittance` opacity accumulation (so
-  results stay well-behaved across the whole `coverage` range instead of
-  saturating to a flat white overcast at moderate coverage). Brightens
-  toward the sun for a cheap single-scatter look. Real GPU cost,
-  proportional to `raymarchSteps` (hard-clamped to `8..=64` — see
-  [`docs/options-reference.md`](options-reference.md#cloudsoptions)).
-  Reserve this for a `RenderQualityOptions.preset` of `"high"`/`"offline"`
-  rather than `"preview"`/`"balanced"`.
+- **`"off"`** (default) — no clouds and no cost.
+- **`"painted"`** — a single layer shaded with a cheap self-shadow taken
+  from the weather map towards the sun. Suitable for low-end devices.
+- **`"volumetric"`** — a raymarch through a cloud slab between
+  `heightMetres` and `heightMetres + thicknessMetres`:
+  - A 2D weather map decides where clouds form (`coverage`) and how tall
+    they grow.
+  - Shapes come from baked 3D Perlin-Worley noise, eroded by finer Worley
+    detail: wispy at the base, billowing at the top, with flat bases.
+  - A short secondary march towards the sun gives self-shadowing with
+    Beer-powder lighting, and a two-lobe phase function gives bright silver
+    linings when looking towards the sun.
+  - Steps are spaced non-uniformly (fine near, coarse far) and jittered,
+    with early exit once a cloud is opaque. Cost scales with
+    `raymarchSteps` (`8..=64`, default `32`).
 
-`coverage` runs `0` (clear) to `1` (overcast); the middle of that range
-(roughly `0.3`–`0.5`) gives the most visually interesting patchy sky — very
-low or very high values trend towards "empty" or "solid" respectively, which
-is realistic but less visually varied. `speed` controls drift rate (clouds
-drift using the same shared per-frame clock the water/wind animations use,
-scaled by `speed`, not wall-clock time). `seedOffset` makes the noise
-pattern itself reproducible for a given seed — only the *drift* animates.
+### Movement
 
-Cloud shadows on the terrain are not implemented — clouds affect the sky
-only, not terrain lighting.
+Clouds drift with the wind (`windDirectionDegrees`, `speed`; `1` is about
+15 m/s) and change shape as they go (`evolution`), animated from a real-time
+clock. `seedOffset` changes the cloudscape itself.
+
+### Cloud shadows
+
+With `castShadows` (default `true`), clouds cast soft, moving shadows on
+terrain, trees, grass, and water. Shadows are projected along the sun
+direction from the same weather map that shapes the clouds, so they line
+up with the clouds you can see.
 
 ## Mist and ground fog (`MistOptions`)
 
-Mist is a height-based ground fog, applied consistently in every shader
-that can be affected by it: `clipmap_render.wgsl` (terrain),
-`flora_instances.wgsl` (trees), `grass_instances.wgsl` (grass), and
-`water.wgsl` (water) all read the same `mist_params`/`mist_colour` uniform
-fields, so a tree or a patch of grass standing in a misty valley is tinted
-the same as the ground beneath it, rather than popping out unaffected the
-way it would if mist only touched the terrain.
+Mist is an exponential height fog, integrated along each view ray:
 
 - **`"off"`** (default) — no ground fog.
-- **`"flat"`** — a static height-falloff blend: mist is thickest at
-  `baseHeightMetres` and thins out over `heightFalloffMetres`, then fades
-  further with distance from the camera so it does not extend to the far
-  clip plane at full strength.
-- **`"volumetric"`** — the same falloff, modulated by drifting noise (using
-  the same shared per-frame clock as clouds/water/wind), so mist visibly
-  moves rather than sitting static.
+- **`"flat"`** — a smooth layer, thickest at `baseHeightMetres` and thinning
+  over `heightFalloffMetres`.
+- **`"volumetric"`** — the same layer broken into fog banks by 3D noise
+  sampled along the ray. Banks drift with `windDirectionDegrees` and
+  `windSpeedMetresPerSecond`.
 
-`riseAboveWater` adds an extra mist contribution near
-`WaterOptions.seaLevelMetres`, independent of `baseHeightMetres` — this is
-what gives the "mist rising off the lake" look, and only has an effect
-while `WaterOptions.enabled` is true.
+Mist is lit by the sky and the sun; `sunScattering` controls how strongly it
+glows when you look towards the sun. `riseAboveWater` adds extra mist near
+`WaterOptions.seaLevelMetres`, which gives the "mist rising off the sea"
+look while water is enabled.
 
 ## Putting it together: a few starting points
 
@@ -135,14 +126,14 @@ mist: { style: "off" }
 sun: { azimuthDegrees: 100, elevationDegrees: 12, intensity: 1.0 },
 atmosphere: { hazeDistanceMetres: 20000, exposure: 0.95, skyTint: [0.95, 0.92, 0.88] },
 clouds: { style: "painted", coverage: 0.55 },
-mist: { style: "volumetric", density: 0.7, baseHeightMetres: 20, heightFalloffMetres: 90, riseAboveWater: true }
+mist: { style: "volumetric", density: 0.7, baseHeightMetres: 20, heightFalloffMetres: 90, riseAboveWater: true, windSpeedMetresPerSecond: 1.5 }
 ```
 
 **Dramatic overcast, hyper-realistic**
 ```ts
 sun: { azimuthDegrees: 220, elevationDegrees: 25, intensity: 0.9 },
 atmosphere: { mieStrength: 0.6, exposure: 1.0 },
-clouds: { style: "volumetric", coverage: 0.8, raymarchSteps: 48 },
+clouds: { style: "volumetric", coverage: 0.8, raymarchSteps: 48, thicknessMetres: 2500, density: 0.9, speed: 2 },
 mist: { style: "flat", density: 0.2, baseHeightMetres: 0, heightFalloffMetres: 200, riseAboveWater: false }
 ```
 

@@ -2,8 +2,8 @@ use vista_types::GrassOptions;
 
 use crate::maths::hash_noise;
 use crate::render::flora::{unit_from_hash, FloraInstance, FloraVertex};
+use crate::terrain::biomes::{SurfaceSample, MAT_DRY_GRASS, MAT_FOREST_FLOOR, MAT_LUSH_GRASS};
 use crate::terrain::heightmap::HeightMap;
-use crate::terrain::materials::MaterialWeights;
 
 /// Candidate grid resolution used when scattering grass. Grass reads much
 /// smaller on screen than a tree, so it is scanned at a finer stride than
@@ -85,19 +85,19 @@ pub fn clamp_grass_instances(options: &GrassOptions, device_limit: u32) -> u32 {
 
 /// Scatter deterministic grass tuft instances across the terrain.
 ///
-/// Placement reuses the terrain's already-baked `MaterialWeights.grass`
-/// weight when available (browser builds, via `EngineCore::terrain_materials`,
-/// computed once per terrain by `bake_terrain_shading`) rather than
-/// recomputing slope/height thresholds independently — grass naturally
-/// avoids rock/snow/mud/underwater terrain because that is exactly what the
-/// `grass` material weight already encodes. When cached materials are not
+/// Placement reuses the terrain's already-baked surface samples when
+/// available (computed once per terrain by `bake_terrain_shading`) rather
+/// than recomputing slope/height thresholds independently — grass naturally
+/// avoids rock/snow/sand/mud/underwater terrain because that is exactly
+/// what the grass material weights already encode, and it takes its
+/// colour (lush green to savannah straw) from the local climate. When cached materials are not
 /// available (native builds/tests), a simpler height/slope heuristic is
 /// used instead so the function still produces a sensible, deterministic
 /// result. `density_scale` applies the active render quality preset's
-/// flora density multiplier, mirroring `build_flora_instances`.
+/// flora density multiplier, mirroring `build_tree_instances`.
 pub fn build_grass_instances(
   map: &HeightMap,
-  materials: Option<&[MaterialWeights]>,
+  materials: Option<&[SurfaceSample]>,
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
@@ -154,6 +154,7 @@ pub fn build_grass_instances(
           ],
           scale: instance.scale,
           tint: instance.tint,
+          dryness: instance.dryness,
         });
       }
 
@@ -181,7 +182,7 @@ pub fn build_grass_instances(
 #[allow(clippy::too_many_arguments)]
 fn candidate_at(
   map: &HeightMap,
-  materials: Option<&[MaterialWeights]>,
+  materials: Option<&[SurfaceSample]>,
   x: u32,
   y: u32,
   width: u32,
@@ -203,8 +204,13 @@ fn candidate_at(
     return None;
   }
 
-  let acceptance_weight = match materials.and_then(|weights| weights.get(index)) {
-    Some(weights) => weights.grass,
+  let sample = materials.and_then(|weights| weights.get(index));
+  let acceptance_weight = match sample {
+    Some(sample) => {
+      sample.weight(MAT_LUSH_GRASS)
+        + sample.weight(MAT_DRY_GRASS) * 0.9
+        + sample.weight(MAT_FOREST_FLOOR) * 0.25
+    }
     None => {
       let left = map.height_at(x.saturating_sub(1), y).unwrap_or(elevation);
       let right = map
@@ -245,6 +251,14 @@ fn candidate_at(
     ],
     scale: 0.5 + scale_roll * 0.6,
     tint: tint_roll,
+    dryness: sample.map_or(0.0, |sample| {
+      let total = sample.weight(MAT_LUSH_GRASS) + sample.weight(MAT_DRY_GRASS);
+      if total > 0.0 {
+        sample.weight(MAT_DRY_GRASS) / total
+      } else {
+        0.0
+      }
+    }),
   })
 }
 
@@ -332,11 +346,9 @@ mod tests {
     let map = flat_map(64, 20.0);
     let options = grass_options();
     let bare_materials = vec![
-      MaterialWeights {
-        grass: 0.0,
-        rock: 1.0,
-        snow: 0.0,
-        wet_mud: 0.0,
+      SurfaceSample {
+        materials: [0, 0, 0, 0, 255, 0, 0, 0],
+        ..SurfaceSample::default()
       };
       (map.metadata.width * map.metadata.height) as usize
     ];

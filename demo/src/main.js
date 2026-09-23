@@ -14,6 +14,7 @@ const canvas = document.querySelector("#vista");
 const minimap = document.querySelector("#minimap");
 const status = document.querySelector("#status");
 const statsPanel = document.querySelector("#stats");
+const biomeReadout = document.querySelector("#biomeReadout");
 
 const inputs = {
   seed: input("seed"),
@@ -40,6 +41,23 @@ const inputs = {
   sea: input("sea"),
   waveScale: input("waveScale"),
   reflectivity: input("reflectivity"),
+  wavesEnabled: input("wavesEnabled"),
+  waveAmplitude: input("waveAmplitude"),
+  waveLength: input("waveLength"),
+  waveDirection: input("waveDirection"),
+  waveSteepness: input("waveSteepness"),
+  currentSpeed: input("currentSpeed"),
+  currentDirection: input("currentDirection"),
+  waterClarity: input("waterClarity"),
+  waterFoam: input("waterFoam"),
+  riversEnabled: input("riversEnabled"),
+  riverCatchment: input("riverCatchment"),
+  riverCurrent: input("riverCurrent"),
+  biomesEnabled: input("biomesEnabled"),
+  biomeTemperature: input("biomeTemperature"),
+  biomeMoisture: input("biomeMoisture"),
+  biomeScale: input("biomeScale"),
+  biomeVolcanism: input("biomeVolcanism"),
   floraEnabled: input("floraEnabled"),
   floraDensity: input("floraDensity"),
   treeLine: input("treeLine"),
@@ -54,11 +72,19 @@ const inputs = {
   cloudCoverage: input("cloudCoverage"),
   cloudSpeed: input("cloudSpeed"),
   cloudHeight: input("cloudHeight"),
+  cloudWindDirection: input("cloudWindDirection"),
+  cloudEvolution: input("cloudEvolution"),
+  cloudThickness: input("cloudThickness"),
+  cloudDensity: input("cloudDensity"),
+  cloudShadows: input("cloudShadows"),
   mistStyle: select("mistStyle"),
   mistDensity: input("mistDensity"),
   mistBaseHeight: input("mistBaseHeight"),
   mistHeightFalloff: input("mistHeightFalloff"),
   mistRiseAboveWater: input("mistRiseAboveWater"),
+  mistWindSpeed: input("mistWindSpeed"),
+  mistWindDirection: input("mistWindDirection"),
+  mistSunScattering: input("mistSunScattering"),
   quality: select("quality"),
   debugView: select("debugView")
 };
@@ -183,7 +209,33 @@ function applyWater() {
     seaLevelMetres: readNumber(inputs.sea, 0),
     waveScale: readNumber(inputs.waveScale, 0.8),
     reflectivity: readNumber(inputs.reflectivity, 0.4),
-    shorelineSoftnessMetres: 6
+    shorelineSoftnessMetres: 6,
+    waves: {
+      enabled: inputs.wavesEnabled.checked,
+      amplitudeMetres: readNumber(inputs.waveAmplitude, 0.9),
+      wavelengthMetres: readNumber(inputs.waveLength, 38),
+      directionDegrees: readNumber(inputs.waveDirection, 35),
+      steepness: readNumber(inputs.waveSteepness, 0.55)
+    },
+    rivers: {
+      enabled: inputs.riversEnabled.checked,
+      minCatchmentKm2: readNumber(inputs.riverCatchment, 0.15),
+      currentSpeed: readNumber(inputs.riverCurrent, 1)
+    },
+    currentSpeed: readNumber(inputs.currentSpeed, 0.35),
+    currentDirectionDegrees: readNumber(inputs.currentDirection, 60),
+    clarityMetres: readNumber(inputs.waterClarity, 6),
+    foam: readNumber(inputs.waterFoam, 0.7)
+  });
+}
+
+function applyBiomes() {
+  engine?.setBiomes({
+    enabled: inputs.biomesEnabled.checked,
+    temperatureBias: readNumber(inputs.biomeTemperature, 0),
+    moistureBias: readNumber(inputs.biomeMoisture, 0),
+    climateScaleMetres: readNumber(inputs.biomeScale, 7000),
+    volcanism: readNumber(inputs.biomeVolcanism, 0.35)
   });
 }
 
@@ -195,8 +247,8 @@ function applyFlora() {
     seedOffset: 3001,
     maxInstances: 20000,
     treeQuality: inputs.treeQuality.value,
-    speciesVariation: readNumber(inputs.speciesVariation, 0),
-    windStrength: readNumber(inputs.windStrength, 0)
+    speciesVariation: readNumber(inputs.speciesVariation, 0.6),
+    windStrength: readNumber(inputs.windStrength, 0.3)
   });
 }
 
@@ -216,10 +268,15 @@ function applyClouds() {
     style: inputs.cloudStyle.value,
     coverage: readNumber(inputs.cloudCoverage, 0.45),
     speed: readNumber(inputs.cloudSpeed, 1),
-    heightMetres: readNumber(inputs.cloudHeight, 4000),
+    heightMetres: readNumber(inputs.cloudHeight, 1800),
     colour: [1, 1, 1],
     seedOffset: 9007,
-    raymarchSteps: 24
+    raymarchSteps: 32,
+    windDirectionDegrees: readNumber(inputs.cloudWindDirection, 70),
+    evolution: readNumber(inputs.cloudEvolution, 0.35),
+    thicknessMetres: readNumber(inputs.cloudThickness, 1600),
+    density: readNumber(inputs.cloudDensity, 0.6),
+    castShadows: inputs.cloudShadows.checked
   });
 }
 
@@ -231,7 +288,10 @@ function applyMist() {
     heightFalloffMetres: readNumber(inputs.mistHeightFalloff, 120),
     colour: [0.82, 0.85, 0.88],
     riseAboveWater: inputs.mistRiseAboveWater.checked,
-    seedOffset: 5303
+    seedOffset: 5303,
+    windSpeedMetresPerSecond: readNumber(inputs.mistWindSpeed, 2.5),
+    windDirectionDegrees: readNumber(inputs.mistWindDirection, 70),
+    sunScattering: readNumber(inputs.mistSunScattering, 0.6)
   });
 }
 
@@ -251,6 +311,7 @@ function applyAllLiveControls() {
   applySun();
   applyAtmosphere();
   applyWater();
+  applyBiomes();
   applyFlora();
   applyGrass();
   applyClouds();
@@ -347,8 +408,39 @@ function wireLiveControls() {
     element.addEventListener("input", applyAtmosphere);
   }
 
-  for (const element of [inputs.waterEnabled, inputs.sea, inputs.waveScale, inputs.reflectivity]) {
+  for (const element of [
+    inputs.waterEnabled,
+    inputs.sea,
+    inputs.waveScale,
+    inputs.reflectivity,
+    inputs.wavesEnabled,
+    inputs.waveAmplitude,
+    inputs.waveLength,
+    inputs.waveDirection,
+    inputs.waveSteepness,
+    inputs.currentSpeed,
+    inputs.currentDirection,
+    inputs.waterClarity,
+    inputs.waterFoam
+  ]) {
     element.addEventListener("input", applyWater);
+  }
+
+  // River changes re-carve the terrain, so apply them once the slider is
+  // released rather than on every intermediate value.
+  for (const element of [inputs.riversEnabled, inputs.riverCatchment, inputs.riverCurrent]) {
+    element.addEventListener("change", applyWater);
+  }
+
+  // Biome changes re-bake the whole surface; apply on release too.
+  for (const element of [
+    inputs.biomesEnabled,
+    inputs.biomeTemperature,
+    inputs.biomeMoisture,
+    inputs.biomeScale,
+    inputs.biomeVolcanism
+  ]) {
+    element.addEventListener("change", applyBiomes);
   }
 
   for (const element of [inputs.floraEnabled, inputs.floraDensity, inputs.treeLine, inputs.speciesVariation, inputs.windStrength]) {
@@ -363,7 +455,16 @@ function wireLiveControls() {
 
   inputs.grassStyle.addEventListener("change", applyGrass);
 
-  for (const element of [inputs.cloudCoverage, inputs.cloudSpeed, inputs.cloudHeight]) {
+  for (const element of [
+    inputs.cloudCoverage,
+    inputs.cloudSpeed,
+    inputs.cloudHeight,
+    inputs.cloudWindDirection,
+    inputs.cloudEvolution,
+    inputs.cloudThickness,
+    inputs.cloudDensity,
+    inputs.cloudShadows
+  ]) {
     element.addEventListener("input", applyClouds);
   }
 
@@ -373,7 +474,10 @@ function wireLiveControls() {
     inputs.mistDensity,
     inputs.mistBaseHeight,
     inputs.mistHeightFalloff,
-    inputs.mistRiseAboveWater
+    inputs.mistRiseAboveWater,
+    inputs.mistWindSpeed,
+    inputs.mistWindDirection,
+    inputs.mistSunScattering
   ]) {
     element.addEventListener("input", applyMist);
   }
@@ -452,6 +556,11 @@ async function run() {
         camera.target[2] - camera.position[2]
       );
       drawMinimapMarker(camera.position, yaw + Math.PI);
+
+      if (biomeReadout) {
+        const biome = engine?.biomeAt(camera.position[0], camera.position[2]);
+        biomeReadout.textContent = `Biome: ${biome ?? "–"}`;
+      }
     }
   });
 
