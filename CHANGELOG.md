@@ -63,6 +63,11 @@ for changed defaults.
 - A rewritten README with a screenshot, a quick start, and clear paths for
   people using the package and people changing it; a documentation index
   (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
+- `CloudsOptions.temporal`: reuse distant clouds between frames. A
+  quarter-size pass marches one sky pixel of every 2 x 2 block, a different
+  one each frame, and the rest are reprojected from the previous frame,
+  cutting the cost of sky clouds by about three quarters. Off by default;
+  a checkbox in the demo.
 - `WeatherOptions.lensDrops`: raindrops that land on the lens, refract the
   scene, and run down the screen. Off by default.
 - A three.js guide (`docs/threejs.md`) and example (`examples/threejs/`,
@@ -107,6 +112,14 @@ for changed defaults.
   fresh-setup sequence.
 
 ### Fixed
+
+- **Terrain hitches while moving.** The camera-centred terrain mesh was
+  rebuilt, reallocated, and re-uploaded (16 MB) in a single frame whenever
+  the camera drifted 12 samples. It now streams: the next mesh starts at
+  6 samples, centred ahead of the camera by its velocity, is built and
+  uploaded 64 rows per frame into a second buffer, and swaps in when
+  complete. In testing, a full rebuild took 147 ms of CPU time; while
+  streaming, no frame took more than 2 ms.
 
 - **Rain, storms, and snow.** Under rain the sky is now a true overcast
   (brightest overhead, darker at the horizon, no direct sun), so the

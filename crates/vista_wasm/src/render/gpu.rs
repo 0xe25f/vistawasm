@@ -13,7 +13,7 @@ use crate::render::flora::{FloraInstance, TreeInstance};
 use crate::render::grass::GRASS_BASE_TUFT;
 use crate::render::shaders;
 use crate::render::shadow_math::tree_shadow_frame;
-use crate::render::terrain_mesh::TerrainMeshData;
+use crate::render::terrain_mesh::{TerrainMeshData, TerrainVertex};
 use crate::render::textures::{self, MipGenerator, MipMode, WorldTextures};
 use crate::render::tree_models::{
   build_species_mesh, merge_tree_meshes, TreeMesh, TreeSpecies, SPECIES_COUNT,
@@ -62,9 +62,11 @@ struct FrameUniforms {
   clouds3: [f32; 4],
   clouds4: [f32; 4],
   weather3: [f32; 4],
+  previous_view_proj: [f32; 16],
+  temporal: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 624);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 704);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -198,7 +200,11 @@ const _: () = assert!(textures::TERRAIN_LAYERS == crate::engine::TERRAIN_TEXTURE
 
 /// GPU-side terrain mesh resources for the active terrain.
 struct TerrainGpu {
-  vertex_buffer: wgpu::Buffer,
+  /// Two vertex buffers: one is drawn while the next mesh is written into
+  /// the other a few rows per frame, then they swap.
+  vertex_buffers: [wgpu::Buffer; 2],
+  front: usize,
+  vertex_count: u32,
   index_buffer: wgpu::Buffer,
   index_count: u32,
 }
@@ -240,11 +246,23 @@ struct TreeShadowMap {
 /// Reduced-resolution cloud target, plus the bind groups that read the
 /// current depth and HDR targets.
 struct CloudTarget {
-  view: wgpu::TextureView,
+  /// Two cloud images: one is drawn this frame while the other, last
+  /// frame's, supplies the clouds that are reused.
+  views: [wgpu::TextureView; 2],
   width: u32,
   height: u32,
-  cloud_bind_group: wgpu::BindGroup,
-  composite_bind_group: wgpu::BindGroup,
+  /// Cloud pass bind groups; `[i]` reads image `1 - i` as the history.
+  cloud_bind_groups: [wgpu::BindGroup; 2],
+  /// Composite bind groups; `[i]` reads image `i`.
+  composite_bind_groups: [wgpu::BindGroup; 2],
+  /// Quarter-size image of the sky pixels marched this frame while clouds
+  /// are reused, and the bind group its pass reads.
+  quarter_view: wgpu::TextureView,
+  quarter_bind_group: wgpu::BindGroup,
+  /// The image drawn most recently.
+  current: usize,
+  /// Whether the image not being drawn holds the previous frame's clouds.
+  history_valid: bool,
 }
 
 /// The finished frame, drawn off-screen so the lens-drop pass can read it.
@@ -313,6 +331,7 @@ struct Layouts {
   shadow: wgpu::BindGroupLayout,
   composite: wgpu::BindGroupLayout,
   cloud: wgpu::BindGroupLayout,
+  cloud_quarter: wgpu::BindGroupLayout,
   terrain_shadow: wgpu::BindGroupLayout,
   lens: wgpu::BindGroupLayout,
 }
@@ -326,6 +345,7 @@ struct Pipelines {
   tree_shadow: wgpu::RenderPipeline,
   grass: wgpu::RenderPipeline,
   clouds: wgpu::RenderPipeline,
+  clouds_quarter: wgpu::RenderPipeline,
   composite: wgpu::RenderPipeline,
   water: wgpu::RenderPipeline,
   lens: wgpu::RenderPipeline,
@@ -363,6 +383,10 @@ pub struct GpuContext {
   tree_shadow_map: TreeShadowMap,
   cloud_target: Option<CloudTarget>,
   lens_target: Option<LensTarget>,
+  /// The previous frame's view-projection, for reusing its clouds.
+  previous_view_proj: [f32; 16],
+  /// Counts cloud frames, to choose which pixel of each block is marched.
+  cloud_frame: u32,
   tree_meshes: Vec<TreeMesh>,
   tree_mesh: IndexedMesh,
   tree_ranges: [(u32, u32, i32); SPECIES_COUNT],
@@ -492,6 +516,14 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
     ),
     cloud: layout(
       "VistaWASM cloud layout",
+      &[
+        texture_entry(1, Dim::D2, Sample::Depth, fragment),
+        texture_entry(4, Dim::D2, filterable, fragment),
+        texture_entry(5, Dim::D2, unfilterable, fragment),
+      ],
+    ),
+    cloud_quarter: layout(
+      "VistaWASM quarter cloud layout",
       &[texture_entry(1, Dim::D2, Sample::Depth, fragment)],
     ),
     // Explicit, because R32Float heights are not filterable and automatic
@@ -1058,6 +1090,15 @@ fn create_pipelines(
       &layouts.cloud,
     ],
   );
+  let cloud_quarter = pipeline_layout(
+    "VistaWASM quarter cloud pipeline layout",
+    &[
+      frame_layout,
+      &layouts.world,
+      &layouts.shadow,
+      &layouts.cloud_quarter,
+    ],
+  );
   let terrain_shadow_layout = pipeline_layout(
     "VistaWASM terrain shadow pipeline layout",
     &[&layouts.terrain_shadow],
@@ -1168,6 +1209,19 @@ fn create_pipelines(
           "VistaWASM clouds",
           &modules.atmosphere,
           ("vertex_main", "cloud_main"),
+          &[],
+        )
+      },
+    ),
+    clouds_quarter: create_pipeline(
+      device,
+      &cloud_quarter,
+      PipelineSpec {
+        depth: None,
+        ..PipelineSpec::opaque(
+          "VistaWASM quarter clouds",
+          &modules.atmosphere,
+          ("vertex_main", "cloud_quarter_main"),
           &[],
         )
       },
@@ -1430,6 +1484,8 @@ impl GpuContext {
       tree_shadow_map,
       cloud_target: None,
       lens_target: None,
+      previous_view_proj: [0.0; 16],
+      cloud_frame: 0,
       tree_meshes,
       tree_mesh,
       tree_ranges: library.ranges,
@@ -1672,18 +1728,90 @@ impl GpuContext {
       return;
     }
 
-    let mesh = indexed_mesh(
+    let vertex_bytes: &[u8] = bytemuck::cast_slice(&mesh.vertices);
+    let reusable = self.terrain.as_ref().is_some_and(|terrain| {
+      terrain.vertex_count as usize == mesh.vertices.len()
+        && terrain.index_count as usize == mesh.indices.len()
+    });
+
+    // The camera-centred mesh always has the same size, so a new terrain
+    // or recolouring reuses the buffers (and the unchanged indices).
+    if reusable {
+      if let Some(terrain) = &self.terrain {
+        self
+          .queue
+          .write_buffer(&terrain.vertex_buffers[terrain.front], 0, vertex_bytes);
+        self.queue.write_buffer(
+          &terrain.index_buffer,
+          0,
+          bytemuck::cast_slice(&mesh.indices),
+        );
+      }
+
+      return;
+    }
+
+    let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+    let front = buffer_with_data(
       &self.device,
       &self.queue,
       "VistaWASM terrain",
-      bytemuck::cast_slice(&mesh.vertices),
-      &mesh.indices,
+      vertex_bytes,
+      usage,
+    );
+    let back = self.device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("VistaWASM terrain (next)"),
+      size: vertex_bytes.len() as u64,
+      usage,
+      mapped_at_creation: false,
+    });
+    let index_buffer = buffer_with_data(
+      &self.device,
+      &self.queue,
+      "VistaWASM terrain indices",
+      bytemuck::cast_slice(&mesh.indices),
+      wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
     );
     self.terrain = Some(TerrainGpu {
-      vertex_buffer: mesh.vertex_buffer,
-      index_buffer: mesh.index_buffer,
-      index_count: mesh.index_count,
+      vertex_buffers: [front, back],
+      front: 0,
+      vertex_count: mesh.vertices.len() as u32,
+      index_buffer,
+      index_count: mesh.indices.len() as u32,
     });
+  }
+
+  /// Write vertices of the next terrain mesh, starting at `first_vertex`,
+  /// into the buffer that is not being drawn. Returns `false` when there is
+  /// no terrain or the vertices would not fit.
+  pub fn write_next_terrain_vertices(
+    &mut self,
+    first_vertex: u32,
+    vertices: &[TerrainVertex],
+  ) -> bool {
+    let Some(terrain) = &self.terrain else {
+      return false;
+    };
+
+    if first_vertex as usize + vertices.len() > terrain.vertex_count as usize {
+      return false;
+    }
+
+    let offset = first_vertex as u64 * std::mem::size_of::<TerrainVertex>() as u64;
+    self.queue.write_buffer(
+      &terrain.vertex_buffers[1 - terrain.front],
+      offset,
+      bytemuck::cast_slice(vertices),
+    );
+    true
+  }
+
+  /// Start drawing the terrain mesh written by
+  /// [`Self::write_next_terrain_vertices`].
+  pub fn show_next_terrain(&mut self) {
+    if let Some(terrain) = &mut self.terrain {
+      terrain.front = 1 - terrain.front;
+    }
   }
 
   /// Upload the terrain heights used for water depth, shorelines, terrain
@@ -2202,35 +2330,68 @@ impl GpuContext {
       return;
     }
 
-    let view = default_view(&create_texture_2d(
+    let image = || {
+      default_view(&create_texture_2d(
+        &self.device,
+        "VistaWASM cloud target",
+        width,
+        height,
+        HDR_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      ))
+    };
+    let views = [image(), image()];
+    let quarter_view = default_view(&create_texture_2d(
       &self.device,
-      "VistaWASM cloud target",
-      width,
-      height,
+      "VistaWASM quarter cloud target",
+      width.div_ceil(2),
+      height.div_ceil(2),
       HDR_FORMAT,
       wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
     ));
-    let cloud_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("VistaWASM cloud bind group"),
-      layout: &self.layouts.cloud,
+    let quarter_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("VistaWASM quarter cloud bind group"),
+      layout: &self.layouts.cloud_quarter,
       entries: &[view_entry(1, &self.depth_view)],
     });
-    let composite_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("VistaWASM composite bind group"),
-      layout: &self.layouts.composite,
-      entries: &[
-        view_entry(0, &self.hdr_view),
-        view_entry(1, &self.depth_view),
-        view_entry(2, &view),
-      ],
-    });
+    let cloud_bind_group = |history: &wgpu::TextureView| {
+      self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("VistaWASM cloud bind group"),
+        layout: &self.layouts.cloud,
+        entries: &[
+          view_entry(1, &self.depth_view),
+          view_entry(4, history),
+          view_entry(5, &quarter_view),
+        ],
+      })
+    };
+    let composite_bind_group = |clouds: &wgpu::TextureView| {
+      self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("VistaWASM composite bind group"),
+        layout: &self.layouts.composite,
+        entries: &[
+          view_entry(0, &self.hdr_view),
+          view_entry(1, &self.depth_view),
+          view_entry(2, clouds),
+        ],
+      })
+    };
+    let cloud_bind_groups = [cloud_bind_group(&views[1]), cloud_bind_group(&views[0])];
+    let composite_bind_groups = [
+      composite_bind_group(&views[0]),
+      composite_bind_group(&views[1]),
+    ];
 
     self.cloud_target = Some(CloudTarget {
-      view,
+      views,
       width,
       height,
-      cloud_bind_group,
-      composite_bind_group,
+      cloud_bind_groups,
+      composite_bind_groups,
+      quarter_view,
+      quarter_bind_group,
+      current: 0,
+      history_valid: false,
     });
   }
 
@@ -2308,6 +2469,41 @@ impl GpuContext {
     );
     self.uniforms.shadow_view_proj = shadow_frame.view_proj;
     let tree_shadows = self.uniforms.shadow_params[0] > 0.0;
+
+    // Reusing distant clouds: only for volumetric clouds seen from well
+    // outside their layer (from inside it clouds are close and shift too
+    // much between frames), and only when the other cloud image holds the
+    // previous frame's clouds.
+    let clouds_drawn = params.cloud_coverage > 0.001;
+    let camera_y = params.camera_position[1];
+    let base = params.clouds.height_metres;
+    let top = base
+      + params.clouds.thickness_metres.max(1.0)
+        * (1.0 + params.clouds.towering.clamp(0.0, 1.0) * TOWER_STRETCH);
+    let outside_layer = camera_y < base - 300.0 || camera_y > top + 300.0;
+
+    if let Some(target) = &mut self.cloud_target {
+      if clouds_drawn {
+        target.current = 1 - target.current;
+      }
+
+      let reuse = params.clouds.temporal
+        && clouds_drawn
+        && params.cloud_raymarch_steps > 0
+        && outside_layer
+        && target.history_valid;
+      self.uniforms.temporal = [
+        flag(reuse),
+        (self.cloud_frame % 4) as f32,
+        target.width as f32,
+        target.height as f32,
+      ];
+      target.history_valid = clouds_drawn;
+    }
+
+    self.uniforms.previous_view_proj = self.previous_view_proj;
+    self.previous_view_proj = params.view_proj;
+    self.cloud_frame = self.cloud_frame.wrapping_add(1);
     self
       .queue
       .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniforms));
@@ -2469,7 +2665,7 @@ impl GpuContext {
 
       if let Some(terrain) = &self.terrain {
         pass.set_pipeline(&self.pipelines.terrain);
-        pass.set_vertex_buffer(0, terrain.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(0, terrain.vertex_buffers[terrain.front].slice(..));
         pass.set_index_buffer(terrain.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..terrain.index_count, 0, 0..1);
       }
@@ -2530,11 +2726,34 @@ impl GpuContext {
 
     // Clouds at reduced resolution; the composite upsamples them. Skipped
     // entirely when there are no clouds.
+    if params.cloud_coverage > 0.001 && self.uniforms.temporal[0] > 0.5 {
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("VistaWASM quarter cloud pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &cloud_target.quarter_view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        ..Default::default()
+      });
+      pass.set_pipeline(&self.pipelines.clouds_quarter);
+      pass.set_bind_group(0, &self.frame_bind_group, &[]);
+      pass.set_bind_group(1, &self.world_bind_group, &[]);
+      pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+      pass.set_bind_group(3, &cloud_target.quarter_bind_group, &[]);
+      pass.draw(0..3, 0..1);
+    }
+
     if params.cloud_coverage > 0.001 {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM cloud pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &cloud_target.view,
+          view: &cloud_target.views[cloud_target.current],
           depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
@@ -2549,7 +2768,11 @@ impl GpuContext {
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
-      pass.set_bind_group(3, &cloud_target.cloud_bind_group, &[]);
+      pass.set_bind_group(
+        3,
+        &cloud_target.cloud_bind_groups[cloud_target.current],
+        &[],
+      );
       pass.draw(0..3, 0..1);
     }
 
@@ -2573,7 +2796,11 @@ impl GpuContext {
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
-      pass.set_bind_group(3, &cloud_target.composite_bind_group, &[]);
+      pass.set_bind_group(
+        3,
+        &cloud_target.composite_bind_groups[cloud_target.current],
+        &[],
+      );
       pass.draw(0..3, 0..1);
     }
 

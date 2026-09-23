@@ -130,7 +130,15 @@ three. Other setters only change uniforms.
     default half) into an `rgba16float` target, blending cumulus, flat
     sheets, and storm towers by the cloud-type options, and adds rain
     shafts below the cloud base when they are enabled. Skipped when there
-    are no clouds.
+    are no clouds. With `CloudsOptions.temporal`, a quarter-size pass
+    (`cloud_quarter_main`) first marches one sky pixel of every 2 x 2
+    block, a different one each frame; the cloud pass then takes that
+    sample or the previous frame's clouds, reprojected with the previous
+    view-projection, from a second, ping-ponged cloud image. Marching one
+    pixel in four inside the full pass would not help: GPUs shade pixels
+    in groups, and a group costs as much as its slowest pixel. Pixels
+    with terrain in front are always marched, and reuse turns off within
+    300 m of the cloud layer.
 7. **Composite pass** (`shaders/atmosphere.wgsl`) onto the canvas: reads
     the HDR target, depth, and upsampled clouds, draws sky and sun, applies
     haze and mist along each pixel's true view ray, adds rain and snow, and
@@ -175,11 +183,27 @@ camera, not independently controllable rings.
 *whole* heightmap once per generated/loaded terrain
 (`terrain_mesh::bake_terrain_shading`) and caches them, since both are
 relatively expensive full-heightmap passes. Every subsequent recentre
-reuses that cache — `EngineCore::recentre_terrain_mesh_if_needed` (called
-from `render_once()`) only rebuilds and re-uploads the mesh once the camera
-has drifted more than 12 samples from where it's currently centred, and
-only ever recomputes vertex positions/normals/materials for the new mesh's
-`513×513` samples, not the whole heightmap. `RenderStats.terrainTriangles`
+reuses that cache and only recomputes the new mesh's `513×513` vertices,
+not the whole heightmap.
+
+Recentring streams, the way a tile engine streams chunks around a moving
+player (`EngineCore::recentre_terrain_mesh_if_needed`, called from
+`render_once()`):
+
+- Once the camera drifts 6 samples from the displayed mesh's centre,
+  the next mesh is started, centred ahead of the camera by its smoothed
+  velocity (half a second of travel, at most 8 samples;
+  `terrain_mesh::next_mesh_centre`), so a moving camera flies into detail
+  that is already there.
+- It is built and uploaded 64 rows per frame
+  (`terrain_mesh::build_centred_mesh_rows`) into the second of two vertex
+  buffers while the first is drawn, then the buffers swap. The index
+  buffer never changes and is uploaded once.
+- If the camera drifts 18 samples before the stream finishes (a teleport,
+  or very fast flight), the rest is built at once, as before.
+
+This replaces a full rebuild, fresh buffers, and a 16 MB upload in a
+single frame every 12 samples. `RenderStats.terrainTriangles`
 and `.clipmapLevels` reflect this real uploaded mesh on browser builds (a
 constant `512 × 512 × 2` triangles, and the number of exponential bands the
 mesh's half-span spans); native/test builds without a GPU report a

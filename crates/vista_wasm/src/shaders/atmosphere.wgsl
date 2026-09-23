@@ -26,6 +26,10 @@
 @group(3) @binding(2) var cloud_texture_low: texture_2d<f32>;
 // The finished frame, read by the lens-drop pass only.
 @group(3) @binding(3) var lens_source: texture_2d<f32>;
+// The previous frame's clouds, and this frame's quarter-size march, read
+// by the cloud pass when reusing clouds.
+@group(3) @binding(4) var cloud_history: texture_2d<f32>;
+@group(3) @binding(5) var cloud_quarter: texture_2d<f32>;
 
 struct VertexOut {
   @builtin(position) clip_position: vec4<f32>,
@@ -542,15 +546,35 @@ fn rain_shafts(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
   return vec4<f32>(scatter, transmittance);
 }
 
-// Reduced-resolution cloud pass. Output: rgb = in-scattered light already
-// faded into the haze, a = transmittance.
-@fragment
-fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
-  let ray = view_ray(in.ndc);
-  let depth = textureLoad(depth_texture, full_pixel(in.ndc), 0);
+// The previous frame's clouds in direction `ray`, or a negative alpha when
+// that direction was off screen. Clouds are kilometres away, so they are
+// reprojected by direction: the point 20 km along the ray, as the previous
+// camera saw it.
+fn previous_clouds(ray: vec3<f32>) -> vec4<f32> {
+  let point = frame.camera_position.xyz + ray * 20000.0;
+  let clip = frame.previous_view_proj * vec4<f32>(point, 1.0);
+
+  if (clip.w <= 0.0) {
+    return vec4<f32>(-1.0);
+  }
+
+  let ndc = clip.xy / clip.w;
+
+  if (any(abs(ndc) > vec2<f32>(1.0))) {
+    return vec4<f32>(-1.0);
+  }
+
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+  return textureSampleLevel(cloud_history, clamp_sampler, uv, 0.0);
+}
+
+// Clouds (and rain curtains) along `ray`, stopping at geometry
+// `depth`. `pixel` seeds the march's stable dither. Output: rgb =
+// in-scattered light already faded into the haze, a = transmittance.
+fn clouds_along(ray: vec3<f32>, depth: f32, pixel: vec2<f32>) -> vec4<f32> {
   let is_sky = depth >= 0.999999;
   let max_distance = select(linear_distance(depth, ray), 1.0e9, is_sky);
-  let clouds = march_clouds(ray, max_distance, in.clip_position.xy);
+  let clouds = march_clouds(ray, max_distance, pixel);
   let shafts = rain_shafts(ray, max_distance);
 
   if (clouds.transmittance >= 0.999 && shafts.a >= 0.999) {
@@ -563,6 +587,60 @@ fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
   let scatter = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
   // Rain shafts hang below the clouds, so they sit in front of them.
   return vec4<f32>(shafts.rgb + shafts.a * scatter, shafts.a * clouds.transmittance);
+}
+
+// Which pixel of each 2 x 2 block of the cloud image is marched this frame
+// while clouds are reused.
+fn reuse_offset() -> vec2<u32> {
+  let phase = u32(frame.temporal.y);
+  return vec2<u32>(phase % 2u, phase / 2u);
+}
+
+// Reused clouds, part 1: a quarter-size pass that marches one sky pixel of
+// every 2 x 2 block of the cloud image. Every pixel here does the same
+// work, so none waits on a neighbour; marching one pixel in four inside the
+// full-size pass would not help, because GPUs shade pixels in groups and a
+// group costs as much as its slowest pixel.
+@fragment
+fn cloud_quarter_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let size = frame.temporal.zw;
+  let pixel = floor(in.clip_position.xy) * 2.0 + vec2<f32>(reuse_offset()) + 0.5;
+  let ndc = vec2<f32>(pixel.x / size.x * 2.0 - 1.0, 1.0 - pixel.y / size.y * 2.0);
+  let depth = textureLoad(depth_texture, full_pixel(ndc), 0);
+
+  // Pixels with terrain in front are marched by the full-size pass.
+  if (depth < 0.999999) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+
+  return clouds_along(view_ray(ndc), depth, pixel);
+}
+
+// Reduced-resolution cloud pass. Output: rgb = in-scattered light already
+// faded into the haze, a = transmittance.
+@fragment
+fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let ray = view_ray(in.ndc);
+  let depth = textureLoad(depth_texture, full_pixel(in.ndc), 0);
+
+  // Reused clouds, part 2. Distant clouds change little from one frame to
+  // the next, like the far layers of a parallax scene: each sky pixel takes
+  // this frame's quarter-size march when it is its turn, and otherwise the
+  // previous frame's clouds, reprojected. Pixels with terrain in front are
+  // cheap and always marched here, so silhouettes never smear.
+  if (frame.temporal.x > 0.5 && depth >= 0.999999) {
+    let pixel = vec2<u32>(in.clip_position.xy);
+    let fresh = textureLoad(cloud_quarter, vec2<i32>(pixel / 2u), 0);
+
+    if (all(pixel % 2u == reuse_offset())) {
+      return fresh;
+    }
+
+    let reused = previous_clouds(ray);
+    return select(fresh, reused, reused.a >= 0.0);
+  }
+
+  return clouds_along(ray, depth, in.clip_position.xy);
 }
 
 @fragment

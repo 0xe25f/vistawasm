@@ -123,6 +123,7 @@ projector model and the bundled fly-camera controller.
 | `density` | `number?` | `0.6` | Optical density, `0` (wispy) to `1` (dense cumulus). |
 | `castShadows` | `boolean?` | `true` | Moving cloud shadows on terrain, trees, grass, and water. Also requires `ShadowOptions.clouds.enabled`. |
 | `resolutionScale` | `number?` | `0.5` | Cloud render resolution relative to the canvas, `0.25` to `1`. Lower is faster. |
+| `temporal` | `boolean?` | `false` | Reuse distant clouds between frames: each frame raymarches a quarter of the sky's cloud pixels and reprojects the rest. Cuts the cost of sky clouds by about three quarters. Volumetric only; off automatically while the camera is within 300 m of the cloud layer. |
 | `cirrus` | `number?` | `0.35` | Thin, high cirrus above the main clouds, `0` (none) to `1`. Needs a cloud style other than `"off"`. |
 | `cirrusHeightMetres` | `number?` | `9000` | Cirrus altitude, `1000` to `20000`. Always kept above the main cloud layer. |
 | `cirrusSpeed` | `number?` | `0.4` | Cirrus drift speed, `0` to `10`, in units of 15 m/s. Separate from `speed`, and not changed by the weather. |

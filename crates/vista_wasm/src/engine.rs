@@ -79,8 +79,33 @@ pub struct EngineCore {
   /// until a terrain is installed.
   #[cfg(target_arch = "wasm32")]
   mesh_centre_sample: Option<(f32, f32)>,
+  /// The next camera-centred mesh, while it is being built a few rows per
+  /// frame.
+  #[cfg(target_arch = "wasm32")]
+  mesh_stream: Option<MeshStream>,
+  /// Camera position (heightmap samples) last frame, and its smoothed
+  /// velocity in samples per second, for building the next mesh ahead of
+  /// the camera.
+  #[cfg(target_arch = "wasm32")]
+  camera_track: Option<(f32, f32)>,
+  #[cfg(target_arch = "wasm32")]
+  camera_velocity: (f32, f32),
   #[cfg(target_arch = "wasm32")]
   gpu: crate::render::gpu::GpuContext,
+}
+
+/// Rows of the camera-centred terrain mesh built and uploaded per frame
+/// while the next mesh streams in: about 33,000 vertices, so a rebuild is
+/// spread over eight frames instead of stalling one.
+#[cfg(target_arch = "wasm32")]
+const MESH_ROWS_PER_FRAME: u32 = 64;
+
+/// The next camera-centred terrain mesh, built a slice at a time.
+#[cfg(target_arch = "wasm32")]
+struct MeshStream {
+  centre: (f32, f32),
+  next_row: u32,
+  scratch: Vec<crate::render::terrain_mesh::TerrainVertex>,
 }
 
 /// Weather values for the shaders, resolved from the weather state and
@@ -203,6 +228,9 @@ impl EngineCore {
       applied_rivers: None,
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
+      mesh_stream: None,
+      camera_track: None,
+      camera_velocity: (0.0, 0.0),
       gpu,
     };
     core
@@ -595,7 +623,7 @@ impl EngineCore {
 
     #[cfg(target_arch = "wasm32")]
     {
-      self.recentre_terrain_mesh_if_needed();
+      self.recentre_terrain_mesh_if_needed(dt);
       let params = self.frame_params();
       self.gpu.render_once(&params)?;
     }
@@ -676,6 +704,7 @@ impl EngineCore {
     {
       self.terrain_normals = Vec::new();
       self.mesh_centre_sample = None;
+      self.mesh_stream = None;
     }
 
     Ok(())
@@ -694,6 +723,7 @@ impl EngineCore {
     #[cfg(target_arch = "wasm32")]
     {
       self.mesh_centre_sample = None;
+      self.mesh_stream = None;
     }
 
     self.rebuild_world();
@@ -781,6 +811,8 @@ impl EngineCore {
           self.gpu.upload_terrain(&mesh);
           self.terrain_normals = normals;
           self.mesh_centre_sample = Some((centre_sample_x, centre_sample_z));
+          // A half-built next mesh has the old heights and colours.
+          self.mesh_stream = None;
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -1057,8 +1089,11 @@ impl EngineCore {
   /// Also refreshes `terrain_triangles` and `clipmap_levels` stats to
   /// reflect the real uploaded mesh rather than a theoretical estimate.
   #[cfg(target_arch = "wasm32")]
-  fn recentre_terrain_mesh_if_needed(&mut self) {
-    const RECENTRE_THRESHOLD_SAMPLES: f32 = 12.0;
+  fn recentre_terrain_mesh_if_needed(&mut self, dt: f32) {
+    use crate::render::terrain_mesh::{
+      build_centred_mesh_rows, next_mesh_centre, world_to_sample_coordinates,
+      RECENTRE_LIMIT_SAMPLES,
+    };
 
     let samples_per_side = crate::render::terrain_mesh::CENTRED_MESH_SAMPLES_PER_SIDE;
     self.stats.clipmap_levels = crate::render::terrain_mesh::band_count(samples_per_side / 2);
@@ -1068,34 +1103,94 @@ impl EngineCore {
       return;
     };
 
-    let (sample_x, sample_z) = crate::render::terrain_mesh::world_to_sample_coordinates(
+    let camera = world_to_sample_coordinates(
       terrain,
       self.camera.options.position[0],
       self.camera.options.position[2],
     );
 
-    let needs_rebuild = match self.mesh_centre_sample {
-      Some((centre_x, centre_z)) => {
-        (sample_x - centre_x).abs() > RECENTRE_THRESHOLD_SAMPLES
-          || (sample_z - centre_z).abs() > RECENTRE_THRESHOLD_SAMPLES
+    // Smoothed camera velocity, so the next mesh is centred where the
+    // camera is heading rather than where it was.
+    if let Some(last) = self.camera_track {
+      if dt > 0.0 {
+        let blend = (dt * 4.0).min(1.0);
+        let measured = ((camera.0 - last.0) / dt, (camera.1 - last.1) / dt);
+        self.camera_velocity.0 += (measured.0 - self.camera_velocity.0) * blend;
+        self.camera_velocity.1 += (measured.1 - self.camera_velocity.1) * blend;
       }
-      None => true,
-    };
-
-    if !needs_rebuild {
-      return;
     }
 
-    let mesh = crate::render::terrain_mesh::build_terrain_mesh_centred(
+    self.camera_track = Some(camera);
+
+    let Some(displayed) = self.mesh_centre_sample else {
+      // No mesh yet: build one at once.
+      let mesh = crate::render::terrain_mesh::build_terrain_mesh_centred(
+        terrain,
+        &self.terrain_normals,
+        &self.surface,
+        camera.0,
+        camera.1,
+        samples_per_side,
+      );
+      self.gpu.upload_terrain(&mesh);
+      self.mesh_centre_sample = Some(camera);
+      return;
+    };
+
+    if self.mesh_stream.is_none() {
+      let Some(centre) = next_mesh_centre(camera, self.camera_velocity, displayed) else {
+        return;
+      };
+
+      self.mesh_stream = Some(MeshStream {
+        centre,
+        next_row: 0,
+        scratch: Vec::with_capacity((MESH_ROWS_PER_FRAME * samples_per_side) as usize),
+      });
+    }
+
+    let Some(stream) = self.mesh_stream.as_mut() else {
+      return;
+    };
+
+    // If the camera outruns the stream (a teleport, or very fast flight),
+    // finish now rather than leave it outside the detailed band.
+    let drift = (camera.0 - displayed.0)
+      .abs()
+      .max((camera.1 - displayed.1).abs());
+    let rows = if drift > RECENTRE_LIMIT_SAMPLES {
+      samples_per_side - stream.next_row
+    } else {
+      MESH_ROWS_PER_FRAME
+    };
+    let end = (stream.next_row + rows).min(samples_per_side);
+    stream.scratch.clear();
+    build_centred_mesh_rows(
       terrain,
       &self.terrain_normals,
       &self.surface,
-      sample_x,
-      sample_z,
+      stream.centre,
       samples_per_side,
+      stream.next_row..end,
+      &mut stream.scratch,
     );
-    self.gpu.upload_terrain(&mesh);
-    self.mesh_centre_sample = Some((sample_x, sample_z));
+
+    if !self
+      .gpu
+      .write_next_terrain_vertices(stream.next_row * samples_per_side, &stream.scratch)
+    {
+      self.mesh_stream = None;
+      return;
+    }
+
+    stream.next_row = end;
+
+    if end >= samples_per_side {
+      let centre = stream.centre;
+      self.gpu.show_next_terrain();
+      self.mesh_centre_sample = Some(centre);
+      self.mesh_stream = None;
+    }
   }
 
   /// Seconds since the previous frame. Native builds (tests) step a fixed

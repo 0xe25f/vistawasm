@@ -229,26 +229,63 @@ pub fn build_terrain_mesh_centred(
   centre_sample_z: f32,
   samples_per_side: u32,
 ) -> TerrainMeshData {
+  let mut vertices = Vec::with_capacity((samples_per_side * samples_per_side) as usize);
+  build_centred_mesh_rows(
+    map,
+    normals,
+    surface,
+    (centre_sample_x, centre_sample_z),
+    samples_per_side,
+    0..samples_per_side,
+    &mut vertices,
+  );
+
+  if vertices.is_empty() {
+    return TerrainMeshData {
+      vertices,
+      indices: Vec::new(),
+    };
+  }
+
+  TerrainMeshData {
+    vertices,
+    indices: centred_mesh_indices(samples_per_side),
+  }
+}
+
+/// Append the vertices of grid rows `rows` of the camera-centred mesh to
+/// `out`. Building a few rows at a time lets the engine spread one mesh
+/// rebuild over several frames instead of stalling a single frame. Appends
+/// nothing when the inputs are empty or inconsistent.
+pub fn build_centred_mesh_rows(
+  map: &HeightMap,
+  normals: &[Vec3],
+  surface: &[SurfaceSample],
+  centre: (f32, f32),
+  samples_per_side: u32,
+  rows: std::ops::Range<u32>,
+  out: &mut Vec<TerrainVertex>,
+) {
   let width = map.metadata.width;
   let height = map.metadata.height;
 
-  if width == 0 || height == 0 || samples_per_side < 2 || surface.len() != normals.len() {
-    return TerrainMeshData {
-      vertices: Vec::new(),
-      indices: Vec::new(),
-    };
+  if width == 0
+    || height == 0
+    || samples_per_side < 2
+    || surface.len() != normals.len()
+    || normals.len() != map.heights.len()
+  {
+    return;
   }
 
   let metres_per_sample = map.metadata.metres_per_sample.max(0.001);
   let half_width = (width as f32 - 1.0) * 0.5;
   let half_height = (height as f32 - 1.0) * 0.5;
   let half_span = (samples_per_side / 2) as i64;
-  let centre_x = centre_sample_x.round() as i64;
-  let centre_z = centre_sample_z.round() as i64;
+  let centre_x = centre.0.round() as i64;
+  let centre_z = centre.1.round() as i64;
 
-  let mut vertices = Vec::with_capacity((samples_per_side * samples_per_side) as usize);
-
-  for sz in 0..samples_per_side {
+  for sz in rows.start..rows.end.min(samples_per_side) {
     let grid_dz = sz as i64 - half_span;
     let sample_z = (centre_z + band_sample_offset(grid_dz)).clamp(0, height as i64 - 1) as u32;
 
@@ -258,15 +295,19 @@ pub fn build_terrain_mesh_centred(
       let index = (sample_z * width + sample_x) as usize;
       let world_x = (sample_x as f32 - half_width) * metres_per_sample;
       let world_z = (sample_z as f32 - half_height) * metres_per_sample;
-      vertices.push(TerrainVertex::new(
+      out.push(TerrainVertex::new(
         [world_x, map.heights[index], world_z],
         normals[index],
         &surface[index],
       ));
     }
   }
+}
 
-  let quads_per_side = samples_per_side - 1;
+/// Triangle indices of the camera-centred mesh. They depend only on the
+/// grid size, so they are uploaded once and reused by every rebuild.
+pub fn centred_mesh_indices(samples_per_side: u32) -> Vec<u32> {
+  let quads_per_side = samples_per_side.saturating_sub(1);
   let mut indices = Vec::with_capacity((quads_per_side * quads_per_side * 6) as usize);
 
   for sz in 0..quads_per_side {
@@ -285,7 +326,53 @@ pub fn build_terrain_mesh_centred(
     }
   }
 
-  TerrainMeshData { vertices, indices }
+  indices
+}
+
+/// Drift, in samples, between the camera and the displayed mesh centre
+/// that starts building the next mesh in the background.
+pub const RECENTRE_START_SAMPLES: f32 = 6.0;
+
+/// Drift at which the next mesh must be finished at once. The first LOD
+/// band is 24 samples wide, so this keeps the camera inside full detail.
+pub const RECENTRE_LIMIT_SAMPLES: f32 = 18.0;
+
+/// How far ahead, in seconds of travel, the next mesh is centred.
+const RECENTRE_LEAD_SECONDS: f32 = 0.5;
+
+/// Furthest ahead of the camera, in samples, the next mesh is centred.
+const RECENTRE_MAX_LEAD_SAMPLES: f32 = 8.0;
+
+/// Where to centre the next camera-centred mesh, or `None` while the
+/// displayed one is still close enough. Like a chunk streamer that preloads
+/// in the direction of travel, the new centre leads the camera by its
+/// velocity (in samples per second), so a moving camera flies into detail
+/// that is already there and the next rebuild comes later.
+pub fn next_mesh_centre(
+  camera: (f32, f32),
+  velocity: (f32, f32),
+  displayed: (f32, f32),
+) -> Option<(f32, f32)> {
+  let drift = (camera.0 - displayed.0)
+    .abs()
+    .max((camera.1 - displayed.1).abs());
+
+  if drift <= RECENTRE_START_SAMPLES {
+    return None;
+  }
+
+  let mut lead = (
+    velocity.0 * RECENTRE_LEAD_SECONDS,
+    velocity.1 * RECENTRE_LEAD_SECONDS,
+  );
+  let length = (lead.0 * lead.0 + lead.1 * lead.1).sqrt();
+
+  if length > RECENTRE_MAX_LEAD_SAMPLES {
+    let scale = RECENTRE_MAX_LEAD_SAMPLES / length;
+    lead = (lead.0 * scale, lead.1 * scale);
+  }
+
+  Some((camera.0 + lead.0, camera.1 + lead.1))
 }
 
 const _: () = assert!(std::mem::size_of::<TerrainVertex>() == 40);
@@ -312,6 +399,57 @@ mod tests {
     assert!(
       mesh.vertices.len() <= (MAX_MESH_SAMPLES_PER_SIDE * MAX_MESH_SAMPLES_PER_SIDE) as usize
     );
+  }
+
+  #[test]
+  fn rows_built_in_slices_match_the_whole_mesh() {
+    let mut map = HeightMap::flat(65, 65, 10.0, TerrainMetadata::default());
+
+    for (index, height) in map.heights.iter_mut().enumerate() {
+      *height = (index % 7) as f32;
+    }
+
+    let (normals, surface) = bake_terrain_shading(&map, &BiomeOptions::default(), None);
+    let whole = build_terrain_mesh_centred(&map, &normals, &surface, 20.0, 40.0, 33);
+    let mut sliced = Vec::new();
+
+    for start in (0..33).step_by(8) {
+      build_centred_mesh_rows(
+        &map,
+        &normals,
+        &surface,
+        (20.0, 40.0),
+        33,
+        start..(start + 8).min(33),
+        &mut sliced,
+      );
+    }
+
+    assert_eq!(sliced.len(), whole.vertices.len());
+    assert!(sliced
+      .iter()
+      .zip(&whole.vertices)
+      .all(|(a, b)| bytemuck::bytes_of(a) == bytemuck::bytes_of(b)));
+    assert_eq!(whole.indices, centred_mesh_indices(33));
+  }
+
+  #[test]
+  fn next_centre_waits_for_drift_then_leads_the_camera() {
+    assert_eq!(
+      next_mesh_centre((103.0, 100.0), (0.0, 0.0), (100.0, 100.0)),
+      None
+    );
+
+    let still = next_mesh_centre((110.0, 100.0), (0.0, 0.0), (100.0, 100.0)).unwrap();
+    assert_eq!(still, (110.0, 100.0));
+
+    let moving = next_mesh_centre((110.0, 100.0), (4.0, 0.0), (100.0, 100.0)).unwrap();
+    assert_eq!(moving, (112.0, 100.0));
+
+    // Very fast travel leads by at most the cap, staying in full detail.
+    let fast = next_mesh_centre((110.0, 100.0), (0.0, 1000.0), (100.0, 100.0)).unwrap();
+    assert!((fast.1 - 100.0 - RECENTRE_MAX_LEAD_SAMPLES).abs() < 1e-4);
+    assert!(RECENTRE_MAX_LEAD_SAMPLES + RECENTRE_START_SAMPLES < LOD_BAND_WIDTH as f32);
   }
 
   #[test]

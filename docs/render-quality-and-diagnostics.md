@@ -25,7 +25,9 @@ does not change `FloraOptions.treeQuality`, `GrassOptions`,
 erosion: the erosion iteration cap is `ErosionOptions.quality` (see
 [`docs/terrain-data.md`](terrain-data.md#erosion)). Set each feature
 yourself. The most effective
-per-feature levers are `CloudsOptions.raymarchSteps` (or `style:
+per-feature levers are `CloudsOptions.temporal` (reuse distant clouds
+between frames, about a quarter of the cloud cost with no visible change
+in testing), `CloudsOptions.raymarchSteps` (or `style:
 "painted"`), `CloudsOptions.resolutionScale` (clouds render at half
 resolution by default; `0.25` is cheaper still),
 `ShadowOptions.trees.resolution` and `distanceMetres`,

@@ -79,6 +79,12 @@ struct FrameUniforms {
   // xy: cirrus wind offset in metres, z: 1 when raindrops land on the lens,
   // w: precipitation heaviness (1 = full rain or snow, more = downpour).
   weather3: vec4<f32>,
+  // The previous frame's view-projection, for reusing its clouds.
+  previous_view_proj: mat4x4<f32>,
+  // x: 1 when sky cloud pixels may be reused from the previous frame,
+  // y: which pixel of each 2 x 2 block is raymarched this frame (0 to 3),
+  // zw: size of the cloud image in pixels.
+  temporal: vec4<f32>,
 };
 
 struct WorldInfo {

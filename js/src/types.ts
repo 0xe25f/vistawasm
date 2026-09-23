@@ -715,6 +715,14 @@ export interface CloudsOptions {
    */
   cirrusSpeed?: number;
   /**
+   * Reuse distant clouds between frames: each frame raymarches one sky
+   * pixel in every 2 x 2 block and reprojects the other three from the
+   * previous frame, cutting the cost of sky clouds to about a quarter.
+   * Volumetric only; off automatically while the camera is in or near the
+   * cloud layer. Defaults to `false`.
+   */
+  temporal?: boolean;
+  /**
    * Cloud type, 0 (heaped cumulus) to 1 (a flat sheet such as stratus or
    * nimbostratus). Volumetric only. Defaults to `0`.
    */

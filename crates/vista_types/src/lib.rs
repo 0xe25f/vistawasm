@@ -953,6 +953,13 @@ pub struct CloudsOptions {
   /// `speed`. The weather system does not change it.
   #[serde(default = "default_cirrus_speed")]
   pub cirrus_speed: f32,
+  /// Reuse distant clouds between frames: each frame raymarches one sky
+  /// pixel in every 2 x 2 block and reprojects the other three from the
+  /// previous frame, cutting the cost of sky clouds to about a quarter.
+  /// Volumetric clouds only; switched off automatically while the camera is
+  /// in or near the cloud layer.
+  #[serde(default)]
+  pub temporal: bool,
   /// Cloud type, from 0 (heaped cumulus) to 1 (a flat, layered sheet such
   /// as stratus or nimbostratus). Volumetric clouds only.
   #[serde(default)]
@@ -1010,6 +1017,7 @@ impl Default for CloudsOptions {
       cirrus: default_cirrus(),
       cirrus_height_metres: default_cirrus_height(),
       cirrus_speed: default_cirrus_speed(),
+      temporal: false,
       stratiform: 0.0,
       towering: 0.0,
       base_darkness: 0.0,
