@@ -106,6 +106,12 @@ for changed defaults.
 
 ### Fixed
 
+- `npm run dev` and every `npm run dev:*` script failed in a fresh clone
+  with "Failed to resolve import \"@vista-wasm/vista-wasm\"" until
+  `npm run build` had been run. They now build first when `dist/` is
+  missing, explain what to install if the build fails, and warn when the
+  build is older than the Rust or TypeScript sources.
+
 - Documentation checked against the code. Corrected: `RenderQualityOptions.preset`
   has no effect (the erosion cap is `ErosionOptions.quality`);
   `RenderStats.frameTimeMs` covers CPU time only; the `"stats"` event also

@@ -63,8 +63,10 @@ npm run dev:threejs
 
 Each starts a dev server on `http://127.0.0.1:5173`. The demo and
 examples load the built `dist/` output, exactly as an app that installed
-the package from npm would, so run `npm run build` again after changing
-Rust or `js/src`.
+the package from npm would. If `dist/` is missing, as in a fresh clone,
+each `npm run dev*` script runs `npm run build` for you first. It does not
+rebuild automatically after you change Rust or `js/src`; it warns you
+instead, so run `npm run build` again yourself.
 
 ## Where things live
 

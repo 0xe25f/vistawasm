@@ -147,8 +147,10 @@ npm run dev:svelte
 npm run dev:threejs   # three.js overlay example
 ```
 
-Each of these needs `npm run build` (specifically `build:wasm` +
-`build:ts`) to have been run first — the examples/demo alias
+Each of these needs a built `dist/`. If it is missing, the matching
+`predev*` script (`scripts/ensure-built.mjs`) runs `npm run build` first,
+and it warns when `crates/` or `js/src/` changed after the last build. The
+examples/demo alias
 `@vista-wasm/vista-wasm` to the *built* `dist/index.js`, not the raw
 TypeScript source, since the WASM loader in `js/src/index.ts` resolves its
 `.wasm`/glue files relative to its own module URL, which only exist next to
