@@ -95,6 +95,8 @@ struct FrameWeatherValues {
   overcast: f32,
   wind: [f32; 2],
   lightning_position: [f32; 2],
+  heaviness: f32,
+  lens_drops: bool,
 }
 
 /// Options after the weather has been applied.
@@ -890,9 +892,13 @@ impl EngineCore {
       out.clouds.ragged_base = state.ragged_base;
       out.clouds.rain_shafts = state.rain_shafts;
       // The sky greys with full cover and darkens further under
-      // rain-laden cloud.
-      out.weather.overcast = (((state.cloud_coverage - 0.6) / 0.4).clamp(0.0, 1.0) * 0.85)
-        .max(state.base_darkness * 0.9);
+      // rain-laden cloud. A near-complete deck (rain's 97 % cover) is a full
+      // overcast: no direct sun, no sharp shadows, no glint on the water.
+      // Heavy rain means a full deck overhead too, even between storm cells.
+      out.weather.overcast = ((state.cloud_coverage - 0.6) / 0.35)
+        .clamp(0.0, 1.0)
+        .max(state.base_darkness * 0.9)
+        .max(state.rain);
     }
 
     if effects.mist {
@@ -930,6 +936,8 @@ impl EngineCore {
     if effects.precipitation {
       out.weather.rain = state.rain;
       out.weather.snow = state.snow;
+      out.weather.heaviness = self.weather.precipitation_heaviness();
+      out.weather.lens_drops = self.weather.options().lens_drops;
     }
 
     if effects.ground {
@@ -1036,6 +1044,8 @@ impl EngineCore {
         overcast: weather.overcast,
         wind: weather.wind,
         lightning_position: weather.lightning_position,
+        heaviness: weather.heaviness.max(1.0),
+        lens_drops: weather.lens_drops,
       },
       height_range: self.height_range,
     }
@@ -1216,6 +1226,9 @@ mod tests {
     assert!(stormy.clouds.rain_shafts > 0.5);
     assert_ne!(stormy.clouds.style, vista_types::CloudStyle::Off);
     assert!(stormy.weather.rain > 0.5);
+    // Heavy rain is a full overcast, and a storm is heavier than full rain.
+    assert!((stormy.weather.overcast - 1.0).abs() < 1e-6);
+    assert!(stormy.weather.heaviness > 1.4);
     assert_eq!(stormy.water, engine.water);
     assert_eq!(
       engine.stats().weather,

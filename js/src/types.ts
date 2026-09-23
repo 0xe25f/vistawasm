@@ -511,8 +511,14 @@ export interface WeatherOptions {
   windDirectionDegrees?: number;
   /** Multiplier on wind speed, 0 to 4. Defaults to `1`. */
   windScale?: number;
-  /** Multiplier on rain and snow, 0 to 2. Defaults to `1`. */
+  /**
+   * Multiplier on rain and snow, 0 to 2. Above 1, rain becomes a downpour:
+   * more and longer streaks, and a grey veil that cuts visibility.
+   * Defaults to `1`.
+   */
   precipitationScale?: number;
+  /** Raindrops that land on the lens and run down the screen. Defaults to `false`. */
+  lensDrops?: boolean;
   effects?: WeatherEffects;
 }
 
@@ -703,6 +709,11 @@ export interface CloudsOptions {
   cirrus?: number;
   /** Altitude of the cirrus layer, 1000 to 20000 metres. Defaults to `9000`. */
   cirrusHeightMetres?: number;
+  /**
+   * Cirrus drift speed in units of 15 m/s, 0 to 10, separate from `speed`.
+   * The weather system does not change it. Defaults to `0.4`.
+   */
+  cirrusSpeed?: number;
   /**
    * Cloud type, 0 (heaped cumulus) to 1 (a flat sheet such as stratus or
    * nimbostratus). Volumetric only. Defaults to `0`.

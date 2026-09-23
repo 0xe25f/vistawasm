@@ -125,6 +125,7 @@ projector model and the bundled fly-camera controller.
 | `resolutionScale` | `number?` | `0.5` | Cloud render resolution relative to the canvas, `0.25` to `1`. Lower is faster. |
 | `cirrus` | `number?` | `0.35` | Thin, high cirrus above the main clouds, `0` (none) to `1`. Needs a cloud style other than `"off"`. |
 | `cirrusHeightMetres` | `number?` | `9000` | Cirrus altitude, `1000` to `20000`. Always kept above the main cloud layer. |
+| `cirrusSpeed` | `number?` | `0.4` | Cirrus drift speed, `0` to `10`, in units of 15 m/s. Separate from `speed`, and not changed by the weather. |
 | `stratiform` | `number?` | `0` | Cloud type: `0` heaped cumulus to `1` a flat sheet (stratus, nimbostratus). Volumetric only. |
 | `towering` | `number?` | `0` | Towering storm clouds (cumulonimbus) with anvils, `0` to `1`. Towers rise up to 2.6 × `thicknessMetres`. Volumetric only. |
 | `baseDarkness` | `number?` | `0` | Darker, rain-laden bases, `0` to `1`. |
@@ -261,7 +262,8 @@ Passed to `engine.setWeather()`. Every field is optional. See
 | `seedOffset` | `number \| bigint` | `4111` | Seed for the cycle sequence and gusts. |
 | `windDirectionDegrees` | `number` | `70` | Prevailing wind direction. |
 | `windScale` | `number` | `1` | `0` to `4`. |
-| `precipitationScale` | `number` | `1` | `0` to `2`. |
+| `precipitationScale` | `number` | `1` | `0` to `2`. Above `1`, rain becomes a downpour: more and longer streaks and a grey veil that cuts visibility. |
+| `lensDrops` | `boolean` | `false` | Raindrops land on the lens and run down the screen while it rains. Adds one full-screen pass. |
 | `effects` | `WeatherEffects` | all `true` | `clouds`, `mist`, `wind`, `water`, `precipitation`, `ground`, `lightning`. |
 
 `engine.getWeather()` returns the blended `WeatherState` (`from`, `to`,

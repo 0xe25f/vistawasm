@@ -368,6 +368,7 @@ pub fn validate_clouds(clouds: &CloudsOptions) -> VistaResult<()> {
   validate_unit_range("clouds.baseDarkness", clouds.base_darkness, 0.0, 1.0)?;
   validate_unit_range("clouds.raggedBase", clouds.ragged_base, 0.0, 1.0)?;
   validate_unit_range("clouds.rainShafts", clouds.rain_shafts, 0.0, 1.0)?;
+  validate_unit_range("clouds.cirrusSpeed", clouds.cirrus_speed, 0.0, 10.0)?;
   validate_unit_range(
     "clouds.cirrusHeightMetres",
     clouds.cirrus_height_metres,
@@ -519,6 +520,17 @@ mod tests {
     assert!(VistaEngineConfig::from_options(weather).is_err());
     assert!(VistaEngineConfig::from_options(surface).is_err());
     assert!(VistaEngineConfig::from_options(VistaEngineOptions::default()).is_ok());
+  }
+
+  #[test]
+  fn rejects_out_of_range_cirrus_speed() {
+    let mut clouds = CloudsOptions::default();
+    clouds.cirrus_speed = -0.1;
+    assert!(validate_clouds(&clouds).is_err());
+    clouds.cirrus_speed = 10.5;
+    assert!(validate_clouds(&clouds).is_err());
+    clouds.cirrus_speed = 0.4;
+    assert!(validate_clouds(&clouds).is_ok());
   }
 
   #[test]

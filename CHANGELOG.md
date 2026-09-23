@@ -63,6 +63,8 @@ for changed defaults.
 - A rewritten README with a screenshot, a quick start, and clear paths for
   people using the package and people changing it; a documentation index
   (`docs/README.md`); and `CONTRIBUTING.md` with a fresh-setup guide.
+- `WeatherOptions.lensDrops`: raindrops that land on the lens, refract the
+  scene, and run down the screen. Off by default.
 - A three.js guide (`docs/threejs.md`) and example (`examples/threejs/`,
   `npm run dev:threejs`): three.js objects drawn over a VistaWASM world
   with a shared camera, a matching sun, and hills that hide them; and
@@ -105,6 +107,19 @@ for changed defaults.
   fresh-setup sequence.
 
 ### Fixed
+
+- **Rain, storms, and snow.** Under rain the sky is now a true overcast
+  (brightest overhead, darker at the horizon, no direct sun), so the
+  distant sea darkens under rain instead of glowing white, and sharp
+  shadows and sun glints on the water disappear. The circular pulse in
+  the sky above the camera is gone. Falling rain and snow were smeared
+  more the longer a scene ran; rain now falls in short streaks and snow in
+  round, chunky flakes. Storms, and `precipitationScale` above 1, now look
+  heavier, with a grey veil that cuts visibility. Rain and snow were hidden
+  wherever water was in view; they now fall in front of it. Rain curtains
+  cost less.
+- **Cirrus** drifted at twice the speed of the low clouds, which the
+  weather raises in a gale. It now has its own `CloudsOptions.cirrusSpeed`.
 
 - **Lag with a high frame-rate reading.** The demo and examples showed
   `1000 / frameTimeMs` as FPS, but `frameTimeMs` only covers the CPU time

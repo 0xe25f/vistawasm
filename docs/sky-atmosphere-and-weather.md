@@ -130,6 +130,11 @@ Clouds drift with the wind (`windDirectionDegrees`, `speed`; `1` is about
 15 m/s) and change shape as they go (`evolution`), animated from a real-time
 clock. `seedOffset` changes the cloudscape itself.
 
+Cirrus drifts in the same direction at its own speed, `cirrusSpeed`
+(default `0.4`, in the same units). The weather system changes `speed`
+with the wind but leaves `cirrusSpeed` alone, so high cloud keeps its slow,
+distant drift in a gale.
+
 ### Cloud shadows
 
 With `castShadows` (default `true`), clouds cast soft, moving shadows on

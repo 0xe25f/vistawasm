@@ -125,7 +125,9 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       haze: 0.25,
       wind: 17.0,
       gustiness: 0.7,
-      rain: 1.0,
+      // Above 1: the reported rain stays at full, and the extra makes the
+      // downpour look heavier than ordinary rain.
+      rain: 1.6,
       lightning_per_minute: 7.0,
       stratiform: 0.35,
       towering: 0.85,
@@ -212,6 +214,10 @@ pub struct WeatherSystem {
   time: f64,
   wetness: f32,
   snow_cover: f32,
+  /// Precipitation beyond full intensity: 1 for ordinary rain or snow, up
+  /// to about 3 for a storm with `precipitationScale` 2. Drives how heavy
+  /// falling rain and snow look.
+  heaviness: f32,
   next_lightning: f64,
   lightning_started: f64,
   lightning_offset: [f32; 2],
@@ -231,6 +237,7 @@ impl WeatherSystem {
       time: 0.0,
       wetness: 0.0,
       snow_cover: 0.0,
+      heaviness: 1.0,
       next_lightning: 4.0,
       lightning_started: -100.0,
       lightning_offset: [0.0, 4_000.0],
@@ -311,8 +318,14 @@ impl WeatherSystem {
     let b = profile(self.to);
     let mix = |x: f32, y: f32| lerp(x, y, t);
     let scale = self.options.precipitation_scale.max(0.0);
+    let raw = (mix(a.rain, b.rain) + mix(a.snow, b.snow)) * scale;
     let rain = (mix(a.rain, b.rain) * scale).min(1.0);
     let snow = (mix(a.snow, b.snow) * scale).min(1.0);
+    self.heaviness = if rain + snow > 0.001 {
+      (raw / (rain + snow)).max(1.0)
+    } else {
+      1.0
+    };
 
     // Ground responds slowly: puddles take minutes to form and dry, snow
     // settles over a minute or two and melts more slowly than it falls.
@@ -405,6 +418,11 @@ impl WeatherSystem {
     lerp(profile(self.from).haze, profile(self.to).haze, self.blend())
   }
 
+  /// How far precipitation exceeds full intensity (1 or more).
+  pub fn precipitation_heaviness(&self) -> f32 {
+    self.heaviness
+  }
+
   /// The state that currently dominates the blend.
   pub fn dominant(&self) -> WeatherKind {
     if self.blend() >= 0.5 {
@@ -425,6 +443,23 @@ mod tests {
       state,
       ..WeatherOptions::default()
     }
+  }
+
+  #[test]
+  fn precipitation_beyond_full_intensity_counts_as_heaviness() {
+    let rain = WeatherSystem::new(options(WeatherKind::Rain));
+    assert!((rain.precipitation_heaviness() - 1.0).abs() < 1e-6);
+
+    let storm = WeatherSystem::new(options(WeatherKind::Storm));
+    assert!((storm.state().rain - 1.0).abs() < 1e-6);
+    assert!(storm.precipitation_heaviness() > 1.5);
+
+    let downpour = WeatherSystem::new(WeatherOptions {
+      precipitation_scale: 2.0,
+      ..options(WeatherKind::Rain)
+    });
+    assert!((downpour.state().rain - 1.0).abs() < 1e-6);
+    assert!(downpour.precipitation_heaviness() > 1.2);
   }
 
   #[test]

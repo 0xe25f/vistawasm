@@ -949,6 +949,10 @@ pub struct CloudsOptions {
   /// top of the main cloud layer.
   #[serde(default = "default_cirrus_height")]
   pub cirrus_height_metres: f32,
+  /// Drift speed of the cirrus layer, in units of 15 m/s, separate from
+  /// `speed`. The weather system does not change it.
+  #[serde(default = "default_cirrus_speed")]
+  pub cirrus_speed: f32,
   /// Cloud type, from 0 (heaped cumulus) to 1 (a flat, layered sheet such
   /// as stratus or nimbostratus). Volumetric clouds only.
   #[serde(default)]
@@ -983,6 +987,10 @@ fn default_cirrus_height() -> f32 {
   9_000.0
 }
 
+fn default_cirrus_speed() -> f32 {
+  0.4
+}
+
 impl Default for CloudsOptions {
   fn default() -> Self {
     Self {
@@ -1001,6 +1009,7 @@ impl Default for CloudsOptions {
       resolution_scale: default_cloud_resolution(),
       cirrus: default_cirrus(),
       cirrus_height_metres: default_cirrus_height(),
+      cirrus_speed: default_cirrus_speed(),
       stratiform: 0.0,
       towering: 0.0,
       base_darkness: 0.0,
@@ -1307,8 +1316,12 @@ pub struct WeatherOptions {
   pub wind_direction_degrees: f32,
   /// Multiplier on each state's wind speed.
   pub wind_scale: f32,
-  /// Multiplier on rain and snow intensity.
+  /// Multiplier on rain and snow intensity. Above 1, rain becomes a
+  /// downpour: denser, longer streaks and a grey veil that cuts visibility.
   pub precipitation_scale: f32,
+  /// Raindrops that land on the camera lens, bead, and run down the
+  /// screen while it rains.
+  pub lens_drops: bool,
   /// Which systems the weather drives.
   pub effects: WeatherEffects,
 }
@@ -1326,6 +1339,7 @@ impl Default for WeatherOptions {
       wind_direction_degrees: 70.0,
       wind_scale: 1.0,
       precipitation_scale: 1.0,
+      lens_drops: false,
       effects: WeatherEffects::default(),
     }
   }

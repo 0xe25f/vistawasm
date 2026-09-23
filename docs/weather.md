@@ -118,13 +118,42 @@ engine.on("weatherChanged", (kind) => {
 `"weatherChanged"` event fires when it changes. It changes halfway
 through a transition.
 
+## Heavy rain, snow, and the view
+
+Rain falls in short streaks, about 20 cm long (one drop blurred over a
+frame), slanted by the wind. Snow falls as round flakes 2 to 6 cm across
+that sway and drift with the wind. A storm is heavier than ordinary rain:
+more drops, longer streaks, and a grey veil that cuts visibility to about
+3 km. `precipitationScale` above 1 turns any rain into a downpour the
+same way.
+
+Under rain the sky is a full overcast deck: brightest overhead and darker
+towards the horizon, with no direct sun, so the distant sea darkens under
+the rain rather than glowing, and there are no sharp shadows or sun glints.
+
+## Raindrops on the lens
+
+```ts
+engine.setWeather({ enabled: true, state: "rain", lensDrops: true });
+```
+
+With `lensDrops`, raindrops land on the camera lens while it rains: small
+beads that sit and evaporate, and larger drops that run down the screen.
+Each drop refracts the scene behind it. It is off by default, since it
+suits a filmed or "camera" look rather than a first-person eye. It adds
+one full-screen pass, and only while it is raining.
+
 ## Performance
 
 The weather system runs on the CPU once per frame and costs microseconds.
-Rain and snow are drawn in the existing composite pass (four layers,
-skipped entirely when nothing is falling), so clear weather costs nothing
-extra. Rain shafts add a 20-sample march below the cloud base in the
-reduced-resolution cloud pass, only while `rainShafts` is above zero.
+Rain and snow are not simulated across the world: they are drawn in thin
+layers around the camera, from 1.5 m to 48 m away, in the passes that
+already run (six layers per pixel, skipped entirely when nothing is
+falling), so their cost does not depend on how much of the world is
+raining, and clear weather costs nothing extra. Rain curtains seen in the
+distance add a 20-sample march below the cloud base, from 1.2 km outwards,
+in the reduced-resolution cloud pass, only while `rainShafts` is above
+zero.
 Storm towers make the cloud slab up to 2.6 times as tall, so storms cost
 more than fair weather; lower `raymarchSteps` or `resolutionScale` if a
 storm is too slow on a weak GPU.

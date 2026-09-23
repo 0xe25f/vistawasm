@@ -24,6 +24,8 @@
 @group(3) @binding(0) var scene_texture: texture_2d<f32>;
 @group(3) @binding(1) var depth_texture: texture_depth_2d;
 @group(3) @binding(2) var cloud_texture_low: texture_2d<f32>;
+// The finished frame, read by the lens-drop pass only.
+@group(3) @binding(3) var lens_source: texture_2d<f32>;
 
 struct VertexOut {
   @builtin(position) clip_position: vec4<f32>,
@@ -427,7 +429,8 @@ fn cirrus(ray: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(0.0);
   }
 
-  let xz = camera.xz + ray.xz * t + frame.cloud_motion.xy * 2.0;
+  // Cirrus drifts with its own speed (`cirrusSpeed`), not the low clouds'.
+  let xz = camera.xz + ray.xz * t + frame.weather3.xy;
   // Rotate into the wind frame and stretch along the wind.
   let along = frame.clouds2.zw;
   let across = vec2<f32>(-along.y, along.x);
@@ -477,6 +480,9 @@ fn full_pixel(ndc: vec2<f32>) -> vec2<i32> {
   return vec2<i32>(clamp(uv * frame.viewport.xy, vec2<f32>(0.0), frame.viewport.xy - 1.0));
 }
 
+// Rain curtains are only marched from this distance outwards.
+const SHAFT_START: f32 = 1200.0;
+
 // Curtains of rain (or snow) hanging below raining clouds, seen from a
 // distance. A short march below the cloud base: curtains sit under
 // clouds, break up into shafts, and slant downwind as they fall. Returns
@@ -500,13 +506,19 @@ fn rain_shafts(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
   // rain-laden cloud, paler for snow.
   let grey = cloud_ambient(0.0) * frame.cloud_colour.rgb * mix(0.55, 1.0, snowy) + sun_light() * 0.02;
   let haze_distance = max(frame.atmosphere.z * 1.4, 1.0);
+  // The same for every sample along the ray, so look it up once.
+  let far_light = sky_radiance(ray);
   var transmittance = 1.0;
   var scatter = vec3<f32>(0.0);
 
   for (var i = 0; i < 20; i = i + 1) {
     let u = (f32(i) + dither) / 20.0;
-    let t = 150.0 + (t_end - 150.0) * u * u;
-    let dt = (t_end - 150.0) * 2.0 * u / 20.0;
+    // Curtains are seen from a distance. Close by, and overhead, you are
+    // inside the rain, which the falling streaks already show; a curtain
+    // there would hang over the camera as a pulsing disc. So the march
+    // starts well away from the camera.
+    let t = SHAFT_START + (t_end - SHAFT_START) * u * u;
+    let dt = (t_end - SHAFT_START) * 2.0 * u / 20.0;
     let p = camera + ray * t;
     let fall = base - p.y;
 
@@ -522,7 +534,7 @@ fn rain_shafts(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
       * saturate(fall / 200.0) * amount;
     let step_transmittance = exp(-density * 0.0006 * dt);
     let haze = exp(-t / haze_distance);
-    let light = mix(sky_radiance(ray), grey, haze);
+    let light = mix(far_light, grey, haze);
     scatter = scatter + transmittance * (1.0 - step_transmittance) * light;
     transmittance = transmittance * step_transmittance;
   }
@@ -551,69 +563,6 @@ fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
   let scatter = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
   // Rain shafts hang below the clouds, so they sit in front of them.
   return vec4<f32>(shafts.rgb + shafts.a * scatter, shafts.a * clouds.transmittance);
-}
-
-// Rain streaks and snowflakes in a few depth layers around the camera.
-// Layers are anchored to world space (arc length around the camera and
-// height), so precipitation stays put when the camera turns and falls at
-// real speeds, slanted by the wind. Returns light (rgb) and coverage (a).
-fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
-  let rain = frame.weather.x;
-  let snow = frame.weather.y;
-
-  if (rain + snow < 0.005) {
-    return vec4<f32>(0.0);
-  }
-
-  let t = time_seconds();
-  let camera = frame.camera_position.xyz;
-  let flat_ray = normalize(vec2<f32>(ray.x, ray.z) + vec2<f32>(0.00001, 0.0));
-  let side_wind = dot(frame.weather2.zw, vec2<f32>(-flat_ray.y, flat_ray.x));
-  let angle = atan2(ray.z, ray.x);
-  var coverage = 0.0;
-
-  for (var layer = 0; layer < 4; layer = layer + 1) {
-    let distance = 3.0 * pow(2.0, f32(layer));
-
-    if (distance > max_distance) {
-      break;
-    }
-
-    let p = camera + ray * distance;
-    let arc = angle * distance;
-    let fade = 1.0 - f32(layer) * 0.18;
-
-    if (rain > 0.005) {
-      let fall = p.y + t * 9.0;
-      let x = arc - fall * side_wind / 9.0;
-      let cell = vec2<f32>(floor(x / 0.11), floor(fall / 1.7));
-      let local = vec2<f32>(fract(x / 0.11), fract(fall / 1.7));
-      let h = hash12(cell + f32(layer) * 31.7);
-      let present = step(h, rain * 0.4);
-      let offset = hash12(cell + 7.3) * 0.5;
-      let along = local.y - offset;
-      let streak = (1.0 - smoothstep(0.03, 0.09, abs(local.x - 0.5)))
-        * smoothstep(0.0, 0.15, along) * (1.0 - smoothstep(0.35, 0.5, along));
-      coverage = coverage + streak * present * 0.3 * fade;
-    }
-
-    if (snow > 0.005) {
-      let fall = p.y + t * 1.1;
-      let sway = sin(t * 0.8 + p.y * 0.7 + f32(layer)) * 0.25;
-      let x = arc - fall * side_wind / 1.1 + sway;
-      let cell = vec2<f32>(floor(x / 0.32), floor(fall / 0.32));
-      let local = vec2<f32>(fract(x / 0.32), fract(fall / 0.32));
-      let h = hash12(cell + f32(layer) * 17.3);
-      let centre = vec2<f32>(hash12(cell + 3.1), hash12(cell + 9.7)) * 0.6 + 0.2;
-      let radius = 0.05 + h * 0.07;
-      let flake = 1.0 - smoothstep(radius * 0.5, radius, length(local - centre));
-      coverage = coverage + flake * step(h, snow * 0.7) * 0.8 * fade;
-    }
-  }
-
-  let light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * 0.08;
-  let tint = select(vec3<f32>(0.75, 0.8, 0.85), vec3<f32>(1.0), snow > rain);
-  return vec4<f32>(light * tint, saturate(coverage));
 }
 
 @fragment
@@ -671,4 +620,56 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let falling = precipitation(ray, distance);
   colour = mix(colour, falling.rgb, falling.a);
   return vec4<f32>(finish_colour(colour), 1.0);
+}
+
+// Raindrops on the camera lens. Runs after everything else, reading the
+// finished frame: each drop is a small lens that shows the scene behind it
+// flipped and magnified, with a darker rim and a glint. Small beads sit
+// still and evaporate; larger drops run down the screen.
+@fragment
+fn lens_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let size = frame.viewport.xy;
+  let pixel = in.clip_position.xy;
+  let rain = frame.weather.x * frame.weather3.w;
+  let t = time_seconds();
+  // Square cells measured in screen heights, so drops stay round.
+  let screen = vec2<f32>(pixel.x / size.y, pixel.y / size.y);
+  var bend = vec2<f32>(0.0);
+  var rim = 0.0;
+  var glint = 0.0;
+
+  for (var layer = 0; layer < 2; layer = layer + 1) {
+    let running = layer == 1;
+    let cells = select(16.0, 7.0, running);
+    var p = screen * cells;
+    let column = floor(p.x);
+    let column_hash = hash12(vec2<f32>(column, f32(layer) * 13.1));
+    // Running drops slide down their column at their own speed.
+    let slide = select(0.0, t * (0.35 + column_hash * 0.6), running);
+    p.y = p.y - slide;
+    let cell = floor(p);
+    let h = hash12(cell + f32(layer) * 41.7);
+    let life = select(4.0 + h * 5.0, 1.0e6, running);
+    let age = fract(t / life + h * 7.3);
+    let present = step(h, saturate(rain * select(0.55, 0.3, running)));
+    let centre = cell + vec2<f32>(0.2 + 0.6 * hash12(cell + 3.7), 0.2 + 0.6 * hash12(cell + 8.9));
+    // Beads appear quickly and shrink away as they evaporate.
+    let grow = smoothstep(0.0, 0.05, age) * (1.0 - smoothstep(0.7, 1.0, age));
+    let radius = (0.12 + 0.2 * hash12(cell + 5.3)) * grow * select(1.0, 1.3, running);
+    var d = p - centre;
+    // Running drops are a little taller than wide.
+    d.y = d.y * select(1.0, 0.8, running);
+    let r = length(d) / max(radius, 0.0001);
+    let inside = (1.0 - smoothstep(0.85, 1.0, r)) * present;
+    let normal = d / max(radius, 0.0001);
+    // Offset in screen heights, converted to pixels below.
+    bend = bend - normal * radius / cells * 1.6 * inside;
+    rim = max(rim, smoothstep(0.55, 1.0, r) * inside);
+    glint = max(glint, (1.0 - smoothstep(0.0, 0.25, length(normal - vec2<f32>(-0.35, -0.4)))) * inside);
+  }
+
+  let source = (pixel + bend * size.y) * frame.viewport.zw;
+  var colour = textureSampleLevel(lens_source, linear_sampler, clamp(source, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+  colour = colour * (1.0 - rim * 0.35) + vec3<f32>(glint * 0.35);
+  return vec4<f32>(colour, 1.0);
 }

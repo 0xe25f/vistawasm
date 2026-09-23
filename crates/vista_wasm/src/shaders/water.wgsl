@@ -232,7 +232,8 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   if (frame.cloud_params.x > 0.001 && reflected.y > 0.02) {
     let travel = max(frame.cloud_params.y - position.y, 10.0) / reflected.y;
     let weather = cloud_weather(position.xz + reflected.xz * travel);
-    let cloud = smoothstep(0.05, 0.6, weather) * saturate(reflected.y * 5.0);
+    // Under a full overcast the deck already is the sky being reflected.
+    let cloud = smoothstep(0.05, 0.6, weather) * saturate(reflected.y * 5.0) * (1.0 - frame.weather2.y);
     reflection = mix(reflection, (sun_light() * 0.35 + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.3) * frame.cloud_colour.rgb, cloud * 0.8);
   }
 
@@ -244,7 +245,9 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let n_dot_h = saturate(dot(normal, half_vector));
   let alpha = roughness * roughness;
   let ggx = alpha * alpha / (PI * pow(n_dot_h * n_dot_h * (alpha * alpha - 1.0) + 1.0, 2.0));
-  let specular = sun_light() * shadow * ggx * fresnel * saturate(dot(normal, sun)) * 0.9;
+  // The sun's glint needs the sun's disc; an overcast deck hides it.
+  let glint = (1.0 - frame.weather2.y) * (1.0 - frame.weather2.y);
+  let specular = sun_light() * shadow * ggx * fresnel * saturate(dot(normal, sun)) * 0.9 * glint;
 
   // Water body: absorption by depth, lit by sky and sun.
   let clarity = max(frame.water_params.z, 0.1);
@@ -293,5 +296,8 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
 
   colour = apply_fog(colour, position, in.clip_position.xy);
+  // Rain and snow fall in front of the water too.
+  let falling = precipitation(-view, distance);
+  colour = mix(colour, falling.rgb, falling.a);
   return vec4<f32>(finish_colour(colour), saturate(alpha_out));
 }

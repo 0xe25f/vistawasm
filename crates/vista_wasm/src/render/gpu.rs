@@ -61,9 +61,10 @@ struct FrameUniforms {
   clouds2: [f32; 4],
   clouds3: [f32; 4],
   clouds4: [f32; 4],
+  weather3: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 608);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 624);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -121,6 +122,10 @@ pub struct FrameWeather {
   pub wind: [f32; 2],
   /// World position (x, z) of the latest lightning strike.
   pub lightning_position: [f32; 2],
+  /// How far precipitation exceeds full intensity (1 or more).
+  pub heaviness: f32,
+  /// Whether raindrops land on the lens.
+  pub lens_drops: bool,
 }
 
 /// Everything the renderer needs to shade one frame. The engine resolves
@@ -242,6 +247,14 @@ struct CloudTarget {
   composite_bind_group: wgpu::BindGroup,
 }
 
+/// The finished frame, drawn off-screen so the lens-drop pass can read it.
+struct LensTarget {
+  view: wgpu::TextureView,
+  width: u32,
+  height: u32,
+  bind_group: wgpu::BindGroup,
+}
+
 /// Terrain sun-shadow texture and the inputs it was baked from.
 struct TerrainShadow {
   view: wgpu::TextureView,
@@ -301,6 +314,7 @@ struct Layouts {
   composite: wgpu::BindGroupLayout,
   cloud: wgpu::BindGroupLayout,
   terrain_shadow: wgpu::BindGroupLayout,
+  lens: wgpu::BindGroupLayout,
 }
 
 /// Render and compute pipelines.
@@ -314,6 +328,7 @@ struct Pipelines {
   clouds: wgpu::RenderPipeline,
   composite: wgpu::RenderPipeline,
   water: wgpu::RenderPipeline,
+  lens: wgpu::RenderPipeline,
   cull: wgpu::ComputePipeline,
   terrain_shadow: wgpu::ComputePipeline,
 }
@@ -347,6 +362,7 @@ pub struct GpuContext {
   terrain_shadow: TerrainShadow,
   tree_shadow_map: TreeShadowMap,
   cloud_target: Option<CloudTarget>,
+  lens_target: Option<LensTarget>,
   tree_meshes: Vec<TreeMesh>,
   tree_mesh: IndexedMesh,
   tree_ranges: [(u32, u32, i32); SPECIES_COUNT],
@@ -362,6 +378,8 @@ pub struct GpuContext {
   // speed x time, so changing the wind (for example when the weather
   // changes) never makes clouds, mist, or currents jump.
   cloud_offset: [f32; 2],
+  /// Cirrus drifts with its own speed, not the low clouds'.
+  cirrus_offset: [f32; 2],
   mist_offset: [f32; 2],
   current_offset: [f32; 2],
   cloud_evolution: f32,
@@ -467,6 +485,10 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
         texture_entry(1, Dim::D2, Sample::Depth, fragment),
         texture_entry(2, Dim::D2, filterable, fragment),
       ],
+    ),
+    lens: layout(
+      "VistaWASM lens layout",
+      &[texture_entry(3, Dim::D2, filterable, fragment)],
     ),
     cloud: layout(
       "VistaWASM cloud layout",
@@ -1023,6 +1045,10 @@ fn create_pipelines(
       &layouts.composite,
     ],
   );
+  let lens = pipeline_layout(
+    "VistaWASM lens pipeline layout",
+    &[frame_layout, &layouts.world, &layouts.shadow, &layouts.lens],
+  );
   let cloud = pipeline_layout(
     "VistaWASM cloud pipeline layout",
     &[
@@ -1153,6 +1179,20 @@ fn create_pipelines(
         format: Some(surface_format),
         depth: None,
         ..PipelineSpec::opaque("VistaWASM composite", &modules.atmosphere, main, &[])
+      },
+    ),
+    lens: create_pipeline(
+      device,
+      &lens,
+      PipelineSpec {
+        format: Some(surface_format),
+        depth: None,
+        ..PipelineSpec::opaque(
+          "VistaWASM lens drops",
+          &modules.atmosphere,
+          ("vertex_main", "lens_main"),
+          &[],
+        )
       },
     ),
     water: create_pipeline(
@@ -1389,6 +1429,7 @@ impl GpuContext {
       terrain_shadow,
       tree_shadow_map,
       cloud_target: None,
+      lens_target: None,
       tree_meshes,
       tree_mesh,
       tree_ranges: library.ranges,
@@ -1401,6 +1442,7 @@ impl GpuContext {
       start_time_ms: now_ms(),
       last_time: 0.0,
       cloud_offset: [0.0; 2],
+      cirrus_offset: [0.0; 2],
       mist_offset: [0.0; 2],
       current_offset: [0.0; 2],
       frames_in_flight: Arc::new(AtomicU32::new(0)),
@@ -1851,6 +1893,9 @@ impl GpuContext {
     let cloud_speed = clouds.speed.max(0.0) * 15.0 * dt;
     self.cloud_offset[0] -= cloud_wind[0] * cloud_speed;
     self.cloud_offset[1] -= cloud_wind[1] * cloud_speed;
+    let cirrus_speed = clouds.cirrus_speed.max(0.0) * 15.0 * dt;
+    self.cirrus_offset[0] -= cloud_wind[0] * cirrus_speed;
+    self.cirrus_offset[1] -= cloud_wind[1] * cirrus_speed;
     self.cloud_evolution += clouds.evolution.clamp(0.0, 1.0) * 14.0 * dt;
     let mist = &params.mist;
     let mist_wind = direction_from_degrees(mist.wind_direction_degrees);
@@ -2064,6 +2109,12 @@ impl GpuContext {
       weather.wind[0],
       weather.wind[1],
     ];
+    u.weather3 = [
+      self.cirrus_offset[0],
+      self.cirrus_offset[1],
+      flag(weather.lens_drops),
+      weather.heaviness.max(1.0),
+    ];
     let surface = &params.surface;
     u.surface = [
       flag(surface.textures),
@@ -2183,6 +2234,41 @@ impl GpuContext {
     });
   }
 
+  /// Make sure the off-screen target for the lens-drop pass matches the
+  /// canvas.
+  fn ensure_lens_target(&mut self) {
+    if self
+      .lens_target
+      .as_ref()
+      .is_some_and(|target| target.width == self.width && target.height == self.height)
+    {
+      return;
+    }
+
+    let view = default_view(&create_texture_2d(
+      &self.device,
+      "VistaWASM lens source",
+      self.width,
+      self.height,
+      self.config.format,
+      wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    ));
+    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("VistaWASM lens bind group"),
+      layout: &self.layouts.lens,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 3,
+        resource: wgpu::BindingResource::TextureView(&view),
+      }],
+    });
+    self.lens_target = Some(LensTarget {
+      view,
+      width: self.width,
+      height: self.height,
+      bind_group,
+    });
+  }
+
   /// Render one frame.
   pub fn render_once(&mut self, params: &FrameParams) -> VistaResult<()> {
     if self.device_lost.load(Ordering::Acquire) {
@@ -2204,6 +2290,13 @@ impl GpuContext {
     }
 
     self.ensure_cloud_target(params.clouds.resolution_scale);
+    // Lens drops refract the finished frame, so while they are on the frame
+    // is drawn off-screen first; otherwise it goes straight to the canvas.
+    let lens_drops = params.weather.lens_drops && params.weather.rain > 0.001;
+
+    if lens_drops {
+      self.ensure_lens_target();
+    }
     self.update_uniforms(params, time, dt);
     let shadow_frame = tree_shadow_frame(
       params.camera_position,
@@ -2286,7 +2379,11 @@ impl GpuContext {
       wgpu::CurrentSurfaceTexture::Validation => return Ok(()),
     };
 
-    let view = default_view(&surface_texture.texture);
+    let canvas_view = default_view(&surface_texture.texture);
+    let view = match (&self.lens_target, lens_drops) {
+      (Some(target), true) => target.view.clone(),
+      _ => canvas_view.clone(),
+    };
     let mut encoder = self
       .device
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2515,6 +2612,29 @@ impl GpuContext {
       }
     }
 
+    if let (Some(target), true) = (&self.lens_target, lens_drops) {
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("VistaWASM lens pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &canvas_view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        ..Default::default()
+      });
+      pass.set_pipeline(&self.pipelines.lens);
+      pass.set_bind_group(0, &self.frame_bind_group, &[]);
+      pass.set_bind_group(1, &self.world_bind_group, &[]);
+      pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+      pass.set_bind_group(3, &target.bind_group, &[]);
+      pass.draw(0..3, 0..1);
+    }
+
     self.queue.submit(Some(encoder.finish()));
     self.frames_in_flight.fetch_add(1, Ordering::AcqRel);
     let frames_in_flight = Arc::clone(&self.frames_in_flight);
@@ -2544,9 +2664,10 @@ impl GpuContext {
     self.hdr_view = hdr_view;
     self.width = pixel_width;
     self.height = pixel_height;
-    // The cloud and composite bind groups read the old targets, so rebuild
-    // them on the next frame.
+    // The cloud, composite, and lens bind groups read the old targets, so
+    // rebuild them on the next frame.
     self.cloud_target = None;
+    self.lens_target = None;
     Ok(())
   }
 }

@@ -76,6 +76,9 @@ struct FrameUniforms {
   // x: rain shafts, yz: latest lightning strike (x, z), w: how many times
   // taller than the ordinary cloud layer the slab is stretched for towers.
   clouds4: vec4<f32>,
+  // xy: cirrus wind offset in metres, z: 1 when raindrops land on the lens,
+  // w: precipitation heaviness (1 = full rain or snow, more = downpour).
+  weather3: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -239,10 +242,23 @@ fn sky_radiance(direction: vec3<f32>) -> vec3<f32> {
   let night = vec3<f32>(0.0012, 0.0018, 0.004);
   var sky = (inscatter * sun_colour * SUN_RADIANCE * frame.sun_direction.w + fill + night)
     * frame.sky_tint.rgb;
-  // Weather: overcast skies turn a flat, darker grey; lightning lights the
-  // whole sky for a moment.
+  // Weather: an overcast sky is a uniform grey deck, brightest overhead and
+  // about a third as bright at the horizon (the CIE overcast sky), so the
+  // bright clear-sky horizon must not show through it. Its level follows
+  // the clear sky at the zenith, lit by the sun above the deck.
   let overcast = frame.weather2.y;
-  sky = mix(sky, vec3<f32>(luminance(sky)) * vec3<f32>(0.92, 0.95, 1.0) * (1.0 - overcast * 0.45), overcast);
+
+  if (overcast > 0.001) {
+    let zenith_mu = sun.y;
+    let zenith_inscatter = (br * RAYLEIGH_HEIGHT * 0.0596831 * (1.0 + zenith_mu * zenith_mu)
+      + bm * MIE_HEIGHT * henyey_greenstein(zenith_mu, 0.76)) / (br * RAYLEIGH_HEIGHT + bm * MIE_HEIGHT)
+      * (vec3<f32>(1.0) - exp(-(br * RAYLEIGH_HEIGHT + bm * MIE_HEIGHT)));
+    let zenith = luminance((zenith_inscatter * sun_colour * SUN_RADIANCE * frame.sun_direction.w + fill + night)
+      * frame.sky_tint.rgb);
+    let deck = zenith * 2.0 * (1.0 + 2.0 * dir.y) / 3.0 * (1.0 - overcast * 0.4);
+    sky = mix(sky, vec3<f32>(deck) * vec3<f32>(0.92, 0.95, 1.0), overcast);
+  }
+
   return sky + vec3<f32>(0.75, 0.8, 1.0) * frame.weather2.x * 1.6;
 }
 
@@ -495,4 +511,104 @@ fn shade_surface(
   }
 
   return colour;
+}
+
+// --- Falling rain and snow ----------------------------------------------
+
+// Rain streaks and snowflakes in thin depth layers around the camera, from
+// 1.5 m to 48 m away, plus the grey veil a downpour draws over the
+// distance. Layers are anchored to world space (arc length around the
+// camera and height), so precipitation stays put when the camera turns and
+// falls at real speeds, slanted by the wind. Only these few layers are
+// computed per pixel, so the cost does not depend on how much of the world
+// is raining. Returns light (rgb) and coverage (a).
+fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
+  let rain = frame.weather.x;
+  let snow = frame.weather.y;
+
+  if (rain + snow < 0.005) {
+    return vec4<f32>(0.0);
+  }
+
+  // 1 for full rain or snow; more in a storm or with `precipitationScale`
+  // above 1.
+  let heavy = frame.weather3.w;
+  let t = time_seconds();
+  let camera = frame.camera_position.xyz;
+  let flat_ray = normalize(vec2<f32>(ray.x, ray.z) + vec2<f32>(0.00001, 0.0));
+  // The wind across the view, taken from the camera's heading so it is the
+  // same for every pixel. Taken per pixel, it would differ slightly between
+  // neighbours, and multiplied by the ever-growing time it would smear
+  // flakes and streaks into slivers.
+  let heading = normalize(frame.camera_forward.xz + vec2<f32>(0.00001, 0.0));
+  let side_wind = dot(frame.weather2.zw, vec2<f32>(-heading.y, heading.x));
+  let angle = atan2(ray.z, ray.x);
+  var coverage = 0.0;
+
+  for (var layer = 0; layer < 6; layer = layer + 1) {
+    let distance = 1.5 * pow(2.0, f32(layer));
+
+    if (distance > max_distance) {
+      break;
+    }
+
+    let p = camera + ray * distance;
+    let arc = angle * distance;
+    let fade = 1.0 - f32(layer) * 0.12;
+
+    if (rain > 0.005) {
+      // Drops fall at about 9 m/s, slanted by the wind across the view.
+      let fall = p.y + t * 9.0;
+      let x = arc - fall * clamp(side_wind / 9.0, -0.6, 0.6);
+      let cell = vec2<f32>(floor(x / 0.09), floor(fall / 1.7));
+      let local = vec2<f32>(fract(x / 0.09), fract(fall / 1.7));
+      let h = hash12(cell + f32(layer) * 31.7);
+      let present = step(h, saturate(rain * (0.3 + 0.3 * heavy)));
+      let offset = hash12(cell + 7.3) * 0.6;
+      let along = local.y - offset;
+      // A streak is one drop blurred over a frame: 20 cm or so at any
+      // distance, longer in a downpour. As a fraction of the 1.7 m cell:
+      let span = (0.2 + 0.1 * (heavy - 1.0)) / 1.7;
+      let streak = (1.0 - smoothstep(0.03, 0.09, abs(local.x - 0.5)))
+        * smoothstep(0.0, span * 0.3, along) * (1.0 - smoothstep(span * 0.7, span, along));
+      coverage = coverage + streak * present * (0.35 + 0.1 * heavy) * fade;
+    }
+
+    if (snow > 0.005) {
+      // Flakes drift down at about a metre a second, swaying and tumbling.
+      // The wind carries flakes sideways over time rather than shearing the
+      // pattern as it does for rain streaks, so flakes stay round.
+      let fall = p.y + t * 1.0;
+      let sway = sin(t * 0.9 + fall * 0.6 + f32(layer) * 1.7) * 0.35;
+      let x = arc - t * side_wind + sway;
+      let cell_size = 0.22;
+      let cell = vec2<f32>(floor(x / cell_size), floor(fall / cell_size));
+      let local = vec2<f32>(fract(x / cell_size), fract(fall / cell_size)) * cell_size;
+      let h = hash12(cell + f32(layer) * 17.3);
+      let centre = (vec2<f32>(hash12(cell + 3.1), hash12(cell + 9.7)) * 0.5 + 0.25) * cell_size;
+      // Flakes from 2 to 6 cm across, some clumped into larger ones.
+      let radius = 0.01 + 0.02 * hash12(cell + 5.9) + 0.012 * step(0.85, hash12(cell + 2.2));
+      let r = length(local - centre) / radius;
+      let flake = (1.0 - smoothstep(0.55, 1.0, r)) * (0.75 + 0.25 * (1.0 - r));
+      let present = step(h, saturate(snow * (0.35 + 0.2 * heavy)));
+      coverage = coverage + flake * present * 0.95 * fade;
+    }
+  }
+
+  // Looking steeply up or down, the layers pinch to a point and would
+  // shimmer as a disc; real rain seen from below shows few streaks anyway.
+  coverage = saturate(coverage) * (1.0 - smoothstep(0.72, 0.96, abs(ray.y)));
+
+  // A downpour or heavy snow hides the distance behind a grey veil: about
+  // 3 km visibility in a storm, 10 km in ordinary rain.
+  let veil_density = rain * max(heavy - 0.8, 0.0) * 0.00045 + snow * heavy * 0.00025;
+  let veil = 1.0 - exp(-min(max_distance, 20000.0) * veil_density);
+  let light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * 0.08;
+  let tint = select(vec3<f32>(0.75, 0.8, 0.85), vec3<f32>(1.0), snow > rain);
+  // The veil takes the colour of the air near the horizon, not of the
+  // brighter sky overhead, so the distance darkens rather than glows.
+  let veil_light = sky_radiance(normalize(vec3<f32>(flat_ray.x, 0.15, flat_ray.y)));
+  let alpha = 1.0 - (1.0 - coverage) * (1.0 - veil);
+  let colour = (light * tint * coverage + veil_light * veil * (1.0 - coverage)) / max(alpha, 0.0001);
+  return vec4<f32>(colour, alpha);
 }
