@@ -67,6 +67,9 @@ struct FrameUniforms {
   weather2: vec4<f32>,
   // x: textures on, y: detail normals on, z: texture scale, w: unused.
   surface: vec4<f32>,
+  // x: cirrus amount (0 = none), y: cirrus altitude, zw: unit wind
+  // direction (x, z) that stretches cirrus into streaks.
+  clouds2: vec4<f32>,
 };
 
 struct WorldInfo {

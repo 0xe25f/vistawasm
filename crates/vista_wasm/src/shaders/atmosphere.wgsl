@@ -68,39 +68,45 @@ fn cloud_wind_offset() -> vec3<f32> {
   return vec3<f32>(frame.cloud_motion.x, frame.cloud_motion.z, frame.cloud_motion.y);
 }
 
+fn cloud_height_fraction(p: vec3<f32>) -> f32 {
+  return (p.y - frame.cloud_params.y) / max(frame.cloud_params.z, 1.0);
+}
+
+// Large-scale cloud shape: which parts of the slab hold cloud at all.
+// Cumulus have flat bases and rounded tops; denser weather grows taller
+// towers, and the threshold rises with height so every cloud narrows into
+// a dome. Only this cheap part is used for light marching.
 fn cloud_shape(p: vec3<f32>, weather: f32) -> f32 {
-  let base = frame.cloud_params.y;
-  let thickness = max(frame.cloud_params.z, 1.0);
-  let h = (p.y - base) / thickness;
+  let h = cloud_height_fraction(p);
 
   if (h <= 0.0 || h >= 1.0) {
     return 0.0;
   }
 
-  // Denser weather grows taller clouds. Bases are flat; the threshold
-  // rises with height so each cloud narrows into a rounded dome instead
-  // of rising as a straight-sided column.
-  let top = mix(0.25, 1.0, weather * weather);
-  let profile = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(top * 0.3, top, h));
-  let shape = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset()) / 5600.0, 0.0).r;
-  return saturate(remap(shape * profile, 1.0 - weather * 0.9 + h * h * 0.45, 1.0, 0.0, 1.0));
+  let top = mix(0.3, 1.0, weather);
+  let gradient = saturate(remap(h, 0.0, 0.07, 0.0, 1.0)) * saturate(remap(h, top * 0.4, top, 1.0, 0.0));
+  let low = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset()) / 4200.0, 0.0).r;
+  let base = saturate(remap(low * gradient, 1.0 - weather * 0.9, 1.0, 0.0, 1.0));
+  return base * saturate(weather * 1.6);
 }
 
-fn cloud_density(p: vec3<f32>, weather: f32) -> f32 {
-  var density = cloud_shape(p, weather);
+// Full density: the shape eroded by fine Worley detail, which turns the
+// edges into cauliflower billows at the top and soft wisps at the base.
+// `detail` fades the erosion out with distance: far away the march steps
+// are longer than the detail noise, which would alias into streaks.
+fn cloud_density(p: vec3<f32>, shape: f32, detail_amount: f32) -> f32 {
+  let h = saturate(cloud_height_fraction(p));
 
-  if (density <= 0.0) {
-    return 0.0;
+  if (detail_amount <= 0.0) {
+    return shape * (0.35 + frame.cloud_motion.w * 1.3);
   }
 
-  // Erode the edges with higher-frequency Worley detail: wispy at the
-  // base, billowing towards the top.
-  let base = frame.cloud_params.y;
-  let h = saturate((p.y - base) / max(frame.cloud_params.z, 1.0));
-  let detail = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset() * 1.35) / 1250.0, 0.0);
-  let detail_fbm = detail.g * 0.625 + detail.b * 0.25 + detail.a * 0.125;
-  let erosion = mix(detail_fbm, 1.0 - detail_fbm, saturate(h * 3.0));
-  density = saturate(remap(density, erosion * 0.38, 1.0, 0.0, 1.0));
+  // Only the two coarser Worley octaves: the finest is smaller than a
+  // march step, and without temporal accumulation it reads as hair.
+  let detail = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset() * 1.4) / 560.0, 0.0);
+  let fbm = detail.g * 0.7 + detail.b * 0.3;
+  let erosion = mix(1.0 - fbm, fbm, saturate(h * 4.0));
+  let density = saturate(remap(shape, erosion * 0.32 * detail_amount, 1.0, 0.0, 1.0));
   return density * (0.35 + frame.cloud_motion.w * 1.3);
 }
 
@@ -110,9 +116,21 @@ struct CloudResult {
   distance: f32,
 };
 
-fn cloud_lighting_ambient(h: f32) -> vec3<f32> {
+// Sky and ground light reaching a point in the cloud: bright from the sky
+// dome above, darker at the base, which is lit only by light bouncing off
+// the ground and sea.
+fn cloud_ambient(h: f32) -> vec3<f32> {
   let sky = sky_radiance(vec3<f32>(0.0, 1.0, 0.0));
-  return sky * mix(0.55, 1.4, h) + sun_light() * 0.06;
+  let ground = sun_light() * max(sun_dir().y, 0.0) * 0.08;
+  return sky * mix(0.45, 1.25, h) + ground * (1.0 - h);
+}
+
+// A stable dither for the march start, evenly spread in both directions
+// (the R2 low-discrepancy sequence). Random per-frame jitter shows as
+// crawling grain, and a dither that varies mostly along one axis shows as
+// stripes; this does neither.
+fn march_dither(pixel: vec2<f32>) -> f32 {
+  return fract(dot(floor(pixel), vec2<f32>(0.7548776662, 0.5698402910)));
 }
 
 fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudResult {
@@ -152,7 +170,7 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     }
   }
 
-  t1 = min(t1, min(max_distance, t0 + 25000.0));
+  t1 = min(t1, min(max_distance, t0 + 40000.0));
 
   if (t1 <= t0 || t0 > 90000.0) {
     return result;
@@ -176,7 +194,7 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     let density = saturate(remap(weather * (0.55 + fine.a * 0.9), 0.08, 0.75, 0.0, 1.0)) * saturate(frame.cloud_motion.w * 1.6 + 0.2);
     let towards_sun = cloud_weather(p.xz + sun.xz * 900.0);
     let self_shadow = exp(-max(towards_sun - weather * 0.6, 0.0) * 3.0);
-    let light = sun_colour * self_shadow * phase * 0.5 + cloud_lighting_ambient(0.6) * 0.5;
+    let light = sun_colour * self_shadow * phase * 0.5 + cloud_ambient(0.6) * 0.5;
     let opacity = density * saturate(abs(ray.y) * 6.0);
     result.scatter = light * opacity;
     result.transmittance = 1.0 - opacity;
@@ -184,57 +202,105 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     return result;
   }
 
-  let step_count = i32(steps);
-  // White-noise jitter: a structured dither lines up into visible hatching
-  // on long glancing rays, while grain is far less noticeable.
-  let jitter = hash12(pixel * 1.37 + vec2<f32>(fract(time_seconds() * 0.37) * 97.0, 11.0));
-  let span = t1 - t0;
+  // Adaptive march: steps grow with distance (a cloud far away covers
+  // few pixels), empty sky is crossed in double steps using only the 2D
+  // weather map, and steps shrink inside clouds. With at most four
+  // iterations per requested step (most of them cheap empty-sky skips), a
+  // 32-step budget samples a nearby cumulus 15 to 30 times instead of once
+  // or twice.
+  let iterations = i32(steps) * 4;
   let sigma = 0.045;
-  let light_step = max(frame.cloud_params.z, 1.0) * 0.12;
+  var t = t0 + (30.0 + t0 * 0.02) * march_dither(pixel);
   var transmittance = 1.0;
   var scatter = vec3<f32>(0.0);
   var weighted_distance = 0.0;
   var weight_total = 0.0;
 
-  for (var i = 0; i < step_count; i = i + 1) {
-    // Steps grow with distance: fine detail close by, coverage far away.
-    let u0 = f32(i) / f32(step_count);
-    let u1 = f32(i + 1) / f32(step_count);
-    let t = t0 + span * pow((f32(i) + jitter) / f32(step_count), 1.6);
-    let step_length = span * (pow(u1, 1.6) - pow(u0, 1.6));
+  // Multiple scattering (after Wrenninge): each extra order is dimmer,
+  // sees less extinction, and is less forward-peaked. This is what makes
+  // real cumulus glow white inside instead of looking like grey wool.
+  let phase0 = mix(henyey_greenstein(mu, 0.8), henyey_greenstein(mu, -0.2), 0.25) * 4.0 * PI;
+  let phase1 = mix(henyey_greenstein(mu, 0.4), henyey_greenstein(mu, -0.1), 0.25) * 4.0 * PI;
+  let phase2 = mix(henyey_greenstein(mu, 0.2), 1.0 / (4.0 * PI), 0.5) * 4.0 * PI;
+
+  var fine = false;
+  var misses = 0;
+  var last_step = 0.0;
+
+  for (var i = 0; i < iterations; i = i + 1) {
+    if (t >= t1) {
+      break;
+    }
+
+    let base_step = 30.0 + t * 0.02;
     let p = camera + ray * t;
     let weather = cloud_weather(p.xz);
+    var shape = 0.0;
 
-    if (weather <= 0.01) {
+    if (weather > 0.01) {
+      shape = cloud_shape(p, weather);
+    }
+
+    if (shape <= 0.0) {
+      // Leave fine mode after a run of empty samples.
+      if (fine) {
+        misses = misses + 1;
+        fine = misses < 6;
+      }
+
+      last_step = select(select(base_step, base_step * 2.0, weather <= 0.01), base_step * 0.5, fine);
+      t = t + last_step;
       continue;
     }
 
-    let density = cloud_density(p, weather);
-
-    if (density <= 0.001) {
+    if (!fine) {
+      // A coarse step landed inside a cloud. Back up and approach the edge
+      // in fine steps, so silhouettes stay crisp instead of jagged by a
+      // whole coarse step.
+      fine = true;
+      misses = 0;
+      t = max(t - last_step, t0);
       continue;
     }
 
-    // Secondary march towards the sun for self-shadowing.
+    misses = 0;
+    let density = cloud_density(p, shape, 1.0 - smoothstep(2500.0, 9000.0, t));
+    let step_length = base_step * 0.5;
+    last_step = step_length;
+    t = t + step_length;
+
+    if (density <= 0.002) {
+      continue;
+    }
+
+    // Light march towards the sun through the cheap shape, with steps
+    // doubling in length to reach the far side of tall towers.
     var optical = 0.0;
+    var light_step = 40.0;
+    var light_t = light_step * 0.5;
 
-    for (var j = 0; j < 4; j = j + 1) {
-      let lp = p + sun * light_step * (f32(j) + 0.5) * (1.0 + f32(j) * 0.6);
-      optical = optical + cloud_shape(lp, cloud_weather(lp.xz)) * light_step * (1.0 + f32(j) * 0.6);
+    for (var j = 0; j < 5; j = j + 1) {
+      let lp = p + sun * light_t;
+      let lw = cloud_weather(lp.xz);
+      optical = optical + cloud_shape(lp, lw) * (0.35 + frame.cloud_motion.w * 1.3) * light_step;
+      light_step = light_step * 2.0;
+      light_t = light_t + light_step * 0.75;
     }
 
-    let beer = exp(-optical * sigma * 0.6);
-    let powder = 1.0 - exp(-optical * sigma * 1.2 - density * 0.8);
-    let h = saturate((p.y - frame.cloud_params.y) / max(frame.cloud_params.z, 1.0));
-    let light = sun_colour * beer * mix(1.0, powder, 0.55) * phase + cloud_lighting_ambient(h) * (0.35 + 0.65 * h);
-    let extinction = density * sigma;
-    let step_transmittance = exp(-extinction * step_length);
-    scatter = scatter + transmittance * light * (1.0 - step_transmittance);
-    weighted_distance = weighted_distance + t * transmittance * (1.0 - step_transmittance);
-    weight_total = weight_total + transmittance * (1.0 - step_transmittance);
+    let depth = optical * sigma;
+    let direct = exp(-depth) * phase0 + exp(-depth * 0.35) * phase1 * 0.45 + exp(-depth * 0.12) * phase2 * 0.2;
+    // Powder: edges facing the sun are thin and scatter little back.
+    let powder = mix(1.0, 1.0 - exp(-density * 6.0), 0.4 * (1.0 - saturate(mu)));
+    let h = saturate(cloud_height_fraction(p));
+    let light = sun_colour * direct * powder + cloud_ambient(h) * frame.cloud_colour.rgb * exp(-density * 0.5);
+    let step_transmittance = exp(-density * sigma * step_length);
+    let absorbed = transmittance * (1.0 - step_transmittance);
+    scatter = scatter + light * absorbed;
+    weighted_distance = weighted_distance + t * absorbed;
+    weight_total = weight_total + absorbed;
     transmittance = transmittance * step_transmittance;
 
-    if (transmittance < 0.02) {
+    if (transmittance < 0.01) {
       break;
     }
   }
@@ -243,6 +309,42 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
   result.transmittance = transmittance;
   result.distance = select(t0, weighted_distance / max(weight_total, 0.0001), weight_total > 0.0001);
   return result;
+}
+
+// Thin, high cirrus drawn as a single layer: wind-stretched streaks with
+// strong forward scattering, so they glow around the sun. Returns light
+// (rgb) and opacity (a).
+fn cirrus(ray: vec3<f32>) -> vec4<f32> {
+  let amount = frame.clouds2.x;
+
+  if (amount <= 0.001 || ray.y <= 0.01) {
+    return vec4<f32>(0.0);
+  }
+
+  let camera = frame.camera_position.xyz;
+  let t = (frame.clouds2.y - camera.y) / ray.y;
+
+  if (t <= 0.0) {
+    return vec4<f32>(0.0);
+  }
+
+  let xz = camera.xz + ray.xz * t + frame.cloud_motion.xy * 2.0;
+  // Rotate into the wind frame and stretch along the wind.
+  let along = frame.clouds2.zw;
+  let across = vec2<f32>(-along.y, along.x);
+  let local = vec2<f32>(dot(xz, along) / 2.5, dot(xz, across)) / 14000.0;
+  let broad = textureSampleLevel(noise_texture, linear_sampler, local * 0.45 + vec2<f32>(0.13, 0.71), 0.0).r;
+  let streaks = textureSampleLevel(noise_texture, linear_sampler, local * vec2<f32>(0.7, 1.4), 0.0).g;
+  let fine = textureSampleLevel(noise_texture, linear_sampler, local * vec2<f32>(1.2, 2.6) + vec2<f32>(0.4, 0.2), 0.0).a;
+  let field = broad * 0.5 + streaks * 0.35 + fine * 0.15;
+  let threshold = 0.72 - amount * 0.4;
+  let density = smoothstep(threshold, threshold + 0.3, field);
+  // Fade out towards the horizon, where the layer would alias.
+  let opacity = density * 0.55 * smoothstep(0.01, 0.15, ray.y);
+  let mu = dot(ray, sun_dir());
+  let phase = mix(henyey_greenstein(mu, 0.7), 1.0 / (4.0 * PI), 0.4) * 4.0 * PI;
+  let light = (sun_light() * phase * 0.9 + sky_radiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.9) * frame.cloud_colour.rgb;
+  return vec4<f32>(light * opacity, opacity);
 }
 
 fn sun_disc(ray: vec3<f32>) -> vec3<f32> {
@@ -380,11 +482,20 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       sky = mix(sky, sky * 0.35, saturate(-ray.y * 3.0));
     }
 
-    colour = sky + sun_disc(ray) * step(0.0, ray.y);
+    // The disc is hundreds of times brighter than the sky, so even 1 %
+    // transmittance would leave it glaring through thick cloud. Hide it
+    // smoothly as cloud thickens, and under an overcast sky.
+    let disc = sun_disc(ray) * step(0.0, ray.y) * (1.0 - frame.weather2.y);
+    colour = sky;
 
     if (clouds_on) {
+      let high = cirrus(ray);
       let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
-      colour = colour * clouds.a + clouds.rgb;
+      let through = (1.0 - high.a) * clouds.a;
+      colour = ((colour * (1.0 - high.a) + high.rgb) * clouds.a + clouds.rgb)
+        + disc * through * smoothstep(0.05, 0.7, through);
+    } else {
+      colour = colour + disc;
     }
 
     let mist = atmospheric_fog(ray, 12000.0, in.clip_position.xy, false);

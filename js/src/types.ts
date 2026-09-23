@@ -690,6 +690,13 @@ export interface CloudsOptions {
    * faster; the soft clouds hide the difference. Defaults to `0.5`.
    */
   resolutionScale?: number;
+  /**
+   * Amount of thin, high cirrus above the main clouds, 0 (none) to 1.
+   * Defaults to `0.35`.
+   */
+  cirrus?: number;
+  /** Altitude of the cirrus layer, 1000 to 20000 metres. Defaults to `9000`. */
+  cirrusHeightMetres?: number;
 }
 
 /**

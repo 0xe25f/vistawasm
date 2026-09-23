@@ -55,9 +55,10 @@ struct FrameUniforms {
   weather: [f32; 4],
   weather2: [f32; 4],
   surface: [f32; 4],
+  clouds2: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 560);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 576);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -1899,6 +1900,18 @@ impl GpuContext {
     ];
 
     let seed = (clouds.seed_offset % 10_007) as f32;
+    u.clouds2 = [
+      if params.cloud_coverage > 0.0 {
+        clouds.cirrus.clamp(0.0, 1.0)
+      } else {
+        0.0
+      },
+      clouds
+        .cirrus_height_metres
+        .max(clouds.height_metres + clouds.thickness_metres),
+      cloud_wind[0],
+      cloud_wind[1],
+    ];
     u.cloud_params = [
       params.cloud_coverage.clamp(0.0, 1.0),
       clouds.height_metres,

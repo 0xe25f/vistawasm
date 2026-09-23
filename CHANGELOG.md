@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   texture scale, and per-material tints.
 - `CloudsOptions.resolutionScale`: clouds render at half resolution by
   default.
+- High cirrus layer: `CloudsOptions.cirrus` and `cirrusHeightMetres`.
 - The demo links to the GitHub repository and has weather, shadow, and
   surface controls, including texture replacement from an image file.
 
@@ -62,8 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Animation uses a real-time clock instead of a frame counter.
 - `setWater`, `setFlora`, `setGrass`, `setClouds`, and `setMist` now
   validate their input at the JavaScript boundary.
-- Clouds narrow into rounded domes instead of rising as straight-sided
-  columns.
+- Volumetric clouds are rebuilt for realism: an adaptive march that
+  refines cloud edges, multiple-scattering lighting with darker bases and
+  bright tops, distance-aware detail, and a stable dither. They no longer
+  look grainy or like cotton wool, and they narrow into rounded domes.
+- The sun disc no longer shines through thick cloud or an overcast sky.
 - Release builds use link-time optimisation, one codegen unit, size
   optimisation, and `panic = "abort"`. Shaders are minified at build time
   and `common.wgsl` is embedded once instead of once per shader.

@@ -78,6 +78,7 @@ const inputs = {
   cloudThickness: input("cloudThickness"),
   cloudDensity: input("cloudDensity"),
   cloudShadows: input("cloudShadows"),
+  cloudCirrus: input("cloudCirrus"),
   mistStyle: select("mistStyle"),
   mistDensity: input("mistDensity"),
   mistBaseHeight: input("mistBaseHeight"),
@@ -307,7 +308,8 @@ function applyClouds() {
     evolution: readNumber(inputs.cloudEvolution, 0.35),
     thicknessMetres: readNumber(inputs.cloudThickness, 1600),
     density: readNumber(inputs.cloudDensity, 0.6),
-    castShadows: inputs.cloudShadows.checked
+    castShadows: inputs.cloudShadows.checked,
+    cirrus: readNumber(inputs.cloudCirrus, 0.35)
   });
 }
 
@@ -551,7 +553,8 @@ function wireLiveControls() {
     inputs.cloudEvolution,
     inputs.cloudThickness,
     inputs.cloudDensity,
-    inputs.cloudShadows
+    inputs.cloudShadows,
+    inputs.cloudCirrus
   ]) {
     element.addEventListener("input", applyClouds);
   }

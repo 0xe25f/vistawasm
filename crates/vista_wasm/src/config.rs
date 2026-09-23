@@ -362,6 +362,13 @@ pub fn validate_clouds(clouds: &CloudsOptions) -> VistaResult<()> {
   validate_non_negative("clouds.density", clouds.density)?;
   validate_colour("clouds.colour", clouds.colour)?;
   validate_unit_range("clouds.resolutionScale", clouds.resolution_scale, 0.25, 1.0)?;
+  validate_unit_range("clouds.cirrus", clouds.cirrus, 0.0, 1.0)?;
+  validate_unit_range(
+    "clouds.cirrusHeightMetres",
+    clouds.cirrus_height_metres,
+    1_000.0,
+    20_000.0,
+  )?;
 
   if clouds.style == CloudStyle::Volumetric {
     let steps = clouds.raymarch_steps.unwrap_or(24);

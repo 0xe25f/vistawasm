@@ -76,14 +76,32 @@ when a mountain rises into the cloud layer.
   `heightMetres` and `heightMetres + thicknessMetres`:
   - A 2D weather map decides where clouds form (`coverage`) and how tall
     they grow.
-  - Shapes come from baked 3D Perlin-Worley noise, eroded by finer Worley
-    detail: wispy at the base, billowing at the top, with flat bases.
-  - A short secondary march towards the sun gives self-shadowing with
-    Beer-powder lighting, and a two-lobe phase function gives bright silver
-    linings when looking towards the sun.
-  - Steps are spaced non-uniformly (fine near, coarse far) and jittered,
-    with early exit once a cloud is opaque. Cost scales with
-    `raymarchSteps` (`8..=64`, default `32`).
+  - Shapes come from baked 3D Perlin-Worley noise. Each cloud has a flat
+    base and narrows into a rounded dome; denser weather grows taller
+    towers.
+  - Finer Worley detail erodes the edges into cauliflower billows at the
+    top and soft wisps at the base. The detail fades out with distance,
+    where it would otherwise alias into streaks.
+  - A secondary march towards the sun gives self-shadowing. Lighting adds
+    three orders of multiple scattering, which is what makes real cumulus
+    glow white inside, plus sky light that leaves the bases darker. A
+    two-lobe phase function gives silver linings towards the sun.
+  - The march is adaptive. Steps grow with distance, empty sky is crossed
+    in long steps, and when a step lands inside a cloud the march backs up
+    and approaches the edge in fine steps, so silhouettes stay crisp. The
+    start of each ray is offset by a stable dither rather than per-frame
+    noise, so clouds do not crawl with grain. Cost scales with
+    `raymarchSteps` (`8..=64`, default `32`); the loop runs at most four
+    iterations per step, most of them cheap empty-sky skips.
+  - Clouds are rendered at `resolutionScale` (default half) of the canvas
+    resolution and upsampled.
+
+### Cirrus
+
+A thin, high cirrus layer (`cirrus`, default `0.35`, at
+`cirrusHeightMetres`, default 9000 m) adds wind-stretched streaks above
+the main clouds. It glows around the sun and costs three texture lookups
+per sky pixel. Set `cirrus: 0` to remove it.
 
 ### Movement
 

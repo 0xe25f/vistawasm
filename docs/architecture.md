@@ -132,7 +132,7 @@ three. Other setters only change uniforms.
     mapped in the same way.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (560 bytes), the shared world
+declares the one `FrameUniforms` struct (576 bytes), the shared world
 textures (bind group 1), shadow receivers (bind group 2), the sky model,
 lighting, fog integrals, and every shadow lookup. Because there is exactly
 one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct

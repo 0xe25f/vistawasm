@@ -940,10 +940,27 @@ pub struct CloudsOptions {
   /// the same as full resolution at a quarter of the cost.
   #[serde(default = "default_cloud_resolution")]
   pub resolution_scale: f32,
+  /// Amount of thin, high cirrus above the main cloud layer, from 0 (none)
+  /// to 1. Cirrus is drawn with the clouds, so it needs a cloud style other
+  /// than `Off`.
+  #[serde(default = "default_cirrus")]
+  pub cirrus: f32,
+  /// Altitude of the cirrus layer in metres. It is always kept above the
+  /// top of the main cloud layer.
+  #[serde(default = "default_cirrus_height")]
+  pub cirrus_height_metres: f32,
 }
 
 fn default_cloud_resolution() -> f32 {
   0.5
+}
+
+fn default_cirrus() -> f32 {
+  0.35
+}
+
+fn default_cirrus_height() -> f32 {
+  9_000.0
 }
 
 impl Default for CloudsOptions {
@@ -962,6 +979,8 @@ impl Default for CloudsOptions {
       density: default_cloud_density(),
       cast_shadows: true,
       resolution_scale: default_cloud_resolution(),
+      cirrus: default_cirrus(),
+      cirrus_height_metres: default_cirrus_height(),
     }
   }
 }
