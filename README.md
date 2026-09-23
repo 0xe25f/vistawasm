@@ -463,8 +463,14 @@ engine.dispose();
 
 ## Development
 
+You need Rust 1.87 or newer (via rustup) with the `wasm32-unknown-unknown`
+target, Node.js 20.19+ or 22.12+, and `wasm-pack`. See
+[`docs/testing-and-contributing.md`](docs/testing-and-contributing.md#prerequisites)
+for details and offline builds.
+
 ```bash
-npm install
+rustup target add wasm32-unknown-unknown
+npm ci
 npm run build
 npm test
 npm run dev
@@ -474,7 +480,7 @@ Rust checks:
 
 ```bash
 cargo fmt --check
-cargo test
+cargo test --workspace
 ```
 
 ## Running The Examples
@@ -484,7 +490,7 @@ this repository's single `npm install` and root `vite.config.ts`. Build the
 package once, then start whichever example you want:
 
 ```bash
-npm install
+npm ci
 npm run build
 npm run dev:vanilla
 npm run dev:react

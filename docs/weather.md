@@ -30,6 +30,32 @@ The ground responds more slowly than the sky. Puddles take about a minute
 and a half to form and four minutes to dry. Snow settles over a minute or
 two and melts over about five.
 
+## Cloud types
+
+Each state has its own kind of cloud, and transitions blend between them
+as smoothly as everything else.
+
+| State | Clouds |
+| --- | --- |
+| `"clear"`, `"partlyCloudy"` | Fair-weather cumulus: white heaps with flat bases. |
+| `"overcast"` | A smooth grey sheet (stratus). |
+| `"fog"` | Low, flat cloud merging with the ground fog. |
+| `"rain"` | A low, heavy, dark sheet (nimbostratus) with a ragged underside, loose scraps of cloud beneath, and grey curtains of rain hanging below it. |
+| `"storm"` | Towering storm clouds (cumulonimbus) with anvil tops and very dark bases, gaps of sky between cells, rain shafts, and lightning that lights the clouds from inside. |
+| `"snow"` | A grey sheet with softer, paler snow curtains. |
+
+The weather does this through five `CloudsOptions` fields, which you can
+also set yourself with the weather off: `stratiform`, `towering`,
+`baseDarkness`, `raggedBase`, and `rainShafts`. For example, a distant
+summer thunderstorm on an otherwise fair day:
+
+```ts
+engine.setClouds({ ...clouds, coverage: 0.5, towering: 0.8, baseDarkness: 0.6, rainShafts: 0.7 });
+```
+
+Switch off `effects.clouds` to keep your own cloud settings while the
+weather drives everything else.
+
 ## Changing weather over time
 
 ```ts
@@ -66,7 +92,7 @@ engine.setWeather({
 
 | Effect | Drives |
 | --- | --- |
-| `clouds` | Cloud coverage, density, and thickness; sky greying. Turns clouds on (volumetric) if they are off. |
+| `clouds` | Cloud coverage, density, thickness, and type (see [Cloud types](#cloud-types)); sky greying. Turns clouds on (volumetric) if they are off. |
 | `mist` | Ground mist density (turns volumetric mist on when needed) and haze distance. |
 | `wind` | Tree and grass sway, cloud and mist drift direction and speed. |
 | `water` | Wave height, steepness, direction, foam, and current. |
@@ -97,4 +123,8 @@ through a transition.
 The weather system runs on the CPU once per frame and costs microseconds.
 Rain and snow are drawn in the existing composite pass (four layers,
 skipped entirely when nothing is falling), so clear weather costs nothing
-extra.
+extra. Rain shafts add a 20-sample march below the cloud base in the
+reduced-resolution cloud pass, only while `rainShafts` is above zero.
+Storm towers make the cloud slab up to 2.6 times as tall, so storms cost
+more than fair weather; lower `raymarchSteps` or `resolutionScale` if a
+storm is too slow on a weak GPU.

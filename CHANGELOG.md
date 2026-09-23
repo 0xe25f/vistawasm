@@ -46,8 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CloudsOptions.resolutionScale`: clouds render at half resolution by
   default.
 - High cirrus layer: `CloudsOptions.cirrus` and `cirrusHeightMetres`.
-- The demo links to the GitHub repository and has weather, shadow, and
-  surface controls, including texture replacement from an image file.
+- Cloud types: `CloudsOptions.stratiform`, `towering`, `baseDarkness`,
+  `raggedBase`, and `rainShafts`. Each weather state now has its own
+  clouds: stratus when overcast, dark ragged nimbostratus with rain shafts
+  in rain, and cumulonimbus towers with anvils, rain shafts, and lightning
+  that lights the clouds from inside in storms. `WeatherState` reports
+  the cloud type in use.
+- The demo links to the GitHub repository and exposes every option:
+  weather (including each effect), shadows, surface, cloud types, cirrus,
+  cloud quality, wave speed and spread, river width, beach height, snow
+  line, and tree mesh distance. A "Custom assets" panel shows each hook:
+  a custom tree model built in JavaScript, a species rule, a hand-placed
+  grove, and texture replacement from an image file. The stats panel
+  shows the current weather.
 
 ### Changed
 
@@ -68,6 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bright tops, distance-aware detail, and a stable dither. They no longer
   look grainy or like cotton wool, and they narrow into rounded domes.
 - The sun disc no longer shines through thick cloud or an overcast sky.
+- The minimum Rust version is now 1.87, which wgpu 30 requires; the
+  development notes list exact tool versions and a fresh-setup sequence.
 - Release builds use link-time optimisation, one codegen unit, size
   optimisation, and `panic = "abort"`. Shaders are minified at build time
   and `common.wgsl` is embedded once instead of once per shader.

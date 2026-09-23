@@ -8,10 +8,37 @@ this document is the concrete commands and workflow that satisfy them.
 
 ## Prerequisites
 
-- Rust (stable), with the `wasm32-unknown-unknown` target installed via
-  `rustup target add wasm32-unknown-unknown`.
-- Node.js and npm.
-- `wasm-pack` (`cargo install wasm-pack`, or via your package manager).
+| Tool | Version | Notes |
+| --- | --- | --- |
+| Rust | 1.87 or newer, via [rustup](https://rustup.rs) | wgpu 30 needs 1.87. Add the WebAssembly target with `rustup target add wasm32-unknown-unknown`. |
+| Node.js | 20.19+ or 22.12+ | Vite 8 needs one of these. npm comes with Node. |
+| wasm-pack | 0.13 or newer | `cargo install wasm-pack`, or the installer at [rustwasm.github.io/wasm-pack](https://rustwasm.github.io/wasm-pack/installer/). |
+
+On its first run, `wasm-pack` downloads the `wasm-bindgen` CLI that
+matches `Cargo.lock`, and release builds download Binaryen's `wasm-opt`
+unless one is already on your `PATH`. Both need network access once. On
+an offline machine, install Binaryen yourself (`npm install -g binaryen`
+provides `wasm-opt`), or build without optimisation:
+`wasm-pack build crates/vista_wasm --target web --out-dir ../../dist/pkg --no-opt`.
+
+### Fresh setup
+
+From a new clone, these commands install everything, build, and run every
+check:
+
+```bash
+rustup target add wasm32-unknown-unknown
+npm ci                   # exact dependency versions from package-lock.json
+npm run build            # WASM package and TypeScript wrapper into dist/
+cargo test --workspace   # Rust tests, including shader validation
+npm test                 # JavaScript and TypeScript tests
+npm run lint:indent      # 2-space indentation and no tabs
+npm run dev              # the demo at http://127.0.0.1:5173/
+```
+
+Use `npm ci` rather than `npm install` for a fresh setup. Several
+development dependencies are declared as `latest`, so `npm install` can
+pull in newer major versions than the ones the lock file was tested with.
 
 ### A macOS/Homebrew toolchain quirk
 
@@ -94,15 +121,20 @@ npm test                 # vitest, the JS/TS test suite
 npm run lint:indent      # repo-wide 2-space indentation / no-tabs check
 ```
 
-All three must pass before considering a change complete. `cargo test
---workspace` alone does **not** exercise anything WebGPU/shader-related
-(gpu.rs and every `.wgsl` file are effectively untestable by `cargo` — WGSL
-shader source is only ever parsed by `wgpu` at runtime via `include_str!`,
-so a shader with a real logic bug, as opposed to a syntax error, will
-compile cleanly and only show up on screen). For any change that touches
-`render/gpu.rs` or a `.wgsl` file, also do the in-browser verification pass
-below — this is not optional, it is the only way to actually catch shader
-logic bugs.
+All three must pass before considering a change complete. Also run
+`cargo fmt --check`.
+
+`cargo test --workspace` parses and validates every `.wgsl` shader with
+naga (see `render/shaders.rs`), with `common.wgsl` prepended exactly as at
+run time, so syntax, type, and binding errors fail the tests. It cannot
+run the GPU, though: a shader with a logic bug still compiles cleanly and
+only shows up on screen. For any change that touches `render/gpu.rs` or a
+`.wgsl` file, also do the in-browser verification below. It is the only
+way to catch rendering bugs.
+
+`build.rs` strips comments and indentation from each shader into
+`OUT_DIR` at build time, so shader comments cost nothing in the shipped
+binary. Write them freely.
 
 ### In-browser verification
 

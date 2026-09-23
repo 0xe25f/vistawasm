@@ -94,6 +94,7 @@ struct FrameWeatherValues {
   lightning: f32,
   overcast: f32,
   wind: [f32; 2],
+  lightning_position: [f32; 2],
 }
 
 /// Options after the weather has been applied.
@@ -871,7 +872,15 @@ impl EngineCore {
       out.clouds.coverage = state.cloud_coverage;
       out.clouds.density = state.cloud_density;
       out.clouds.thickness_metres *= self.weather.cloud_thickness_scale();
-      out.weather.overcast = ((state.cloud_coverage - 0.6) / 0.4).clamp(0.0, 1.0) * 0.85;
+      out.clouds.stratiform = state.stratiform;
+      out.clouds.towering = state.towering;
+      out.clouds.base_darkness = state.base_darkness;
+      out.clouds.ragged_base = state.ragged_base;
+      out.clouds.rain_shafts = state.rain_shafts;
+      // The sky greys with full cover and darkens further under
+      // rain-laden cloud.
+      out.weather.overcast = (((state.cloud_coverage - 0.6) / 0.4).clamp(0.0, 1.0) * 0.85)
+        .max(state.base_darkness * 0.9);
     }
 
     if effects.mist {
@@ -918,6 +927,9 @@ impl EngineCore {
 
     if effects.lightning {
       out.weather.lightning = state.lightning;
+      let offset = self.weather.lightning_offset();
+      let camera = self.camera.options.position;
+      out.weather.lightning_position = [camera[0] + offset[0], camera[2] + offset[1]];
     }
 
     out
@@ -1011,6 +1023,7 @@ impl EngineCore {
         lightning: weather.lightning,
         overcast: weather.overcast,
         wind: weather.wind,
+        lightning_position: weather.lightning_position,
       },
       height_range: self.height_range,
     }
@@ -1186,7 +1199,9 @@ mod tests {
     }
 
     let stormy = engine.weathered_options();
-    assert!(stormy.clouds.coverage > 0.9);
+    assert!(stormy.clouds.coverage > 0.75);
+    assert!(stormy.clouds.towering > 0.5);
+    assert!(stormy.clouds.rain_shafts > 0.5);
     assert_ne!(stormy.clouds.style, vista_types::CloudStyle::Off);
     assert!(stormy.weather.rain > 0.5);
     assert_eq!(stormy.water, engine.water);

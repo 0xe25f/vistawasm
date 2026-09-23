@@ -188,6 +188,14 @@
             <input id="waveSteepness" type="range" min="0" max="1" step="0.05" value="0.55">
           </label>
           <label>
+            Swell speed
+            <input id="waveSpeed" type="range" min="0" max="3" step="0.1" value="1">
+          </label>
+          <label>
+            Swell spread
+            <input id="waveSpread" type="range" min="0" max="1" step="0.05" value="0.55">
+          </label>
+          <label>
             Current speed (m/s)
             <input id="currentSpeed" type="range" min="0" max="3" step="0.05" value="0.35">
           </label>
@@ -210,6 +218,10 @@
           <label>
             River catchment (km²)
             <input id="riverCatchment" type="range" min="0.02" max="3" step="0.01" value="0.15">
+          </label>
+          <label>
+            River width
+            <input id="riverWidth" type="range" min="0.25" max="3" step="0.05" value="1">
           </label>
           <label>
             River current
@@ -238,6 +250,18 @@
           <label>
             Volcanism
             <input id="biomeVolcanism" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label>
+            Beach height (m)
+            <input id="biomeBeachHeight" type="range" min="0" max="20" step="0.5" value="5">
+          </label>
+          <label class="checkbox">
+            <input id="biomeSnowLineAuto" type="checkbox" checked>
+            Automatic snow line
+          </label>
+          <label>
+            Snow line (m)
+            <input id="biomeSnowLine" type="range" min="200" max="4000" step="50" value="1400">
           </label>
           <p id="biomeReadout" class="readout">Biome: –</p>
         </fieldset>
@@ -271,6 +295,10 @@
           <label>
             Wind strength
             <input id="windStrength" type="range" min="0" max="1" step="0.05" value="0.3">
+          </label>
+          <label>
+            3D mesh distance (m)
+            <input id="meshDistance" type="range" min="60" max="1500" step="20" value="420">
           </label>
         </fieldset>
 
@@ -338,6 +366,45 @@
           <label>
             High cirrus
             <input id="cloudCirrus" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label>
+            Cirrus altitude (m)
+            <input id="cloudCirrusHeight" type="range" min="4000" max="14000" step="250" value="9000">
+          </label>
+          <label>
+            Raymarch steps
+            <select id="cloudSteps">
+              <option value="16">16 (fastest)</option>
+              <option value="24">24</option>
+              <option value="32" selected>32</option>
+              <option value="48">48</option>
+              <option value="64">64 (finest)</option>
+            </select>
+          </label>
+          <label>
+            Cloud resolution
+            <input id="cloudResolution" type="range" min="0.25" max="1" step="0.05" value="0.5">
+          </label>
+          <p class="readout">Cloud type (the weather sets these while it drives the clouds)</p>
+          <label>
+            Heaped &rarr; layered
+            <input id="cloudStratiform" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Storm towers
+            <input id="cloudTowering" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Dark bases
+            <input id="cloudBaseDarkness" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Ragged bases
+            <input id="cloudRaggedBase" type="range" min="0" max="1" step="0.05" value="0">
+          </label>
+          <label>
+            Rain shafts
+            <input id="cloudRainShafts" type="range" min="0" max="1" step="0.05" value="0">
           </label>
           <label class="checkbox">
             <input id="cloudShadows" type="checkbox" checked>
@@ -423,6 +490,18 @@
             Rain and snow
             <input id="weatherPrecipitation" type="range" min="0" max="2" step="0.1" value="1">
           </label>
+          <label>
+            Average state length (s)
+            <input id="weatherDuration" type="range" min="30" max="900" step="10" value="240">
+          </label>
+          <p class="readout">The weather drives:</p>
+          <label class="checkbox"><input id="weatherEffectClouds" type="checkbox" checked> Clouds</label>
+          <label class="checkbox"><input id="weatherEffectMist" type="checkbox" checked> Mist and haze</label>
+          <label class="checkbox"><input id="weatherEffectWind" type="checkbox" checked> Wind</label>
+          <label class="checkbox"><input id="weatherEffectWater" type="checkbox" checked> Waves and currents</label>
+          <label class="checkbox"><input id="weatherEffectPrecipitation" type="checkbox" checked> Falling rain and snow</label>
+          <label class="checkbox"><input id="weatherEffectGround" type="checkbox" checked> Wet ground and settled snow</label>
+          <label class="checkbox"><input id="weatherEffectLightning" type="checkbox" checked> Lightning</label>
           <p class="readout" id="weatherReadout" aria-live="polite">Weather: off</p>
         </fieldset>
 
@@ -453,8 +532,20 @@
             </select>
           </label>
           <label>
+            Tree shadow softness
+            <input id="treeShadowSoftness" type="range" min="0" max="1" step="0.05" value="0.5">
+          </label>
+          <label>
             Shadow strength
             <input id="shadowStrength" type="range" min="0" max="1" step="0.05" value="0.85">
+          </label>
+          <label class="checkbox">
+            <input id="cloudShadowsEnabled" type="checkbox" checked>
+            Clouds
+          </label>
+          <label>
+            Cloud shadow strength
+            <input id="cloudShadowStrength" type="range" min="0" max="1" step="0.05" value="0.78">
           </label>
         </fieldset>
 
@@ -483,6 +574,17 @@
           </label>
           <input id="replaceFile" type="file" accept="image/*" aria-label="Image to use as the texture">
           <button id="resetTextures" type="button">Restore procedural textures</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Custom assets</legend>
+          <p class="readout">Replace the procedural trees and textures with your own (see docs/hooks.md).</p>
+          <button id="customModel" type="button">Replace spruce with a custom model</button>
+          <label class="checkbox">
+            <input id="palmBeaches" type="checkbox">
+            Palms on every beach (species rule)
+          </label>
+          <button id="plantGrove" type="button">Plant a hand-placed grove here</button>
         </fieldset>
 
         <fieldset>

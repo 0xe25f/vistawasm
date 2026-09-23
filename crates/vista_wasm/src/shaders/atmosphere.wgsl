@@ -73,9 +73,19 @@ fn cloud_height_fraction(p: vec3<f32>) -> f32 {
 }
 
 // Large-scale cloud shape: which parts of the slab hold cloud at all.
-// Cumulus have flat bases and rounded tops; denser weather grows taller
-// towers, and the threshold rises with height so every cloud narrows into
-// a dome. Only this cheap part is used for light marching.
+// Only this cheap part is used for light marching. It blends three cloud
+// types:
+//
+// - cumulus: flat bases and rounded domes, taller where the weather is
+//   denser, narrowing with height so they never rise as columns;
+// - stratiform sheets (stratus, nimbostratus): low, flat, and nearly
+//   uniform, driven by `clouds3.x`;
+// - towering storm clouds (cumulonimbus): widely spaced cores that rise
+//   through the whole stretched slab and spread into anvils at the top,
+//   driven by `clouds3.y`.
+//
+// Ragged bases (`clouds3.w`) lift and roughen the underside and scatter
+// loose scraps of cloud (scud) beneath it.
 fn cloud_shape(p: vec3<f32>, weather: f32) -> f32 {
   let h = cloud_height_fraction(p);
 
@@ -83,11 +93,63 @@ fn cloud_shape(p: vec3<f32>, weather: f32) -> f32 {
     return 0.0;
   }
 
-  let top = mix(0.3, 1.0, weather);
-  let gradient = saturate(remap(h, 0.0, 0.07, 0.0, 1.0)) * saturate(remap(h, top * 0.4, top, 1.0, 0.0));
-  let low = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset()) / 4200.0, 0.0).r;
-  let base = saturate(remap(low * gradient, 1.0 - weather * 0.9, 1.0, 0.0, 1.0));
-  return base * saturate(weather * 1.6);
+  let stratiform = frame.clouds3.x;
+  let towering = frame.clouds3.y;
+  let ragged = frame.clouds3.w;
+  let stretch = frame.clouds4.w;
+  let wind = cloud_wind_offset();
+  // Height within the ordinary cloud layer (towers rise above 1).
+  let layer_h = h * stretch;
+  let low = textureSampleLevel(cloud_texture, linear_sampler, (p + wind) / 4200.0, 0.0).r;
+  var bottom = 0.0;
+
+  if (ragged > 0.001) {
+    let undulation = textureSampleLevel(noise_texture, linear_sampler, (p.xz + wind.xz) / 2600.0, 0.0).a;
+    bottom = ragged * 0.14 * undulation;
+  }
+
+  // Storm cells: Worley cell centres about 6 km apart, warped so their
+  // outlines are irregular. Inside a cell the cumulus grows much taller,
+  // which gives billowing towers that narrow naturally.
+  var cell = 0.0;
+  var anvil = 0.0;
+
+  if (towering > 0.001) {
+    let warp = textureSampleLevel(noise_texture, linear_sampler, (p.xz + wind.xz) / 14000.0, 0.0).rg - 0.5;
+    let cells = textureSampleLevel(noise_texture, linear_sampler, (p.xz + wind.xz * 0.5 + warp * 3500.0) / 36000.0 + vec2<f32>(0.31, 0.17), 0.0).b;
+    cell = smoothstep(0.55, 0.85, cells) * towering;
+    // The anvil: a thin, smoother layer near the top of the slab that
+    // spreads well beyond the tower beneath it.
+    let band = smoothstep(0.8, 0.86, h) * (1.0 - smoothstep(0.92, 0.97, h));
+    let reach = smoothstep(0.45, 0.75, cells) * towering;
+    anvil = saturate(remap(mix(low, 0.8, 0.5) * band * reach, 0.35, 0.7, 0.0, 1.0));
+  }
+
+  // Cells make clouds taller and a little denser, but their outlines
+  // still come from the 3D noise. Forcing full coverage inside a cell
+  // would extrude the 2D cell outline into a straight-walled column.
+  let local_weather = weather + (1.0 - weather) * cell * 0.3;
+  let top = mix(mix(0.3, 1.0, weather), stretch * 0.9, cell);
+  let heap = saturate(remap(layer_h, bottom, bottom + 0.07, 0.0, 1.0))
+    * saturate(remap(layer_h, top * mix(0.45, 0.65, cell), top, 1.0, 0.0));
+  let cumulus = saturate(remap(low * heap, 1.0 - local_weather * 0.9, 1.0, 0.0, 1.0));
+  var base = cumulus;
+
+  if (stratiform > 0.001) {
+    let sheet_top = mix(0.25, 0.6, weather);
+    let flat_profile = saturate(remap(layer_h, bottom, bottom + 0.05, 0.0, 1.0))
+      * saturate(remap(layer_h, sheet_top * 0.6, sheet_top, 1.0, 0.0));
+    let sheet = saturate(remap(mix(low, 1.0, 0.45) * flat_profile, 1.0 - weather * 0.95, 1.0, 0.0, 1.0));
+    // Storm towers push up through the sheet.
+    base = mix(cumulus, sheet, stratiform * (1.0 - cell));
+  }
+
+  if (ragged > 0.001 && bottom > 0.0) {
+    let scud_band = (1.0 - smoothstep(bottom * 0.6, bottom, layer_h)) * smoothstep(0.0, 0.015, layer_h);
+    base = max(base, saturate(remap(low, 0.62, 0.9, 0.0, 1.0)) * scud_band * ragged * 0.7);
+  }
+
+  return max(base * saturate(local_weather * 1.6), anvil);
 }
 
 // Full density: the shape eroded by fine Worley detail, which turns the
@@ -122,7 +184,10 @@ struct CloudResult {
 fn cloud_ambient(h: f32) -> vec3<f32> {
   let sky = sky_radiance(vec3<f32>(0.0, 1.0, 0.0));
   let ground = sun_light() * max(sun_dir().y, 0.0) * 0.08;
-  return sky * mix(0.45, 1.25, h) + ground * (1.0 - h);
+  // Rain-laden bases (`clouds3.z`) absorb much more of the light that
+  // reaches them.
+  let laden = 1.0 - frame.clouds3.z * 0.8 * pow(1.0 - h, 1.5);
+  return (sky * mix(0.45, 1.25, h) + ground * (1.0 - h)) * laden;
 }
 
 // A stable dither for the march start, evenly spread in both directions
@@ -291,8 +356,16 @@ fn march_clouds(ray: vec3<f32>, max_distance: f32, pixel: vec2<f32>) -> CloudRes
     let direct = exp(-depth) * phase0 + exp(-depth * 0.35) * phase1 * 0.45 + exp(-depth * 0.12) * phase2 * 0.2;
     // Powder: edges facing the sun are thin and scatter little back.
     let powder = mix(1.0, 1.0 - exp(-density * 6.0), 0.4 * (1.0 - saturate(mu)));
-    let h = saturate(cloud_height_fraction(p));
-    let light = sun_colour * direct * powder + cloud_ambient(h) * frame.cloud_colour.rgb * exp(-density * 0.5);
+    let h = saturate(cloud_height_fraction(p) * frame.clouds4.w);
+    let laden = 1.0 - frame.clouds3.z * 0.5 * (1.0 - h);
+    var light = sun_colour * direct * powder * laden + cloud_ambient(h) * frame.cloud_colour.rgb * exp(-density * 0.5);
+
+    // Lightning lights the cloud around the strike from inside.
+    if (frame.weather2.x > 0.001) {
+      let strike = distance(p.xz, frame.clouds4.yz);
+      light = light + vec3<f32>(0.85, 0.88, 1.0) * frame.weather2.x * 40.0 * exp(-strike / 1200.0) * (1.0 - h * 0.4);
+    }
+
     let step_transmittance = exp(-density * sigma * step_length);
     let absorbed = transmittance * (1.0 - step_transmittance);
     scatter = scatter + light * absorbed;
@@ -378,6 +451,59 @@ fn full_pixel(ndc: vec2<f32>) -> vec2<i32> {
   return vec2<i32>(clamp(uv * frame.viewport.xy, vec2<f32>(0.0), frame.viewport.xy - 1.0));
 }
 
+// Curtains of rain (or snow) hanging below raining clouds, seen from a
+// distance. A short march below the cloud base: curtains sit under
+// clouds, break up into shafts, and slant downwind as they fall. Returns
+// in-scattered light (rgb), already faded into the haze, and
+// transmittance (a). Costs nothing when `clouds4.x` is zero.
+fn rain_shafts(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
+  let amount = frame.clouds4.x;
+
+  if (amount <= 0.001) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+
+  let camera = frame.camera_position.xyz;
+  let base = frame.cloud_params.y;
+  let t_end = min(max_distance, 16000.0);
+  // Shafts change slowly across the ground, so fixed sample positions
+  // give a smooth result; any per-pixel offset shows as grain.
+  let dither = 0.5;
+  let snowy = select(0.0, 1.0, frame.weather.y > frame.weather.x);
+  // Shafts take the light of the cloud base above them: dark grey under
+  // rain-laden cloud, paler for snow.
+  let grey = cloud_ambient(0.0) * frame.cloud_colour.rgb * mix(0.55, 1.0, snowy) + sun_light() * 0.02;
+  let haze_distance = max(frame.atmosphere.z * 1.4, 1.0);
+  var transmittance = 1.0;
+  var scatter = vec3<f32>(0.0);
+
+  for (var i = 0; i < 20; i = i + 1) {
+    let u = (f32(i) + dither) / 20.0;
+    let t = 150.0 + (t_end - 150.0) * u * u;
+    let dt = (t_end - 150.0) * 2.0 * u / 20.0;
+    let p = camera + ray * t;
+    let fall = base - p.y;
+
+    if (fall <= 0.0 || t >= t_end) {
+      continue;
+    }
+
+    let xz = p.xz - frame.clouds2.zw * fall * 0.25;
+    let above = cloud_weather(xz);
+    let curtains = textureSampleLevel(noise_texture, linear_sampler, (xz + frame.cloud_motion.xy) / 7000.0, 0.0).r;
+    let streaks = textureSampleLevel(noise_texture, linear_sampler, xz / 1800.0, 0.0).g;
+    let density = smoothstep(0.35, 0.7, above) * smoothstep(0.45, 0.75, curtains * 0.75 + streaks * 0.25)
+      * saturate(fall / 200.0) * amount;
+    let step_transmittance = exp(-density * 0.0006 * dt);
+    let haze = exp(-t / haze_distance);
+    let light = mix(sky_radiance(ray), grey, haze);
+    scatter = scatter + transmittance * (1.0 - step_transmittance) * light;
+    transmittance = transmittance * step_transmittance;
+  }
+
+  return vec4<f32>(scatter, transmittance);
+}
+
 // Reduced-resolution cloud pass. Output: rgb = in-scattered light already
 // faded into the haze, a = transmittance.
 @fragment
@@ -387,8 +513,9 @@ fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
   let is_sky = depth >= 0.999999;
   let max_distance = select(linear_distance(depth, ray), 1.0e9, is_sky);
   let clouds = march_clouds(ray, max_distance, in.clip_position.xy);
+  let shafts = rain_shafts(ray, max_distance);
 
-  if (clouds.transmittance >= 0.999) {
+  if (clouds.transmittance >= 0.999 && shafts.a >= 0.999) {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
 
@@ -396,7 +523,8 @@ fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
   let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
   let sky = sky_radiance(ray);
   let scatter = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
-  return vec4<f32>(scatter, clouds.transmittance);
+  // Rain shafts hang below the clouds, so they sit in front of them.
+  return vec4<f32>(shafts.rgb + shafts.a * scatter, shafts.a * clouds.transmittance);
 }
 
 // Rain streaks and snowflakes in a few depth layers around the camera.
@@ -508,7 +636,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     // Only geometry that reaches into the cloud layer can have clouds in
     // front of it; skipping the rest avoids upsampling halos on low ground.
-    if (clouds_on && cloud_entry_distance(ray) < distance) {
+    if (clouds_on && (cloud_entry_distance(ray) < distance || frame.clouds4.x > 0.001)) {
       let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
       colour = colour * clouds.a + clouds.rgb;
     }

@@ -536,6 +536,12 @@ export interface WeatherState {
   /** Settled snow; builds up and melts slowly. */
   snowCover: number;
   lightning: number;
+  /** Cloud type the weather is using, 0 (cumulus) to 1 (flat sheet). */
+  stratiform: number;
+  towering: number;
+  baseDarkness: number;
+  raggedBase: number;
+  rainShafts: number;
 }
 
 /**
@@ -697,6 +703,22 @@ export interface CloudsOptions {
   cirrus?: number;
   /** Altitude of the cirrus layer, 1000 to 20000 metres. Defaults to `9000`. */
   cirrusHeightMetres?: number;
+  /**
+   * Cloud type, 0 (heaped cumulus) to 1 (a flat sheet such as stratus or
+   * nimbostratus). Volumetric only. Defaults to `0`.
+   */
+  stratiform?: number;
+  /**
+   * Towering storm clouds (cumulonimbus) with anvil tops, 0 to 1. Towers
+   * rise well above `thicknessMetres`. Volumetric only. Defaults to `0`.
+   */
+  towering?: number;
+  /** Darker, rain-laden cloud bases, 0 to 1. Defaults to `0`. */
+  baseDarkness?: number;
+  /** Ragged cloud bases with loose scraps of cloud below, 0 to 1. Defaults to `0`. */
+  raggedBase?: number;
+  /** Curtains of rain or snow hanging below the clouds, 0 to 1. Defaults to `0`. */
+  rainShafts?: number;
 }
 
 /**

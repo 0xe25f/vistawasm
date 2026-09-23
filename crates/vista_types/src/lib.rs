@@ -949,6 +949,26 @@ pub struct CloudsOptions {
   /// top of the main cloud layer.
   #[serde(default = "default_cirrus_height")]
   pub cirrus_height_metres: f32,
+  /// Cloud type, from 0 (heaped cumulus) to 1 (a flat, layered sheet such
+  /// as stratus or nimbostratus). Volumetric clouds only.
+  #[serde(default)]
+  pub stratiform: f32,
+  /// Amount of towering storm clouds (cumulonimbus) with anvil tops, from
+  /// 0 to 1. Towers rise well above `thicknessMetres`. Volumetric clouds
+  /// only.
+  #[serde(default)]
+  pub towering: f32,
+  /// Extra darkening of cloud bases, as in rain-laden clouds, from 0 to 1.
+  #[serde(default)]
+  pub base_darkness: f32,
+  /// Ragged, uneven cloud bases with loose scraps of cloud below them,
+  /// from 0 to 1.
+  #[serde(default)]
+  pub ragged_base: f32,
+  /// Visible curtains of rain or snow hanging below the clouds, from 0 to
+  /// 1.
+  #[serde(default)]
+  pub rain_shafts: f32,
 }
 
 fn default_cloud_resolution() -> f32 {
@@ -981,6 +1001,11 @@ impl Default for CloudsOptions {
       resolution_scale: default_cloud_resolution(),
       cirrus: default_cirrus(),
       cirrus_height_metres: default_cirrus_height(),
+      stratiform: 0.0,
+      towering: 0.0,
+      base_darkness: 0.0,
+      ragged_base: 0.0,
+      rain_shafts: 0.0,
     }
   }
 }
@@ -1336,6 +1361,21 @@ pub struct WeatherState {
   pub snow_cover: f32,
   /// Current lightning flash brightness, 0 to 1.
   pub lightning: f32,
+  /// Cloud type, 0 (cumulus) to 1 (flat sheet).
+  #[serde(default)]
+  pub stratiform: f32,
+  /// Amount of towering storm clouds, 0 to 1.
+  #[serde(default)]
+  pub towering: f32,
+  /// Darkening of cloud bases, 0 to 1.
+  #[serde(default)]
+  pub base_darkness: f32,
+  /// Raggedness of cloud bases, 0 to 1.
+  #[serde(default)]
+  pub ragged_base: f32,
+  /// Visible rain or snow curtains below the clouds, 0 to 1.
+  #[serde(default)]
+  pub rain_shafts: f32,
 }
 
 /// Terrain self-shadowing controls.

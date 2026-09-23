@@ -363,6 +363,11 @@ pub fn validate_clouds(clouds: &CloudsOptions) -> VistaResult<()> {
   validate_colour("clouds.colour", clouds.colour)?;
   validate_unit_range("clouds.resolutionScale", clouds.resolution_scale, 0.25, 1.0)?;
   validate_unit_range("clouds.cirrus", clouds.cirrus, 0.0, 1.0)?;
+  validate_unit_range("clouds.stratiform", clouds.stratiform, 0.0, 1.0)?;
+  validate_unit_range("clouds.towering", clouds.towering, 0.0, 1.0)?;
+  validate_unit_range("clouds.baseDarkness", clouds.base_darkness, 0.0, 1.0)?;
+  validate_unit_range("clouds.raggedBase", clouds.ragged_base, 0.0, 1.0)?;
+  validate_unit_range("clouds.rainShafts", clouds.rain_shafts, 0.0, 1.0)?;
   validate_unit_range(
     "clouds.cirrusHeightMetres",
     clouds.cirrus_height_metres,

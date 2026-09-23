@@ -56,9 +56,11 @@ struct FrameUniforms {
   weather2: [f32; 4],
   surface: [f32; 4],
   clouds2: [f32; 4],
+  clouds3: [f32; 4],
+  clouds4: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 576);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 608);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -114,6 +116,8 @@ pub struct FrameWeather {
   pub overcast: f32,
   /// Wind vector (x, z) in metres per second.
   pub wind: [f32; 2],
+  /// World position (x, z) of the latest lightning strike.
+  pub lightning_position: [f32; 2],
 }
 
 /// Everything the renderer needs to shade one frame. The engine resolves
@@ -253,6 +257,9 @@ const IMPOSTOR_HEIGHT: u32 = 512;
 const HEIGHT_TEXTURE_MAX: u32 = 2048;
 const TERRAIN_SHADOW_MAX: u32 = 1024;
 const OCEAN_GRID_SAMPLES: u32 = 193;
+/// How much taller than the ordinary cloud layer storm towers grow, at
+/// full `towering`.
+const TOWER_STRETCH: f32 = 1.6;
 const OCEAN_FAR_REACH_METRES: f32 = 60_000.0;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -1912,11 +1919,31 @@ impl GpuContext {
       cloud_wind[0],
       cloud_wind[1],
     ];
+    // Storm towers rise well above the ordinary cloud layer, so the slab is
+    // stretched to hold them; the shader keeps ordinary clouds at their
+    // own height inside it.
+    let towering = clouds.towering.clamp(0.0, 1.0);
     u.cloud_params = [
       params.cloud_coverage.clamp(0.0, 1.0),
       clouds.height_metres,
-      clouds.thickness_metres.max(1.0),
+      clouds.thickness_metres.max(1.0) * (1.0 + towering * TOWER_STRETCH),
       params.cloud_raymarch_steps as f32,
+    ];
+    u.clouds3 = [
+      clouds.stratiform.clamp(0.0, 1.0),
+      towering,
+      clouds.base_darkness.clamp(0.0, 1.0),
+      clouds.ragged_base.clamp(0.0, 1.0),
+    ];
+    u.clouds4 = [
+      if params.cloud_coverage > 0.0 {
+        clouds.rain_shafts.clamp(0.0, 1.0)
+      } else {
+        0.0
+      },
+      params.weather.lightning_position[0],
+      params.weather.lightning_position[1],
+      1.0 + towering * TOWER_STRETCH,
     ];
     u.cloud_motion = [
       self.cloud_offset[0] + seed * 173.0,

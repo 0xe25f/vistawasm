@@ -1422,7 +1422,7 @@ pub fn mesh_from_arrays(
 
   if let Some(weights) = wind {
     if weights.len() != count || weights.iter().any(|value| !(0.0..=1.0).contains(value)) {
-      return Err("windWeights must hold one value from 0 to 1 per vertex.".to_string());
+      return Err("wind must hold one value from 0 to 1 per vertex.".to_string());
     }
   }
 

@@ -36,6 +36,16 @@ pub struct WeatherProfile {
   pub snow: f32,
   /// Lightning flashes per minute.
   pub lightning_per_minute: f32,
+  /// Cloud type, 0 (cumulus) to 1 (flat sheet).
+  pub stratiform: f32,
+  /// Amount of towering storm clouds.
+  pub towering: f32,
+  /// Darkening of cloud bases.
+  pub base_darkness: f32,
+  /// Raggedness of cloud bases.
+  pub ragged_base: f32,
+  /// Visible rain or snow curtains below the clouds.
+  pub rain_shafts: f32,
 }
 
 /// The profile for a weather state.
@@ -51,6 +61,11 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
     rain: 0.0,
     snow: 0.0,
     lightning_per_minute: 0.0,
+    stratiform: 0.0,
+    towering: 0.0,
+    base_darkness: 0.0,
+    ragged_base: 0.0,
+    rain_shafts: 0.0,
   };
 
   match kind {
@@ -71,6 +86,8 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       cloud_thickness: 1.2,
       haze: 0.6,
       wind: 6.0,
+      stratiform: 0.85,
+      base_darkness: 0.2,
       ..base
     },
     WeatherKind::Fog => WeatherProfile {
@@ -81,6 +98,7 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       haze: 0.18,
       wind: 1.0,
       gustiness: 0.1,
+      stratiform: 1.0,
       ..base
     },
     WeatherKind::Rain => WeatherProfile {
@@ -92,10 +110,15 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       wind: 8.0,
       gustiness: 0.45,
       rain: 0.65,
+      stratiform: 0.75,
+      base_darkness: 0.6,
+      ragged_base: 0.7,
+      rain_shafts: 0.7,
       ..base
     },
     WeatherKind::Storm => WeatherProfile {
-      cloud_coverage: 1.0,
+      // Storm cells with breaks between them, so the towers stand out.
+      cloud_coverage: 0.82,
       cloud_density: 1.0,
       cloud_thickness: 1.8,
       mist_density: 0.3,
@@ -104,6 +127,11 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       gustiness: 0.7,
       rain: 1.0,
       lightning_per_minute: 7.0,
+      stratiform: 0.35,
+      towering: 0.85,
+      base_darkness: 0.85,
+      ragged_base: 0.8,
+      rain_shafts: 1.0,
       ..base
     },
     WeatherKind::Snow => WeatherProfile {
@@ -115,6 +143,10 @@ pub fn profile(kind: WeatherKind) -> WeatherProfile {
       wind: 5.0,
       gustiness: 0.35,
       snow: 0.8,
+      stratiform: 0.8,
+      base_darkness: 0.3,
+      ragged_base: 0.4,
+      rain_shafts: 0.45,
       ..base
     },
   }
@@ -182,6 +214,7 @@ pub struct WeatherSystem {
   snow_cover: f32,
   next_lightning: f64,
   lightning_started: f64,
+  lightning_offset: [f32; 2],
   state: WeatherState,
 }
 
@@ -200,6 +233,7 @@ impl WeatherSystem {
       snow_cover: 0.0,
       next_lightning: 4.0,
       lightning_started: -100.0,
+      lightning_offset: [0.0, 4_000.0],
       state: WeatherState::default(),
       options,
     };
@@ -312,6 +346,10 @@ impl WeatherSystem {
       if self.time >= self.next_lightning {
         self.lightning_started = self.time;
         self.step = self.step.wrapping_add(1);
+        // Strike somewhere between one and nine kilometres away.
+        let angle = self.roll(0x21) * std::f32::consts::TAU;
+        let distance = 1_000.0 + self.roll(0x31) * 8_000.0;
+        self.lightning_offset = [angle.sin() * distance, angle.cos() * distance];
         let wait = -((1.0 - self.roll(0x11) * 0.98).ln()) * 60.0 / rate;
         self.next_lightning = self.time + wait.clamp(1.5, 120.0) as f64;
       }
@@ -338,8 +376,19 @@ impl WeatherSystem {
       wetness: self.wetness.clamp(0.0, 1.0),
       snow_cover: self.snow_cover.clamp(0.0, 1.0),
       lightning: lightning.clamp(0.0, 1.0),
+      stratiform: mix(a.stratiform, b.stratiform),
+      towering: mix(a.towering, b.towering),
+      base_darkness: mix(a.base_darkness, b.base_darkness),
+      ragged_base: mix(a.ragged_base, b.ragged_base),
+      rain_shafts: (mix(a.rain_shafts, b.rain_shafts) * scale).min(1.0),
     };
     &self.state
+  }
+
+  /// Horizontal offset, in metres from the camera, of the most recent
+  /// lightning strike, so the clouds around it can light up.
+  pub fn lightning_offset(&self) -> [f32; 2] {
+    self.lightning_offset
   }
 
   /// Multiplier on cloud thickness for the current blend.
@@ -401,8 +450,10 @@ mod tests {
       late = system.advance(1.0).cloud_coverage;
     }
 
+    let storm = profile(WeatherKind::Storm).cloud_coverage;
+
     assert!(early < 0.5);
-    assert!((late - 1.0).abs() < 0.01);
+    assert!((late - storm).abs() < 0.01);
     assert_eq!(system.dominant(), WeatherKind::Storm);
   }
 
@@ -479,5 +530,23 @@ mod tests {
     }
 
     assert!(flashes > 0);
+  }
+
+  #[test]
+  fn each_state_has_its_own_cloud_type() {
+    let rain = WeatherSystem::new(options(WeatherKind::Rain))
+      .state()
+      .clone();
+    let storm = WeatherSystem::new(options(WeatherKind::Storm))
+      .state()
+      .clone();
+    let fair = WeatherSystem::new(options(WeatherKind::PartlyCloudy))
+      .state()
+      .clone();
+
+    assert!(rain.stratiform > 0.5 && rain.rain_shafts > 0.5);
+    assert!(storm.towering > 0.5 && storm.base_darkness > rain.base_darkness);
+    assert_eq!(fair.towering, 0.0);
+    assert_eq!(fair.rain_shafts, 0.0);
   }
 }

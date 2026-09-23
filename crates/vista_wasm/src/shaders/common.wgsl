@@ -70,6 +70,12 @@ struct FrameUniforms {
   // x: cirrus amount (0 = none), y: cirrus altitude, zw: unit wind
   // direction (x, z) that stretches cirrus into streaks.
   clouds2: vec4<f32>,
+  // x: stratiform (0 cumulus, 1 sheet), y: towering storm clouds,
+  // z: base darkness, w: ragged base.
+  clouds3: vec4<f32>,
+  // x: rain shafts, yz: latest lightning strike (x, z), w: how many times
+  // taller than the ordinary cloud layer the slab is stretched for towers.
+  clouds4: vec4<f32>,
 };
 
 struct WorldInfo {

@@ -125,6 +125,14 @@ projector model and the bundled fly-camera controller.
 | `resolutionScale` | `number?` | `0.5` | Cloud render resolution relative to the canvas, `0.25` to `1`. Lower is faster. |
 | `cirrus` | `number?` | `0.35` | Thin, high cirrus above the main clouds, `0` (none) to `1`. Needs a cloud style other than `"off"`. |
 | `cirrusHeightMetres` | `number?` | `9000` | Cirrus altitude, `1000` to `20000`. Always kept above the main cloud layer. |
+| `stratiform` | `number?` | `0` | Cloud type: `0` heaped cumulus to `1` a flat sheet (stratus, nimbostratus). Volumetric only. |
+| `towering` | `number?` | `0` | Towering storm clouds (cumulonimbus) with anvils, `0` to `1`. Towers rise up to 2.6 × `thicknessMetres`. Volumetric only. |
+| `baseDarkness` | `number?` | `0` | Darker, rain-laden bases, `0` to `1`. |
+| `raggedBase` | `number?` | `0` | Ragged bases with loose scraps of cloud (scud) beneath, `0` to `1`. |
+| `rainShafts` | `number?` | `0` | Curtains of rain or snow below the clouds, visible from a distance, `0` to `1`. |
+
+When the weather system drives clouds, it sets the five cloud-type fields
+for you (see [`docs/weather.md`](weather.md#cloud-types)).
 
 ## `MistOptions`
 
@@ -259,8 +267,9 @@ Passed to `engine.setWeather()`. Every field is optional. See
 `engine.getWeather()` returns the blended `WeatherState` (`from`, `to`,
 `blend`, `cloudCoverage`, `cloudDensity`, `mistDensity`,
 `windSpeedMetresPerSecond`, `windDirectionDegrees`, `rain`, `snow`,
-`wetness`, `snowCover`, `lightning`), or `undefined` when the weather is
-off.
+`wetness`, `snowCover`, `lightning`, and the cloud type: `stratiform`,
+`towering`, `baseDarkness`, `raggedBase`, `rainShafts`), or `undefined`
+when the weather is off.
 
 ## `ShadowOptions`
 

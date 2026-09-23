@@ -96,6 +96,26 @@ when a mountain rises into the cloud layer.
   - Clouds are rendered at `resolutionScale` (default half) of the canvas
     resolution and upsampled.
 
+### Cloud types
+
+Five fields change what kind of cloud the volumetric layer holds, and the
+weather system sets them for you when it drives the clouds:
+
+- **`stratiform`** blends heaped cumulus into a low, flat sheet (stratus,
+  or nimbostratus under rain).
+- **`towering`** grows storm cells, about 6 km apart, into cumulonimbus
+  towers that rise up to 2.6 times the layer thickness and spread into
+  anvils near the top.
+- **`baseDarkness`** makes cloud bases absorb more light, as rain-laden
+  clouds do. It also greys the sky under the weather system.
+- **`raggedBase`** roughens and lifts the underside and scatters loose
+  scraps of cloud (scud) beneath it.
+- **`rainShafts`** hangs curtains of rain or snow below the clouds. They
+  slant downwind and are lit by the cloud base above them.
+
+During a storm, lightning also lights the clouds around each strike from
+inside. All five default to `0`, which gives the fair-weather cumulus.
+
 ### Cirrus
 
 A thin, high cirrus layer (`cirrus`, default `0.35`, at

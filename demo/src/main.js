@@ -47,24 +47,31 @@ const inputs = {
   waveLength: input("waveLength"),
   waveDirection: input("waveDirection"),
   waveSteepness: input("waveSteepness"),
+  waveSpeed: input("waveSpeed"),
+  waveSpread: input("waveSpread"),
   currentSpeed: input("currentSpeed"),
   currentDirection: input("currentDirection"),
   waterClarity: input("waterClarity"),
   waterFoam: input("waterFoam"),
   riversEnabled: input("riversEnabled"),
   riverCatchment: input("riverCatchment"),
+  riverWidth: input("riverWidth"),
   riverCurrent: input("riverCurrent"),
   biomesEnabled: input("biomesEnabled"),
   biomeTemperature: input("biomeTemperature"),
   biomeMoisture: input("biomeMoisture"),
   biomeScale: input("biomeScale"),
   biomeVolcanism: input("biomeVolcanism"),
+  biomeBeachHeight: input("biomeBeachHeight"),
+  biomeSnowLineAuto: input("biomeSnowLineAuto"),
+  biomeSnowLine: input("biomeSnowLine"),
   floraEnabled: input("floraEnabled"),
   floraDensity: input("floraDensity"),
   treeLine: input("treeLine"),
   treeQuality: select("treeQuality"),
   speciesVariation: input("speciesVariation"),
   windStrength: input("windStrength"),
+  meshDistance: input("meshDistance"),
   grassEnabled: input("grassEnabled"),
   grassStyle: select("grassStyle"),
   grassDensity: input("grassDensity"),
@@ -79,6 +86,14 @@ const inputs = {
   cloudDensity: input("cloudDensity"),
   cloudShadows: input("cloudShadows"),
   cloudCirrus: input("cloudCirrus"),
+  cloudCirrusHeight: input("cloudCirrusHeight"),
+  cloudSteps: select("cloudSteps"),
+  cloudResolution: input("cloudResolution"),
+  cloudStratiform: input("cloudStratiform"),
+  cloudTowering: input("cloudTowering"),
+  cloudBaseDarkness: input("cloudBaseDarkness"),
+  cloudRaggedBase: input("cloudRaggedBase"),
+  cloudRainShafts: input("cloudRainShafts"),
   mistStyle: select("mistStyle"),
   mistDensity: input("mistDensity"),
   mistBaseHeight: input("mistBaseHeight"),
@@ -94,17 +109,29 @@ const inputs = {
   weatherTransition: input("weatherTransition"),
   weatherWindScale: input("weatherWindScale"),
   weatherPrecipitation: input("weatherPrecipitation"),
+  weatherDuration: input("weatherDuration"),
+  weatherEffectClouds: input("weatherEffectClouds"),
+  weatherEffectMist: input("weatherEffectMist"),
+  weatherEffectWind: input("weatherEffectWind"),
+  weatherEffectWater: input("weatherEffectWater"),
+  weatherEffectPrecipitation: input("weatherEffectPrecipitation"),
+  weatherEffectGround: input("weatherEffectGround"),
+  weatherEffectLightning: input("weatherEffectLightning"),
   terrainShadows: input("terrainShadows"),
   terrainShadowSoftness: input("terrainShadowSoftness"),
   treeShadows: input("treeShadows"),
   treeShadowDistance: input("treeShadowDistance"),
   treeShadowResolution: select("treeShadowResolution"),
+  treeShadowSoftness: input("treeShadowSoftness"),
+  cloudShadowsEnabled: input("cloudShadowsEnabled"),
+  cloudShadowStrength: input("cloudShadowStrength"),
   shadowStrength: input("shadowStrength"),
   surfaceTextures: input("surfaceTextures"),
   surfaceNormals: input("surfaceNormals"),
   surfaceTextureScale: input("surfaceTextureScale"),
   replaceTarget: select("replaceTarget"),
   replaceFile: input("replaceFile"),
+  palmBeaches: input("palmBeaches"),
   quality: select("quality"),
   debugView: select("debugView")
 };
@@ -115,8 +142,14 @@ const buttons = {
   downloadMap: button("downloadMap"),
   downloadModel: button("downloadModel"),
   downloadHeightmap: button("downloadHeightmap"),
-  resetTextures: button("resetTextures")
+  resetTextures: button("resetTextures"),
+  customModel: button("customModel"),
+  plantGrove: button("plantGrove")
 };
+
+let customModelActive = false;
+let groveActive = false;
+let lastCamera = null;
 
 const weatherReadout = document.querySelector("#weatherReadout");
 const WEATHER_NAMES = {
@@ -247,11 +280,14 @@ function applyWater() {
       amplitudeMetres: readNumber(inputs.waveAmplitude, 0.9),
       wavelengthMetres: readNumber(inputs.waveLength, 38),
       directionDegrees: readNumber(inputs.waveDirection, 35),
-      steepness: readNumber(inputs.waveSteepness, 0.55)
+      steepness: readNumber(inputs.waveSteepness, 0.55),
+      speed: readNumber(inputs.waveSpeed, 1),
+      directionalSpread: readNumber(inputs.waveSpread, 0.55)
     },
     rivers: {
       enabled: inputs.riversEnabled.checked,
       minCatchmentKm2: readNumber(inputs.riverCatchment, 0.15),
+      widthScale: readNumber(inputs.riverWidth, 1),
       currentSpeed: readNumber(inputs.riverCurrent, 1)
     },
     currentSpeed: readNumber(inputs.currentSpeed, 0.35),
@@ -267,7 +303,11 @@ function applyBiomes() {
     temperatureBias: readNumber(inputs.biomeTemperature, 0),
     moistureBias: readNumber(inputs.biomeMoisture, 0),
     climateScaleMetres: readNumber(inputs.biomeScale, 7000),
-    volcanism: readNumber(inputs.biomeVolcanism, 0.35)
+    volcanism: readNumber(inputs.biomeVolcanism, 0.35),
+    beachHeightMetres: readNumber(inputs.biomeBeachHeight, 5),
+    snowLineMetres: inputs.biomeSnowLineAuto.checked
+      ? undefined
+      : readNumber(inputs.biomeSnowLine, 1400)
   });
 }
 
@@ -280,7 +320,14 @@ function applyFlora() {
     maxInstances: 20000,
     treeQuality: inputs.treeQuality.value,
     speciesVariation: readNumber(inputs.speciesVariation, 0.6),
-    windStrength: readNumber(inputs.windStrength, 0.3)
+    windStrength: readNumber(inputs.windStrength, 0.3),
+    meshDistanceMetres: readNumber(inputs.meshDistance, 420),
+    speciesRules: inputs.palmBeaches.checked
+      ? [
+          { biome: "coastalBeach", species: [{ species: "palm", weight: 1 }], density: 1.5 },
+          { biome: "coastalRocky", species: [{ species: "palm", weight: 2 }, { species: "shrub", weight: 1 }] }
+        ]
+      : []
   });
 }
 
@@ -303,13 +350,20 @@ function applyClouds() {
     heightMetres: readNumber(inputs.cloudHeight, 1800),
     colour: [1, 1, 1],
     seedOffset: 9007,
-    raymarchSteps: 32,
+    raymarchSteps: readNumber(inputs.cloudSteps, 32),
     windDirectionDegrees: readNumber(inputs.cloudWindDirection, 70),
     evolution: readNumber(inputs.cloudEvolution, 0.35),
     thicknessMetres: readNumber(inputs.cloudThickness, 1600),
     density: readNumber(inputs.cloudDensity, 0.6),
     castShadows: inputs.cloudShadows.checked,
-    cirrus: readNumber(inputs.cloudCirrus, 0.35)
+    cirrus: readNumber(inputs.cloudCirrus, 0.35),
+    cirrusHeightMetres: readNumber(inputs.cloudCirrusHeight, 9000),
+    resolutionScale: readNumber(inputs.cloudResolution, 0.5),
+    stratiform: readNumber(inputs.cloudStratiform, 0),
+    towering: readNumber(inputs.cloudTowering, 0),
+    baseDarkness: readNumber(inputs.cloudBaseDarkness, 0),
+    raggedBase: readNumber(inputs.cloudRaggedBase, 0),
+    rainShafts: readNumber(inputs.cloudRainShafts, 0)
   });
 }
 
@@ -336,7 +390,17 @@ function applyWeather() {
     allowSnow: inputs.weatherAllowSnow.checked,
     transitionSeconds: readNumber(inputs.weatherTransition, 20),
     windScale: readNumber(inputs.weatherWindScale, 1),
-    precipitationScale: readNumber(inputs.weatherPrecipitation, 1)
+    precipitationScale: readNumber(inputs.weatherPrecipitation, 1),
+    stateDurationSeconds: readNumber(inputs.weatherDuration, 240),
+    effects: {
+      clouds: inputs.weatherEffectClouds.checked,
+      mist: inputs.weatherEffectMist.checked,
+      wind: inputs.weatherEffectWind.checked,
+      water: inputs.weatherEffectWater.checked,
+      precipitation: inputs.weatherEffectPrecipitation.checked,
+      ground: inputs.weatherEffectGround.checked,
+      lightning: inputs.weatherEffectLightning.checked
+    }
   });
 
   if (!inputs.weatherEnabled.checked && weatherReadout) {
@@ -356,7 +420,12 @@ function applyShadows() {
       enabled: inputs.treeShadows.checked,
       strength,
       distanceMetres: readNumber(inputs.treeShadowDistance, 260),
-      resolution: readNumber(inputs.treeShadowResolution, 2048)
+      resolution: readNumber(inputs.treeShadowResolution, 2048),
+      softness: readNumber(inputs.treeShadowSoftness, 0.5)
+    },
+    clouds: {
+      enabled: inputs.cloudShadowsEnabled.checked,
+      strength: readNumber(inputs.cloudShadowStrength, 0.78)
     }
   });
 }
@@ -380,6 +449,149 @@ async function replaceTextureFromFile() {
   const rgba = await imageToRgba(file);
   engine.replaceTexture(target, Number(layer), rgba);
   setStatus(`Replaced the ${inputs.replaceTarget.selectedOptions[0].textContent} texture.`);
+}
+
+// A stylised fir built in code, to show that any mesh can replace a
+// species: a bark trunk and four stacked needle cones, in metres with the
+// trunk base at the origin.
+function buildFirModel() {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+  const textureLayers = [];
+  const sides = 9;
+
+  function ring(y, radius, v, layer, slope) {
+    const start = positions.length / 3;
+
+    for (let i = 0; i <= sides; i += 1) {
+      const angle = (i / sides) * Math.PI * 2;
+      const x = Math.cos(angle);
+      const z = Math.sin(angle);
+      const length = Math.hypot(1, slope);
+      positions.push(x * radius, y, z * radius);
+      normals.push(x / length, slope / length, z / length);
+      // Tile the texture around and up the cone rather than stretching one
+      // copy over the whole surface.
+      uvs.push((i / sides) * 4, v * 3);
+      textureLayers.push(layer);
+    }
+
+    return start;
+  }
+
+  function join(lower, upper) {
+    for (let i = 0; i < sides; i += 1) {
+      indices.push(lower + i, upper + i, lower + i + 1, lower + i + 1, upper + i, upper + i + 1);
+    }
+  }
+
+  // Trunk: layer 1 is pine bark.
+  join(ring(0, 0.35, 0, 1, 0), ring(9, 0.12, 3, 1, 0));
+
+  // Needle cones: layer 6 is conifer needles (alpha-tested foliage).
+  const tiers = [
+    [2.5, 3.2, 7.5],
+    [5, 2.5, 9.5],
+    [7.5, 1.8, 11.5],
+    [10, 1.1, 13.5]
+  ];
+
+  for (const [bottom, radius, top] of tiers) {
+    const slope = radius / (top - bottom);
+    join(ring(bottom, radius, 0, 6, slope), ring(top, 0.05, 1, 6, slope));
+  }
+
+  return { positions, normals, uvs, indices, textureLayers };
+}
+
+function toggleCustomModel() {
+  if (!engine) {
+    return;
+  }
+
+  customModelActive = !customModelActive;
+
+  if (customModelActive) {
+    engine.setTreeModel("spruce", buildFirModel());
+    buttons.customModel.textContent = "Restore the procedural spruce";
+    setStatus("Spruce trees now use a custom model, including their impostors and shadows.");
+  } else {
+    engine.resetTreeModel("spruce");
+    buttons.customModel.textContent = "Replace spruce with a custom model";
+    setStatus("Restored the procedural spruce.");
+  }
+}
+
+function terrainHeightAt(x, z) {
+  if (!latestMetadata || !latestHeights) {
+    return null;
+  }
+
+  const { width, height, metresPerSample } = latestMetadata;
+  const column = Math.round(x / metresPerSample + (width - 1) / 2);
+  const row = Math.round(z / metresPerSample + (height - 1) / 2);
+
+  if (column < 0 || row < 0 || column >= width || row >= height) {
+    return null;
+  }
+
+  const view = new DataView(latestHeights.buffer, latestHeights.byteOffset, latestHeights.byteLength);
+  return view.getFloat32((row * width + column) * 4, true);
+}
+
+function toggleGrove() {
+  if (!engine) {
+    return;
+  }
+
+  if (groveActive) {
+    engine.setTreeInstances(undefined);
+    groveActive = false;
+    buttons.plantGrove.textContent = "Plant a hand-placed grove here";
+    setStatus("Restored procedural tree placement.");
+    return;
+  }
+
+  const centre = lastCamera?.target ?? [0, 0, 0];
+  const species = ["oak", "pine", "spruce", "acacia", "shrub"];
+  const trees = [];
+
+  // Three rings of trees around the point the camera is looking at.
+  for (let ringIndex = 1; ringIndex <= 3; ringIndex += 1) {
+    const count = ringIndex * 8;
+
+    for (let i = 0; i < count; i += 1) {
+      const angle = (i / count) * Math.PI * 2 + ringIndex;
+      const x = centre[0] + Math.cos(angle) * ringIndex * 14;
+      const z = centre[2] + Math.sin(angle) * ringIndex * 14;
+      const y = terrainHeightAt(x, z);
+
+      if (y === null || y <= readNumber(inputs.sea, 0)) {
+        continue;
+      }
+
+      trees.push({
+        x,
+        y,
+        z,
+        species: species[(i + ringIndex) % species.length],
+        scale: 0.8 + ((i * 7) % 5) * 0.1,
+        rotation: angle
+      });
+    }
+  }
+
+  if (trees.length === 0) {
+    setStatus("Look at dry land to plant a grove.");
+    return;
+  }
+
+  engine.setTreeInstances(trees);
+  groveActive = true;
+  buttons.plantGrove.textContent = "Restore procedural trees";
+  setStatus(`Planted ${trees.length} hand-placed trees; procedural trees are hidden until restored.`);
 }
 
 function applyQuality() {
@@ -479,6 +691,14 @@ async function generate() {
     const options = buildFractalOptions();
     const handle = await engine.generateFractal(options);
     latestMetadata = handle.metadata;
+
+    // Hand-placed trees belong to the old terrain.
+    if (groveActive) {
+      engine.setTreeInstances(undefined);
+      groveActive = false;
+      buttons.plantGrove.textContent = "Plant a hand-placed grove here";
+    }
+
     applyAllLiveControls();
     await refreshExportData();
     setStatus(`Seed ${options.seed} ready (${handle.metadata.width}x${handle.metadata.height}).`);
@@ -508,6 +728,8 @@ function wireLiveControls() {
     inputs.waveLength,
     inputs.waveDirection,
     inputs.waveSteepness,
+    inputs.waveSpeed,
+    inputs.waveSpread,
     inputs.currentSpeed,
     inputs.currentDirection,
     inputs.waterClarity,
@@ -518,7 +740,7 @@ function wireLiveControls() {
 
   // River changes re-carve the terrain, so apply them once the slider is
   // released rather than on every intermediate value.
-  for (const element of [inputs.riversEnabled, inputs.riverCatchment, inputs.riverCurrent]) {
+  for (const element of [inputs.riversEnabled, inputs.riverCatchment, inputs.riverWidth, inputs.riverCurrent]) {
     element.addEventListener("change", applyWater);
   }
 
@@ -528,16 +750,27 @@ function wireLiveControls() {
     inputs.biomeTemperature,
     inputs.biomeMoisture,
     inputs.biomeScale,
-    inputs.biomeVolcanism
+    inputs.biomeVolcanism,
+    inputs.biomeBeachHeight,
+    inputs.biomeSnowLineAuto,
+    inputs.biomeSnowLine
   ]) {
     element.addEventListener("change", applyBiomes);
   }
 
-  for (const element of [inputs.floraEnabled, inputs.floraDensity, inputs.treeLine, inputs.speciesVariation, inputs.windStrength]) {
+  for (const element of [
+    inputs.floraEnabled,
+    inputs.floraDensity,
+    inputs.treeLine,
+    inputs.speciesVariation,
+    inputs.windStrength,
+    inputs.meshDistance
+  ]) {
     element.addEventListener("input", applyFlora);
   }
 
   inputs.treeQuality.addEventListener("change", applyFlora);
+  inputs.palmBeaches.addEventListener("change", applyFlora);
 
   for (const element of [inputs.grassEnabled, inputs.grassDensity, inputs.grassViewDistance]) {
     element.addEventListener("input", applyGrass);
@@ -554,12 +787,20 @@ function wireLiveControls() {
     inputs.cloudThickness,
     inputs.cloudDensity,
     inputs.cloudShadows,
-    inputs.cloudCirrus
+    inputs.cloudCirrus,
+    inputs.cloudCirrusHeight,
+    inputs.cloudResolution,
+    inputs.cloudStratiform,
+    inputs.cloudTowering,
+    inputs.cloudBaseDarkness,
+    inputs.cloudRaggedBase,
+    inputs.cloudRainShafts
   ]) {
     element.addEventListener("input", applyClouds);
   }
 
   inputs.cloudStyle.addEventListener("change", applyClouds);
+  inputs.cloudSteps.addEventListener("change", applyClouds);
 
   for (const element of [
     inputs.mistDensity,
@@ -581,7 +822,15 @@ function wireLiveControls() {
     inputs.weatherAllowSnow,
     inputs.weatherTransition,
     inputs.weatherWindScale,
-    inputs.weatherPrecipitation
+    inputs.weatherPrecipitation,
+    inputs.weatherDuration,
+    inputs.weatherEffectClouds,
+    inputs.weatherEffectMist,
+    inputs.weatherEffectWind,
+    inputs.weatherEffectWater,
+    inputs.weatherEffectPrecipitation,
+    inputs.weatherEffectGround,
+    inputs.weatherEffectLightning
   ]) {
     element.addEventListener("input", applyWeather);
   }
@@ -593,7 +842,10 @@ function wireLiveControls() {
     inputs.terrainShadowSoftness,
     inputs.treeShadows,
     inputs.treeShadowDistance,
-    inputs.shadowStrength
+    inputs.treeShadowSoftness,
+    inputs.shadowStrength,
+    inputs.cloudShadowsEnabled,
+    inputs.cloudShadowStrength
   ]) {
     element.addEventListener("input", applyShadows);
   }
@@ -610,6 +862,20 @@ function wireLiveControls() {
 
   inputs.replaceFile.addEventListener("change", () => {
     replaceTextureFromFile().catch(showError);
+  });
+  buttons.customModel.addEventListener("click", () => {
+    try {
+      toggleCustomModel();
+    } catch (error) {
+      showError(error);
+    }
+  });
+  buttons.plantGrove.addEventListener("click", () => {
+    try {
+      toggleGrove();
+    } catch (error) {
+      showError(error);
+    }
   });
   buttons.resetTextures.addEventListener("click", () => {
     engine?.resetTextures();
@@ -684,6 +950,7 @@ async function run() {
     initialPitchDegrees: -12,
     moveSpeedMetresPerSecond: 120,
     onCameraChange: (camera) => {
+      lastCamera = camera;
       const yaw = Math.atan2(
         camera.target[0] - camera.position[0],
         camera.target[2] - camera.position[2]
@@ -723,7 +990,8 @@ async function run() {
       `Triangles ${stats.terrainTriangles.toLocaleString()}`,
       `Flora instances ${stats.floraInstances.toLocaleString()}`,
       `Grass instances ${stats.grassInstances.toLocaleString()}`,
-      `Clipmap levels ${stats.clipmapLevels}`
+      `Clipmap levels ${stats.clipmapLevels}`,
+      `Weather ${stats.weather ? WEATHER_NAMES[stats.weather] : "off"}`
     ].join("\n");
   });
 
