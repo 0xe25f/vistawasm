@@ -406,6 +406,8 @@ function applyWeather() {
   if (!inputs.weatherEnabled.checked && weatherReadout) {
     weatherReadout.textContent = "Weather: off";
   }
+
+  syncWeatherChips();
 }
 
 function applyShadows() {
@@ -592,6 +594,82 @@ function toggleGrove() {
   groveActive = true;
   buttons.plantGrove.textContent = "Restore procedural trees";
   setStatus(`Planted ${trees.length} hand-placed trees; procedural trees are hidden until restored.`);
+}
+
+// Show each slider's current value beside its label.
+function initialiseSliderReadouts() {
+  for (const slider of document.querySelectorAll('.controls input[type="range"]')) {
+    const label = slider.closest("label");
+
+    if (!label) {
+      continue;
+    }
+
+    const readout = document.createElement("span");
+    const step = slider.step && slider.step !== "any" ? slider.step : "1";
+    const decimals = step.includes(".") ? step.split(".")[1].length : 0;
+    readout.className = "value";
+    readout.setAttribute("aria-hidden", "true");
+    label.insertBefore(readout, slider);
+
+    const update = () => {
+      readout.textContent = Number(slider.value).toFixed(decimals);
+    };
+
+    slider.addEventListener("input", update);
+    update();
+  }
+}
+
+const SECTION_STORAGE_KEY = "vista-demo-open-sections";
+
+// Remember which sections are open. Browser storage can be unavailable
+// (private windows, blocked storage), so failures keep the defaults.
+function initialiseSections() {
+  const sections = document.querySelectorAll(".controls details.section");
+  let saved = null;
+
+  try {
+    saved = JSON.parse(localStorage.getItem(SECTION_STORAGE_KEY) ?? "null");
+  } catch {
+    saved = null;
+  }
+
+  for (const section of sections) {
+    if (Array.isArray(saved)) {
+      section.open = saved.includes(section.dataset.section);
+    }
+
+    section.addEventListener("toggle", () => {
+      const open = [...sections].filter((item) => item.open).map((item) => item.dataset.section);
+
+      try {
+        localStorage.setItem(SECTION_STORAGE_KEY, JSON.stringify(open));
+      } catch {
+        // Storage is optional; the sections still work without it.
+      }
+    });
+  }
+}
+
+function syncWeatherChips() {
+  for (const chip of document.querySelectorAll(".chip[data-weather]")) {
+    const active = inputs.weatherEnabled.checked && chip.dataset.weather === inputs.weatherState.value;
+    chip.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function wireWeatherChips() {
+  for (const chip of document.querySelectorAll(".chip[data-weather]")) {
+    chip.addEventListener("click", () => {
+      const active = chip.getAttribute("aria-pressed") === "true";
+      inputs.weatherEnabled.checked = !active;
+      inputs.weatherState.value = chip.dataset.weather;
+      applyWeather();
+    });
+  }
+
+  syncWeatherChips();
 }
 
 function applyQuality() {
@@ -1008,7 +1086,10 @@ async function run() {
     engine?.dispose();
   });
 
+  initialiseSections();
+  initialiseSliderReadouts();
   wireLiveControls();
+  wireWeatherChips();
   wireExportButtons();
   buttons.generate.addEventListener("click", () => {
     generate().catch(showError);

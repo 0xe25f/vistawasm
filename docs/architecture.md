@@ -121,8 +121,10 @@ three. Other setters only change uniforms.
     - grass (`shaders/grass_instances.wgsl`), alpha-tested.
 6. **Cloud pass** (`shaders/atmosphere.wgsl`, `cloud_main`) raymarches the
     clouds at a reduced resolution (`CloudsOptions.resolutionScale`,
-    default half) into an `rgba16float` target. Skipped when there are no
-    clouds.
+    default half) into an `rgba16float` target, blending cumulus, flat
+    sheets, and storm towers by the cloud-type options, and adds rain
+    shafts below the cloud base when they are enabled. Skipped when there
+    are no clouds.
 7. **Composite pass** (`shaders/atmosphere.wgsl`) onto the canvas: reads
     the HDR target, depth, and upsampled clouds, draws sky and sun, applies
     haze and mist along each pixel's true view ray, adds rain and snow, and
@@ -132,7 +134,7 @@ three. Other setters only change uniforms.
     mapped in the same way.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (576 bytes), the shared world
+declares the one `FrameUniforms` struct (608 bytes), the shared world
 textures (bind group 1), shadow receivers (bind group 2), the sky model,
 lighting, fog integrals, and every shadow lookup. Because there is exactly
 one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct

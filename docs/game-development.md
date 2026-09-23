@@ -167,10 +167,12 @@ than a single heightmap comfortably supports:
   of milliseconds (large terrain with many erosion iterations). Always show
   loading UI driven by the `"progress"` event while one is in flight, and
   disable "Generate" buttons/inputs until it resolves.
-- While an async call is in flight, sync calls (`setCamera`, `setSun`,
+- While an async call is in flight, sync setters (`setCamera`, `setSun`,
   `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`,
-  `setMist`, `setRenderQuality`, `setDebugView`, `resize`) are silently
-  skipped rather than queued or thrown — this is intentional (see the
+  `setMist`, `setWeather`, `setShadows`, `setSurface`, `setBiomes`,
+  `setRenderQuality`, `setDebugView`, `resize`) are silently skipped
+  rather than queued or thrown; the replacement hooks throw instead (see
+  [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#reentrancy)) — this is intentional (see the
   reentrancy note in [`docs/architecture.md`](architecture.md#lifecycle))
   and means your camera controller can keep calling `setCamera()` every frame without any
   special-casing around terrain generation. `renderOnce()` keeps returning
@@ -185,6 +187,15 @@ than a single heightmap comfortably supports:
   down first if you need frame time back; both have cheaper
   `"painted"`/`"flat"` equivalents that look nearly as good for far less
   cost (see [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md)).
+  After those, lower `CloudsOptions.resolutionScale`, the tree shadow map
+  (`ShadowOptions.trees.resolution` and `distanceMetres`), or switch tree
+  shadows off; terrain shadows are nearly free, since they are only
+  recalculated when the sun or terrain changes (see
+  [`docs/shadows.md`](shadows.md)).
+- Weather is a gameplay tool too: `getWeather()` reports rain, snow,
+  wetness, and wind every frame, and `"weatherChanged"` fires on each
+  change, so gameplay (slippery roads, sound, NPC shelter) can follow the
+  sky (see [`docs/weather.md`](weather.md)).
 - Watch `RenderStats.frameTimeMs` and
   `terrainTriangles`/`floraInstances`/`grassInstances` from the `"stats"`
   event to build your own performance HUD or adaptive quality logic (for

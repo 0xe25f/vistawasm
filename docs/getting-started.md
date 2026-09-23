@@ -179,7 +179,12 @@ frame renders against a disposed engine.
 - [`docs/vegetation.md`](vegetation.md) — trees and grass, quality tiers,
   and performance.
 - [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md) —
-  sun, atmosphere, clouds, and mist.
+  sun, atmosphere, clouds, cloud types, and mist.
+- [`docs/weather.md`](weather.md) — weather states, transitions, and
+  automatic cycling.
+- [`docs/shadows.md`](shadows.md) — terrain, tree, and cloud shadows.
+- [`docs/hooks.md`](hooks.md) — replacing tree models, placement, species
+  mixes, and textures with your own.
 - [`docs/biomes.md`](biomes.md) — biomes and how to shape them.
 - [`docs/water.md`](water.md) — ocean waves, currents, rivers, and lakes.
 - [`docs/camera-and-controls.md`](camera-and-controls.md) — camera model

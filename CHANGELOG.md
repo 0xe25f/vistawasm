@@ -8,86 +8,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-23
+
+A realism release: biomes, real trees, simulated water, weather, and
+shadows, with every system switchable, tunable, and replaceable. The
+public API only grows; see [Upgrading from 1.0.0](#upgrading-from-100)
+for changed defaults.
+
 ### Added
 
-- Climate-driven biomes: grassy meadows, outer thicket, outer and inner
-  forest, mountain foothills, mountain proper, outer volcanic, caldera,
-  savannah, coastal beach, coastal rocky, outer and inner jungle, swamp
-  wetlands, and ocean. New `BiomeOptions`, `engine.setBiomes()`,
-  `engine.biomeAt(x, z)`, and a `"biomes"` debug view.
-- Procedural textures generated on the GPU at start-up: eight terrain
-  materials with height, normal, occlusion, and roughness; bark, leaf,
-  needle, frond, and moss textures; water ripples; 2D and 3D noise.
-- Eight procedurally modelled tree species (oak, pine, spruce, palm,
+- **Biomes.** Fifteen climate-driven biomes: grassy meadows, outer
+  thicket, outer and inner forest, mountain foothills, mountain proper,
+  outer volcanic, caldera, savannah, coastal beach, coastal rocky, outer
+  and inner jungle, swamp wetlands, and ocean. New `BiomeOptions`,
+  `setBiomes()`, `biomeAt(x, z)`, and a `"biomes"` debug view.
+- **Procedural textures**, generated on the GPU at start-up with nothing
+  to download: eight terrain materials with height, normal, occlusion, and
+  roughness; bark, leaf, needle, frond, and moss textures; water ripples;
+  2D and 3D noise.
+- **Trees.** Eight procedurally modelled species (oak, pine, spruce, palm,
   jungle, cypress, acacia, shrub) with 3D meshes near the camera, baked
   impostors in the distance, GPU culling, and indirect draws.
-- Gerstner wave simulation (`WaterOptions.waves`), surface currents,
-  depth-based colour and clarity, foam, and shoaling surf.
-- Rivers and lakes from the terrain drainage network, carved into the
-  terrain, with flowing currents (`WaterOptions.rivers`).
-- Volumetric clouds with Perlin-Worley shapes, self-shadowing, wind
-  direction, billowing evolution, thickness, density, and moving cloud
-  shadows.
+- **Water.** Gerstner wave simulation (`WaterOptions.waves`), surface
+  currents, depth-based colour and clarity, foam, and shoaling surf; rivers
+  and lakes from the terrain's drainage network, carved into the terrain,
+  with flowing currents (`WaterOptions.rivers`).
+- **Weather.** Clear, partly cloudy, overcast, fog, rain, storm, and snow,
+  with smooth transitions, optional automatic cycling, and per-effect
+  control. It drives clouds, mist, wind, waves, falling rain and snow, wet
+  ground and puddles, settled snow, and lightning. New `WeatherOptions`,
+  `setWeather()`, `getWeather()`, `RenderStats.weather`, and the
+  `"weatherChanged"` event.
+- **Cloud types**: `CloudsOptions.stratiform`, `towering`,
+  `baseDarkness`, `raggedBase`, and `rainShafts`. Each weather state has
+  its own clouds: stratus when overcast, dark ragged nimbostratus with rain
+  shafts in rain, and cumulonimbus towers with anvils, rain shafts, and
+  lightning that lights the clouds from inside in storms.
+- **High cirrus**: `CloudsOptions.cirrus` and `cirrusHeightMetres`.
+- **Shadows** from terrain (a baked horizon map), trees (a sun shadow
+  map), and clouds, each configurable through `ShadowOptions` and
+  `setShadows()`.
+- **Replacement hooks** for your own assets: `setTreeModel()`,
+  `resetTreeModel()`, `setTreeInstances()`, `replaceTexture()`,
+  `resetTextures()`, `FloraOptions.speciesRules`, and the `imageToRgba()`
+  helper.
+- **Surface options**: `SurfaceOptions` and `setSurface()` for flat-colour
+  mode, detail normals, texture scale, and per-material tints.
+- `CloudsOptions.resolutionScale`: clouds render at a reduced resolution,
+  half by default.
 - Mist wind drift and sun scattering.
-- `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views now
-  render.
-- Weather system: clear, partly cloudy, overcast, fog, rain, storm, and
-  snow, with smooth transitions, optional automatic cycling, and per-effect
-  control. Rain and snow fall, ground gets wet with puddles, snow settles,
-  and storms bring lightning. New `setWeather()`, `getWeather()`,
-  `RenderStats.weather`, and the `"weatherChanged"` event.
-- Shadows from terrain (baked horizon map), trees (sun shadow map), and
-  clouds, each configurable through `ShadowOptions` and `setShadows()`.
-- Replacement hooks: `setTreeModel()`, `resetTreeModel()`,
-  `setTreeInstances()`, `replaceTexture()`, `resetTextures()`,
-  `FloraOptions.speciesRules`, and the `imageToRgba()` helper.
-- `SurfaceOptions` and `setSurface()`: flat-colour mode, detail normals,
-  texture scale, and per-material tints.
-- `CloudsOptions.resolutionScale`: clouds render at half resolution by
-  default.
-- High cirrus layer: `CloudsOptions.cirrus` and `cirrusHeightMetres`.
-- Cloud types: `CloudsOptions.stratiform`, `towering`, `baseDarkness`,
-  `raggedBase`, and `rainShafts`. Each weather state now has its own
-  clouds: stratus when overcast, dark ragged nimbostratus with rain shafts
-  in rain, and cumulonimbus towers with anvils, rain shafts, and lightning
-  that lights the clouds from inside in storms. `WeatherState` reports
-  the cloud type in use.
-- The demo links to the GitHub repository and exposes every option:
-  weather (including each effect), shadows, surface, cloud types, cirrus,
-  cloud quality, wave speed and spread, river width, beach height, snow
-  line, and tree mesh distance. A "Custom assets" panel shows each hook:
-  a custom tree model built in JavaScript, a species rule, a hand-placed
-  grove, and texture replacement from an image file. The stats panel
-  shows the current weather.
+- New guides: `docs/weather.md`, `docs/shadows.md`, `docs/hooks.md`, and
+  `docs/biomes.md`.
+- **Demo.** A link to the GitHub repository; collapsible sections with
+  remembered state; value readouts on every slider; one-click weather
+  presets; and controls for every option, including weather effects,
+  shadows, surface, cloud types, and cloud quality. A "Custom assets"
+  panel demonstrates each hook: a custom tree model built in JavaScript, a
+  species rule, a hand-placed grove, and texture replacement from an
+  image file.
 
 ### Changed
 
-- `FloraOptions.treeQuality` defaults to `"mesh"`, `speciesVariation` to
-  `0.6`, and `windStrength` to `0.3`. `"billboard"` and `"cross-quad"` now
-  draw impostors of the real tree models.
+- Volumetric clouds are rebuilt: an adaptive march that refines cloud
+  edges, multiple-scattering lighting with bright tops and darker bases,
+  distance-aware detail, and a stable dither. They no longer look grainy
+  or like cotton wool, and they form rounded domes rather than columns.
 - Rendering is linear HDR with ACES tone mapping and a single-scattering
   sky model shared by every shader; haze and mist are applied in a
   depth-aware composite pass.
-- `CloudsOptions.heightMetres` defaults to `1800` and `raymarchSteps` to
-  `32`.
-- Water now extends to the horizon instead of stopping at the terrain edge.
-- Animation uses a real-time clock instead of a frame counter.
-- `setWater`, `setFlora`, `setGrass`, `setClouds`, and `setMist` now
-  validate their input at the JavaScript boundary.
-- Volumetric clouds are rebuilt for realism: an adaptive march that
-  refines cloud edges, multiple-scattering lighting with darker bases and
-  bright tops, distance-aware detail, and a stable dither. They no longer
-  look grainy or like cotton wool, and they narrow into rounded domes.
+- Water extends to the horizon instead of stopping at the terrain edge.
+- Animation uses a real-time clock instead of a frame counter, and wind
+  drift is integrated over time, so changing the wind never makes clouds,
+  mist, or currents jump.
+- `setWater`, `setFlora`, `setGrass`, `setClouds`, `setMist`, and every
+  new setter validate their input at the JavaScript boundary.
+- Smaller, faster builds: release builds use link-time optimisation, one
+  codegen unit, size optimisation, and `panic = "abort"`; shaders are
+  minified at build time, `common.wgsl` is embedded once instead of once
+  per shader, and each shader module is compiled once. The optimised WASM
+  binary is 584 KB (226 KB gzipped).
+- The minimum Rust version for building from source is 1.87, which wgpu
+  30 requires. The development notes list exact tool versions and a
+  fresh-setup sequence.
+
+### Fixed
+
+- The `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views
+  now render.
 - The sun disc no longer shines through thick cloud or an overcast sky.
-- The minimum Rust version is now 1.87, which wgpu 30 requires; the
-  development notes list exact tool versions and a fresh-setup sequence.
-- Release builds use link-time optimisation, one codegen unit, size
-  optimisation, and `panic = "abort"`. Shaders are minified at build time
-  and `common.wgsl` is embedded once instead of once per shader.
+- The declared minimum Rust version (1.82) was too old to build the
+  project.
 
 ### Removed
 
-- `shaders/flora_instances.wgsl` (replaced by `shaders/trees.wgsl`).
+- `shaders/flora_instances.wgsl`, replaced by `shaders/trees.wgsl`.
+
+### Upgrading from 1.0.0
+
+No code changes are needed; every new option is optional. Some defaults
+changed, so scenes look (and cost) different:
+
+- `FloraOptions.treeQuality` defaults to `"mesh"`, `speciesVariation` to
+  `0.6`, and `windStrength` to `0.3`. `"billboard"` and `"cross-quad"`
+  draw impostors of the real tree models.
+- `CloudsOptions.heightMetres` defaults to `1800` and `raymarchSteps` to
+  `32`. Clouds render at half resolution (`resolutionScale: 0.5`) and add
+  a thin cirrus layer (`cirrus: 0.35`); set `cirrus: 0` to remove it.
+- Terrain, tree, and cloud shadows are on by default. Pass
+  `shadows: { terrain: { enabled: false }, trees: { enabled: false } }`
+  for the 1.0.0 look, or lower `trees.resolution` on weak GPUs.
+- The weather system is off by default, so existing cloud, mist, and water
+  settings behave as before until you enable it.
 
 ## [1.0.0] — 2026-07-10
 
@@ -134,5 +165,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terrain data, vegetation, sky and weather, water, camera and controls,
   render quality, export, events and errors, architecture, and contributing.
 
-[Unreleased]: https://github.com/0xe25f/vistawasm/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/0xe25f/vistawasm/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/0xe25f/vistawasm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/0xe25f/vistawasm/releases/tag/v1.0.0

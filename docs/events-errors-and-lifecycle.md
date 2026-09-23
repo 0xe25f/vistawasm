@@ -47,6 +47,7 @@ unsubscribe();
 | `"warning"` | `{ message: string; details?: unknown }` | Once per entry in `TerrainHandle.metadata.warnings`, after a successful `loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap`. **Not currently emitted after `generateFractal()`**, even though its returned handle has the same `warnings` field (fractal generation practically never produces warnings today). |
 | `"terrainLoaded"` | `TerrainHandle` | After every successful `generateFractal`/`loadDemFromArrayBuffer`/`loadDemFromUrl`/`loadRawHeightmap` call. |
 | `"stats"` | `RenderStats` | Once per frame, but **only** when the engine's own `start()` loop is driving rendering. If you call `renderOnce()` from your own loop instead (see [`docs/game-development.md`](game-development.md#1-where-vistawasm-fits-in-a-game-loop)), you already have the `RenderStats` as the method's return value and do not need this event. |
+| `"weatherChanged"` | `WeatherKind \| null` | When the dominant weather changes (halfway through a transition), and `null` when the weather system is switched off. Checked on every `renderOnce()`, whether called by `start()` or by you. See [`docs/weather.md`](weather.md#reading-the-weather). |
 | `"fatalError"` | `Error` (a `VistaWasmError`) | From the `start()` loop's internal catch, for any error other than a lost device. The loop stops itself before emitting this. |
 | `"deviceLost"` | `Error` (a `VistaWasmError` with code `WEBGPU_DEVICE_LOST`) | From the `start()` loop's internal catch, specifically for a lost GPU device. The loop stops itself before emitting this — VistaWASM does not attempt automatic device recreation; dispose and create a new engine. |
 
@@ -98,11 +99,16 @@ awaiting erosion, would trip it if unguarded.
 The TypeScript wrapper guards against this so you never need to think
 about it directly:
 
-- Every synchronous method that touches the engine (`setCamera`, `setSun`,
-  `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`,
-  `setMist`, `setRenderQuality`, `setDebugView`, `resize`) silently
-  **no-ops** while an async call is in flight, rather than throwing or
-  queuing.
+- Every synchronous setter (`setCamera`, `setSun`, `setAtmosphere`,
+  `setWater`, `setFlora`, `setGrass`, `setClouds`, `setMist`,
+  `setWeather`, `setShadows`, `setSurface`, `setRenderQuality`,
+  `setBiomes`, `setDebugView`, `resize`) silently **no-ops** while an
+  async call is in flight, rather than throwing or queuing.
+  `getWeather()` and `biomeAt()` return `undefined`.
+- The replacement hooks (`setTreeModel`, `resetTreeModel`,
+  `setTreeInstances`, `replaceTexture`, `resetTextures`) **throw** a
+  `VistaWasmError` instead, because silently dropping a one-off asset
+  change would leave the scene wrong. Await the terrain call first.
 - `renderOnce()` returns the last real `RenderStats` during that window
   instead of calling into the busy engine.
 - `exportHeightmap()` throws a clear, catchable `VistaWasmError` instead of

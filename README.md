@@ -62,21 +62,36 @@ This repository contains a working terrain engine with a browser-first API:
   depth-based colour and clarity, sky and cloud reflections, sun glitter,
   and foam; plus rivers and lakes extracted from the terrain's drainage
   network, carved into the terrain, with flowing currents and rapids.
-- A physically based sky and weather: a single-scattering atmosphere
-  shared by every shader, volumetric Perlin-Worley clouds with
-  self-shadowing, silver linings, wind drift, billowing, and moving cloud
-  shadows, and drifting, sun-lit ground mist integrated along every view
-  ray. Lighting is linear HDR with ACES tone mapping.
+- A physically based sky: a single-scattering atmosphere shared by every
+  shader, and volumetric clouds with multiple-scattering light, silver
+  linings, wind drift, and moving shadows. Cloud types range from
+  fair-weather cumulus through grey sheets to towering storm clouds with
+  anvils and rain shafts, with a thin cirrus layer above. Drifting,
+  sun-lit ground mist is integrated along every view ray. Lighting is
+  linear HDR with ACES tone mapping.
+- A weather system: clear, partly cloudy, overcast, fog, rain, storm, and
+  snow, with smooth transitions and optional automatic cycling. It drives
+  clouds, mist, wind, waves, falling rain and snow, wet ground and
+  puddles, settled snow, and lightning, each of which can be left under
+  your own control (`setWeather()`, `getWeather()`).
+- Shadows from hills and mountains, trees, and clouds, each switchable and
+  tunable (`setShadows()`).
+- Replacement hooks for your own assets: tree models, per-biome species
+  mixes, hand-placed trees, and terrain and tree textures
+  (`setTreeModel()`, `setTreeInstances()`, `replaceTexture()`), plus
+  surface options for flat colours, texture scale, and material tints.
 - An opt-in grass ground-cover layer with climate-tinted blades.
 - Terrain export helpers: a top-down hypsometric minimap/PNG export
   (`renderHeightmapToCanvas`/`exportHeightmapImage`), a Wavefront OBJ 3D
   model export (`exportTerrainObj`), a raw heightmap download, and a canvas
   PNG screenshot (`exportSnapshot`).
-- A fully-featured demo and four framework examples (vanilla, React, Vue,
-  Svelte) that all expose the same rich control panel: terrain shape and
-  erosion, sun and atmosphere, water, vegetation, grass, clouds, mist,
-  render quality, debug views, a live minimap, and every export button
-  above.
+- A fully-featured demo that exposes every option, including weather,
+  shadows, cloud types, surface controls, and a panel demonstrating each
+  replacement hook, plus a live minimap and every export button above.
+- Four framework examples (vanilla, React, Vue, Svelte) with a control
+  panel for the core features: terrain shape and erosion, sun and
+  atmosphere, water, vegetation, grass, clouds, mist, render quality, debug
+  views, and exports.
 
 Unsupported DEM compression returns a clear error.
 

@@ -1,6 +1,6 @@
 {
   "name": "@vista-wasm/vista-wasm",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "VistaWASM is a Rust and WebAssembly terrain engine for modern browsers with WebGPU.",
   "type": "module",
   "sideEffects": false,

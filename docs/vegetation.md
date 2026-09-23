@@ -125,3 +125,7 @@ water stay in step.
   cheapest vegetation configuration.
 - `RenderStats.floraInstances` and `RenderStats.grassInstances` report how
   many instances exist; use them to drive adaptive quality.
+- Trees cast shadows within `ShadowOptions.trees.distanceMetres` of the
+  camera. Each shadow costs two triangles, but a smaller distance or
+  shadow map (`resolution`) helps on weak GPUs (see
+  [`docs/shadows.md`](shadows.md)).

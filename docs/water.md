@@ -114,6 +114,14 @@ When `MistOptions.riseAboveWater` is enabled, extra mist appears near
 `seaLevelMetres`. This only takes effect while `WaterOptions.enabled` is
 `true`.
 
+## Interaction with weather
+
+While the weather system drives water (`WeatherOptions.effects.water`,
+on by default), wind raises and steepens the swell, turns it and the
+current downwind, and adds foam in strong wind. Rain also rings the
+surface with raindrop ripples. Switch the effect off to keep your own wave
+settings. See [`docs/weather.md`](weather.md).
+
 ## What water does not do
 
 - No buoyancy or gameplay interaction. Compare your own height query (see

@@ -152,14 +152,25 @@ regeneration on every input change cheap.
   falloff modulated by drifting noise, for mist that visibly moves);
   `riseAboveWater` adds extra mist near `WaterOptions.seaLevelMetres`
   regardless of `baseHeightMetres`, for a "mist rising off the lake" look.
-- `CloudsOptions.style` adds an optional cloud layer to the sky dome:
-  `"painted"` is a single, cheap noise sample at `heightMetres` (the
-  default once enabled); `"volumetric"` raymarches a thin band around that
-  altitude for real depth and sun-facing shading, at a real GPU cost —
-  reserve it for a `RenderQualityOptions.preset` of `"high"` or
-  `"offline"` rather than `"preview"`/`"balanced"`. `coverage` runs from
-  `0` (clear) to `1` (overcast); values in the middle (`0.3`–`0.5`) give
-  the most visually interesting patchy sky.
+- `CloudsOptions.style` adds an optional cloud layer: `"painted"` is a
+  single, cheap noise layer at `heightMetres`; `"volumetric"` raymarches
+  real 3D clouds with self-shadowing, silver linings, and moving shadows,
+  at a real GPU cost. `coverage` runs from `0` (clear) to `1` (overcast);
+  values in the middle (`0.3`–`0.5`) give the most interesting patchy
+  sky. `cirrus` adds thin, high streaks above them. The cloud-type
+  options set the character of the sky: `stratiform` for a grey sheet,
+  `towering` for distant thunderstorms, `baseDarkness` and `raggedBase`
+  for heavy rain cloud, and `rainShafts` for curtains of rain (see
+  [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md#cloud-types)).
+- For a sky that changes by itself, turn on the weather system
+  (`setWeather({ enabled: true, autoCycle: true })`). It drives clouds,
+  mist, wind, waves, rain, snow, wet ground, and lightning together, and
+  any of those can be left under your own control (see
+  [`docs/weather.md`](weather.md)).
+- Low sun and strong shadows sell a landscape's shape: mountains shadow
+  valleys and trees shadow the ground (see [`docs/shadows.md`](shadows.md)).
+  Soften them (`softness`) or lighten them (`strength`) for a hazier,
+  gentler mood.
 
 ## 6. Vegetation
 
@@ -183,7 +194,9 @@ are cheaper. Which species grow where is decided by the biome map — to
 change the character of a forest, shift the climate with
 `setBiomes({ temperatureBias, moistureBias })` (see
 [`docs/biomes.md`](biomes.md)). `speciesVariation` (0 to 1) controls size
-and colour variety; `windStrength` (0 to 1) drives gusting sway.
+and colour variety; `windStrength` (0 to 1) drives gusting sway. To choose
+the species yourself, give a biome a `speciesRules` entry; to use your own
+tree models, placement, or textures, see [`docs/hooks.md`](hooks.md).
 
 `GrassOptions` is a separate, independent ground-cover layer — unlike the
 other environmental options it defaults fully `enabled: false`, since it

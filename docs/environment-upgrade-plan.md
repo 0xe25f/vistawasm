@@ -72,7 +72,7 @@ below, recorded here rather than silently left inconsistent:
 
 | Area | File(s) | Today |
 | --- | --- | --- |
-| Trees | [`render/flora.rs`](../crates/vista_wasm/src/render/flora.rs), [`shaders/flora_instances.wgsl`](../crates/vista_wasm/src/shaders/flora_instances.wgsl) | One camera-facing billboard quad per tree, trunk/canopy carved with `discard`, one ellipse silhouette, one tint scalar. No mesh, no LOD, no wind. |
+| Trees | [`render/flora.rs`](../crates/vista_wasm/src/render/flora.rs), `shaders/flora_instances.wgsl` (since replaced by [`shaders/trees.wgsl`](../crates/vista_wasm/src/shaders/trees.wgsl)) | One camera-facing billboard quad per tree, trunk/canopy carved with `discard`, one ellipse silhouette, one tint scalar. No mesh, no LOD, no wind. |
 | Grass | [`terrain/materials.rs`](../crates/vista_wasm/src/terrain/materials.rs) | `grass` is a terrain *material weight* used only to tint the ground colour. There is no grass geometry. |
 | Clouds | [`shaders/atmosphere.wgsl`](../crates/vista_wasm/src/shaders/atmosphere.wgsl) | Analytic Rayleigh/Mie sky gradient, sun disc, horizon haze. No cloud layer of any kind. |
 | Mist/fog | [`shaders/clipmap_render.wgsl`](../crates/vista_wasm/src/shaders/clipmap_render.wgsl#L70-L75), `AtmosphereOptions.hazeDistanceMetres` | One `distance / hazeDistance` lerp to sky colour, applied only in the terrain shader. Flora and water do not receive it. |

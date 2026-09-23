@@ -30,8 +30,13 @@ of this value (the terrain mesh's actual vertex budget is fixed — see
 `GrassOptions`, `CloudsOptions.style`, or `MistOptions.style` — those
 default independently and a host sets each explicitly. The most effective
 per-feature levers are `CloudsOptions.raymarchSteps` (or `style:
-"painted"`), `FloraOptions.meshDistanceMetres`, and
-`GrassOptions.viewDistanceMetres`. If you want
+"painted"`), `CloudsOptions.resolutionScale` (clouds render at half
+resolution by default; `0.25` is cheaper still),
+`ShadowOptions.trees.resolution` and `distanceMetres`,
+`FloraOptions.meshDistanceMetres`, and `GrassOptions.viewDistanceMetres`.
+Storm weather (or `CloudsOptions.towering`) makes the cloud layer up to
+2.6 times as tall and costs more than fair weather; `rainShafts` adds a
+short march in the cloud pass. If you want
 "one dial" behaviour (cheap tiers at `"preview"`/`"balanced"`, expensive
 tiers at `"high"`/`"offline"`), implement that mapping yourself in your own
 UI/settings code.
@@ -54,6 +59,10 @@ platform: `gpuFrameTimeMs` and `activeGpuMemoryBytes` — the type reserves
 space for them, but no current backend populates either. Use
 `frameTimeMs` (measured by the JavaScript wrapper around the call into the
 WASM module) for real performance measurement instead.
+
+`weather` holds the dominant weather state while the weather system is
+on, and `null` otherwise; the `"weatherChanged"` event fires when it
+changes.
 
 `terrainTriangles`/`clipmapLevels` reflect the real uploaded terrain mesh
 on browser builds — a constant `512 × 512 × 2` triangle budget regardless
