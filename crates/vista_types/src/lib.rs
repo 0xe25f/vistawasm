@@ -686,6 +686,77 @@ fn default_mesh_distance() -> f32 {
   420.0
 }
 
+/// A tree species slot. Each slot has a procedural model that
+/// `setTreeModel` can replace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[repr(u8)]
+pub enum TreeSpeciesKind {
+  /// Broad, spreading deciduous oak.
+  Oak = 0,
+  /// Tall pine with a high, irregular crown.
+  Pine = 1,
+  /// Dense, conical spruce.
+  Spruce = 2,
+  /// Coconut palm.
+  Palm = 3,
+  /// Tall buttressed rainforest emergent.
+  Jungle = 4,
+  /// Bald cypress with hanging moss.
+  Cypress = 5,
+  /// Flat-topped savannah acacia.
+  Acacia = 6,
+  /// Low leafy shrub.
+  Shrub = 7,
+}
+
+impl TreeSpeciesKind {
+  /// Every species, in slot order.
+  pub const ALL: [TreeSpeciesKind; 8] = [
+    Self::Oak,
+    Self::Pine,
+    Self::Spruce,
+    Self::Palm,
+    Self::Jungle,
+    Self::Cypress,
+    Self::Acacia,
+    Self::Shrub,
+  ];
+
+  /// Slot index, 0 to 7.
+  pub fn index(self) -> usize {
+    self as usize
+  }
+}
+
+/// One weighted species choice in a [`FloraRule`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeciesWeight {
+  /// The species slot.
+  pub species: TreeSpeciesKind,
+  /// Relative weight. Weights in a rule do not need to sum to 1.
+  pub weight: f32,
+}
+
+fn default_rule_density() -> f32 {
+  1.0
+}
+
+/// Replaces the built-in species mix for one biome.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloraRule {
+  /// The biome this rule applies to.
+  pub biome: BiomeKind,
+  /// Species to plant, by relative weight. An empty list keeps the biome
+  /// treeless.
+  pub species: Vec<SpeciesWeight>,
+  /// Multiplier on the biome's tree density, 0 to 4.
+  #[serde(default = "default_rule_density")]
+  pub density: f32,
+}
+
 /// Flora placement controls.
 ///
 /// Tree species and density follow the biome under each tree, so jungles
@@ -717,6 +788,10 @@ pub struct FloraOptions {
   /// 3D meshes to impostors.
   #[serde(default = "default_mesh_distance")]
   pub mesh_distance_metres: f32,
+  /// Per-biome species rules that replace the built-in species mix.
+  /// Biomes without a rule keep the built-in mix.
+  #[serde(default)]
+  pub species_rules: Vec<FloraRule>,
 }
 
 impl Default for FloraOptions {
@@ -731,6 +806,7 @@ impl Default for FloraOptions {
       species_variation: default_species_variation(),
       wind_strength: default_wind_strength(),
       mesh_distance_metres: default_mesh_distance(),
+      species_rules: Vec::new(),
     }
   }
 }
@@ -859,6 +935,15 @@ pub struct CloudsOptions {
   /// Whether clouds cast moving shadows on the terrain and water.
   #[serde(default = "default_true")]
   pub cast_shadows: bool,
+  /// Resolution of the volumetric cloud pass relative to the canvas, from
+  /// 0.25 to 1. Clouds are soft, so half resolution (the default) looks
+  /// the same as full resolution at a quarter of the cost.
+  #[serde(default = "default_cloud_resolution")]
+  pub resolution_scale: f32,
+}
+
+fn default_cloud_resolution() -> f32 {
+  0.5
 }
 
 impl Default for CloudsOptions {
@@ -876,6 +961,7 @@ impl Default for CloudsOptions {
       thickness_metres: default_cloud_thickness(),
       density: default_cloud_density(),
       cast_shadows: true,
+      resolution_scale: default_cloud_resolution(),
     }
   }
 }
@@ -1091,6 +1177,280 @@ impl Default for BiomeOptions {
   }
 }
 
+/// A weather state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WeatherKind {
+  /// Blue sky, light breeze.
+  Clear,
+  /// Scattered fair-weather cumulus.
+  #[default]
+  PartlyCloudy,
+  /// Full, grey cloud cover.
+  Overcast,
+  /// Low cloud and thick ground fog.
+  Fog,
+  /// Steady rain under dark cloud.
+  Rain,
+  /// Heavy rain, strong gusting wind, rough water, and lightning.
+  Storm,
+  /// Falling snow that settles on the ground and trees.
+  Snow,
+}
+
+/// Which systems the weather drives. Anything switched off here keeps its
+/// own manual settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WeatherEffects {
+  /// Cloud coverage, density, and thickness.
+  pub clouds: bool,
+  /// Ground mist and haze.
+  pub mist: bool,
+  /// Wind for trees, grass, clouds, mist, and water.
+  pub wind: bool,
+  /// Wave height, choppiness, and current.
+  pub water: bool,
+  /// Rain and snow falling.
+  pub precipitation: bool,
+  /// Wet ground, puddles, and settled snow.
+  pub ground: bool,
+  /// Lightning flashes during storms.
+  pub lightning: bool,
+}
+
+impl Default for WeatherEffects {
+  fn default() -> Self {
+    Self {
+      clouds: true,
+      mist: true,
+      wind: true,
+      water: true,
+      precipitation: true,
+      ground: true,
+      lightning: true,
+    }
+  }
+}
+
+/// Weather pattern controls.
+///
+/// The weather system blends between weather states over time and drives
+/// clouds, mist, wind, water, precipitation, ground wetness, snow cover,
+/// and lightning from one place. With `autoCycle`, it moves through a
+/// plausible sequence of states (clear skies cloud over, rain, clear
+/// again) that is deterministic for a given seed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WeatherOptions {
+  /// Whether the weather system is active. When `false`, clouds, mist,
+  /// wind, and water use their own settings unchanged.
+  pub enabled: bool,
+  /// The weather to move towards (or start from, with `autoCycle`).
+  pub state: WeatherKind,
+  /// Automatically move on to new weather over time.
+  pub auto_cycle: bool,
+  /// Average time each state lasts when cycling, in seconds.
+  pub state_duration_seconds: f32,
+  /// Time taken to blend from one state to the next, in seconds.
+  pub transition_seconds: f32,
+  /// Whether snow may occur when cycling.
+  pub allow_snow: bool,
+  /// Seed for the weather sequence and gusts.
+  pub seed_offset: u64,
+  /// Prevailing wind direction in degrees (the direction the wind blows
+  /// towards).
+  pub wind_direction_degrees: f32,
+  /// Multiplier on each state's wind speed.
+  pub wind_scale: f32,
+  /// Multiplier on rain and snow intensity.
+  pub precipitation_scale: f32,
+  /// Which systems the weather drives.
+  pub effects: WeatherEffects,
+}
+
+impl Default for WeatherOptions {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      state: WeatherKind::default(),
+      auto_cycle: false,
+      state_duration_seconds: 240.0,
+      transition_seconds: 30.0,
+      allow_snow: false,
+      seed_offset: 4_111,
+      wind_direction_degrees: 70.0,
+      wind_scale: 1.0,
+      precipitation_scale: 1.0,
+      effects: WeatherEffects::default(),
+    }
+  }
+}
+
+/// The current, blended weather, as reported by `getWeather()`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeatherState {
+  /// The state being left.
+  pub from: WeatherKind,
+  /// The state being approached.
+  pub to: WeatherKind,
+  /// Blend from `from` (0) to `to` (1).
+  pub blend: f32,
+  /// Cloud coverage, 0 to 1.
+  pub cloud_coverage: f32,
+  /// Cloud density, 0 to 1.
+  pub cloud_density: f32,
+  /// Ground mist density, 0 to 1.
+  pub mist_density: f32,
+  /// Wind speed in metres per second, including gusts.
+  pub wind_speed_metres_per_second: f32,
+  /// Wind direction in degrees.
+  pub wind_direction_degrees: f32,
+  /// Rain intensity, 0 to 1.
+  pub rain: f32,
+  /// Snowfall intensity, 0 to 1.
+  pub snow: f32,
+  /// Ground wetness, 0 (dry) to 1 (puddles); lags behind the rain.
+  pub wetness: f32,
+  /// Settled snow, 0 to 1; builds up and melts slowly.
+  pub snow_cover: f32,
+  /// Current lightning flash brightness, 0 to 1.
+  pub lightning: f32,
+}
+
+/// Terrain self-shadowing controls.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TerrainShadowOptions {
+  /// Whether hills and mountains cast shadows.
+  pub enabled: bool,
+  /// Shadow darkness, 0 to 1.
+  pub strength: f32,
+  /// Penumbra width, 0 (hard) to 1 (very soft).
+  pub softness: f32,
+}
+
+impl Default for TerrainShadowOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      strength: 0.9,
+      softness: 0.35,
+    }
+  }
+}
+
+/// Tree shadow controls.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TreeShadowOptions {
+  /// Whether trees cast shadows on the ground, grass, water, and each
+  /// other.
+  pub enabled: bool,
+  /// Radius around the camera, in metres, within which trees cast
+  /// shadows.
+  pub distance_metres: f32,
+  /// Shadow map resolution: 512, 1024, 2048, or 4096.
+  pub resolution: u32,
+  /// Shadow darkness, 0 to 1.
+  pub strength: f32,
+  /// Filter width, 0 (sharp) to 1 (soft).
+  pub softness: f32,
+}
+
+impl Default for TreeShadowOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      distance_metres: 260.0,
+      resolution: 2048,
+      strength: 0.8,
+      softness: 0.5,
+    }
+  }
+}
+
+/// Cloud shadow controls. Cloud shadows also require
+/// `CloudsOptions.castShadows`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CloudShadowOptions {
+  /// Whether clouds cast shadows.
+  pub enabled: bool,
+  /// Shadow darkness, 0 to 1.
+  pub strength: f32,
+}
+
+impl Default for CloudShadowOptions {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      strength: 0.78,
+    }
+  }
+}
+
+/// Shadow controls for terrain, trees, and clouds.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShadowOptions {
+  /// Hills and mountains shadowing the landscape.
+  pub terrain: TerrainShadowOptions,
+  /// Trees shadowing the ground and each other.
+  pub trees: TreeShadowOptions,
+  /// Clouds shadowing everything below them.
+  pub clouds: CloudShadowOptions,
+}
+
+fn default_material_tints() -> [Rgb; 8] {
+  [[1.0, 1.0, 1.0]; 8]
+}
+
+/// A baked texture array that host textures can replace, one layer at a
+/// time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextureTarget {
+  /// Terrain material colour (rgb, sRGB) and height (a), one layer per
+  /// material in [`SurfaceOptions::material_tints`] order.
+  TerrainAlbedo,
+  /// Terrain material normal (rg, tangent space), occlusion (b), and
+  /// roughness (a).
+  TerrainNormal,
+  /// Bark and foliage colour (rgb, sRGB) with alpha coverage.
+  Flora,
+}
+
+/// Terrain surface shading controls.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SurfaceOptions {
+  /// Use the detailed, textured materials. When `false`, each material is
+  /// a flat colour, which is cheaper on low-end GPUs.
+  pub textures: bool,
+  /// Use detail normal maps.
+  pub detail_normals: bool,
+  /// Multiplier on every material's texture size (larger values stretch
+  /// textures over more ground).
+  pub texture_scale: f32,
+  /// Colour multiplier per material, in the order lush grass, dry grass,
+  /// forest floor, sand, rock, snow, mud, volcanic.
+  #[serde(default = "default_material_tints")]
+  pub material_tints: [Rgb; 8],
+}
+
+impl Default for SurfaceOptions {
+  fn default() -> Self {
+    Self {
+      textures: true,
+      detail_normals: true,
+      texture_scale: 1.0,
+      material_tints: default_material_tints(),
+    }
+  }
+}
+
 /// Render quality preset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1183,6 +1543,10 @@ pub struct RenderStats {
   pub clipmap_levels: u32,
   /// Optional active GPU memory estimate.
   pub active_gpu_memory_bytes: Option<u64>,
+  /// The weather state currently dominating, or `None` when the weather
+  /// system is disabled.
+  #[serde(default)]
+  pub weather: Option<WeatherKind>,
 }
 
 impl Default for RenderStats {
@@ -1196,6 +1560,7 @@ impl Default for RenderStats {
       grass_instances: 0,
       clipmap_levels: 0,
       active_gpu_memory_bytes: None,
+      weather: None,
     }
   }
 }
@@ -1227,6 +1592,15 @@ pub struct VistaEngineOptions {
   /// Optional initial biome controls.
   #[serde(default)]
   pub biomes: Option<BiomeOptions>,
+  /// Optional initial weather controls.
+  #[serde(default)]
+  pub weather: Option<WeatherOptions>,
+  /// Optional initial shadow controls.
+  #[serde(default)]
+  pub shadows: Option<ShadowOptions>,
+  /// Optional initial terrain surface controls.
+  #[serde(default)]
+  pub surface: Option<SurfaceOptions>,
 }
 
 impl Default for VistaEngineOptions {
@@ -1243,6 +1617,9 @@ impl Default for VistaEngineOptions {
       mist: Some(MistOptions::default()),
       quality: Some(RenderQualityOptions::default()),
       biomes: Some(BiomeOptions::default()),
+      weather: Some(WeatherOptions::default()),
+      shadows: Some(ShadowOptions::default()),
+      surface: Some(SurfaceOptions::default()),
     }
   }
 }

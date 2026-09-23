@@ -1,8 +1,9 @@
 use vista_types::{
   AtmosphereOptions, BiomeKind, BiomeOptions, CameraOptions, CloudsOptions, DebugView,
   DemLoadOptions, EngineState, FloraOptions, FractalTerrainOptions, GrassOptions, MistOptions,
-  RawHeightmapOptions, RenderQualityOptions, RenderStats, RiverOptions, SunOptions, TerrainHandle,
-  WaterOptions,
+  RawHeightmapOptions, RenderQualityOptions, RenderStats, RiverOptions, ShadowOptions, SunOptions,
+  SurfaceOptions, TerrainHandle, TextureTarget, TreeSpeciesKind, WaterOptions, WeatherOptions,
+  WeatherState,
 };
 
 use crate::camera::CameraProjector;
@@ -11,6 +12,8 @@ use crate::dem::{decode_geotiff, decode_raw_heightmap};
 use crate::errors::{VistaError, VistaResult};
 #[cfg(target_arch = "wasm32")]
 use crate::maths::{cross, normalise, sub};
+use crate::render::flora::TreeInstance;
+use crate::render::tree_models::{layers, mesh_from_arrays, TreeMesh};
 use crate::render::water::{build_river_network, restore_carving, RiverNetwork};
 use crate::terrain::biomes::SurfaceSample;
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,6 +21,14 @@ use crate::terrain::clipmap::build_clipmap_levels;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::generate_fractal_heightmap;
 use crate::terrain::HeightMap;
+use crate::weather::WeatherSystem;
+
+/// Edge length, in texels, of every replaceable texture layer.
+pub const TEXTURE_LAYER_SIZE: u32 = 512;
+/// Number of terrain material texture layers.
+pub const TERRAIN_TEXTURE_LAYERS: u32 = 8;
+/// Largest custom tree instance list accepted by `set_tree_instances`.
+pub const MAX_CUSTOM_TREES: usize = 1_000_000;
 
 /// Core engine state owned by the browser-facing wrapper.
 pub struct EngineCore {
@@ -35,6 +46,15 @@ pub struct EngineCore {
   mist: MistOptions,
   quality: RenderQualityOptions,
   biomes: BiomeOptions,
+  weather: WeatherSystem,
+  shadows: ShadowOptions,
+  surface_options: SurfaceOptions,
+  /// Host-supplied trees that replace procedural placement, if any.
+  custom_trees: Option<Vec<TreeInstance>>,
+  /// Lowest and highest terrain heights, for fitting the shadow map.
+  height_range: (f32, f32),
+  /// Time of the previous frame in milliseconds, for the weather clock.
+  last_frame_ms: Option<f64>,
   debug_view: DebugView,
   stats: RenderStats,
   render_width: u32,
@@ -61,6 +81,30 @@ pub struct EngineCore {
   mesh_centre_sample: Option<(f32, f32)>,
   #[cfg(target_arch = "wasm32")]
   gpu: crate::render::gpu::GpuContext,
+}
+
+/// Weather values for the shaders, resolved from the weather state and
+/// the enabled effects.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FrameWeatherValues {
+  rain: f32,
+  snow: f32,
+  wetness: f32,
+  snow_cover: f32,
+  lightning: f32,
+  overcast: f32,
+  wind: [f32; 2],
+}
+
+/// Options after the weather has been applied.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+struct Weathered {
+  atmosphere: AtmosphereOptions,
+  water: WaterOptions,
+  mist: MistOptions,
+  clouds: CloudsOptions,
+  flora: FloraOptions,
+  weather: FrameWeatherValues,
 }
 
 impl EngineCore {
@@ -91,6 +135,12 @@ impl EngineCore {
       mist: config.mist,
       quality: config.quality,
       biomes: config.biomes,
+      weather: WeatherSystem::new(config.weather),
+      shadows: config.shadows,
+      surface_options: config.surface,
+      custom_trees: None,
+      height_range: (0.0, 0.0),
+      last_frame_ms: None,
       debug_view: DebugView::None,
       stats: RenderStats::default(),
       render_width: config.render.width,
@@ -115,10 +165,11 @@ impl EngineCore {
       config.render.width,
       config.render.height,
       config.render.device_pixel_ratio.unwrap_or(1.0),
+      config.shadows.trees.resolution,
     )
     .await?;
 
-    Ok(Self {
+    let mut core = Self {
       state: EngineState::Ready,
       terrain: None,
       next_terrain_id: 1,
@@ -133,6 +184,12 @@ impl EngineCore {
       mist: config.mist,
       quality: config.quality,
       biomes: config.biomes,
+      weather: WeatherSystem::new(config.weather),
+      shadows: config.shadows,
+      surface_options: config.surface,
+      custom_trees: None,
+      height_range: (0.0, 0.0),
+      last_frame_ms: None,
       debug_view: DebugView::None,
       stats: RenderStats::default(),
       render_width: config.render.width,
@@ -144,7 +201,11 @@ impl EngineCore {
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
       gpu,
-    })
+    };
+    core
+      .gpu
+      .set_material_tints(&core.surface_options.material_tints);
+    Ok(core)
   }
 
   /// Generate deterministic fractal terrain.
@@ -362,10 +423,146 @@ impl EngineCore {
     Ok(())
   }
 
+  /// Replace weather controls. Changing `state` blends towards the new
+  /// weather over `transitionSeconds` instead of jumping.
+  pub fn set_weather(&mut self, weather: WeatherOptions) -> VistaResult<()> {
+    self.ensure_live()?;
+    self.weather.set_options(weather);
+    Ok(())
+  }
+
+  /// Return the current blended weather, or `None` when the weather system
+  /// is off.
+  pub fn weather(&self) -> Option<WeatherState> {
+    if self.weather.options().enabled {
+      Some(self.weather.state().clone())
+    } else {
+      None
+    }
+  }
+
+  /// Replace shadow controls.
+  pub fn set_shadows(&mut self, shadows: ShadowOptions) -> VistaResult<()> {
+    self.ensure_live()?;
+    self.shadows = shadows;
+    Ok(())
+  }
+
+  /// Replace terrain surface controls.
+  pub fn set_surface(&mut self, surface: SurfaceOptions) -> VistaResult<()> {
+    self.ensure_live()?;
+
+    #[cfg(target_arch = "wasm32")]
+    self.gpu.set_material_tints(&surface.material_tints);
+
+    self.surface_options = surface;
+    Ok(())
+  }
+
+  /// Replace the procedural trees with host-supplied instances, or restore
+  /// procedural placement with `None`. Custom trees stay in place when the
+  /// terrain, biomes, or flora options change, until they are cleared.
+  pub fn set_tree_instances(&mut self, trees: Option<Vec<TreeInstance>>) -> VistaResult<()> {
+    self.ensure_live()?;
+
+    if let Some(trees) = &trees {
+      validate_tree_instances(trees)?;
+    }
+
+    self.custom_trees = trees;
+    self.refresh_flora();
+    Ok(())
+  }
+
+  /// Replace one species' model with a host-supplied mesh. See
+  /// [`mesh_from_arrays`] for the array layout.
+  #[allow(clippy::too_many_arguments)]
+  pub fn set_tree_model(
+    &mut self,
+    species: TreeSpeciesKind,
+    positions: &[f32],
+    normals: &[f32],
+    uvs: &[f32],
+    indices: &[u32],
+    texture_layers: Option<&[f32]>,
+    wind: Option<&[f32]>,
+  ) -> VistaResult<()> {
+    self.ensure_live()?;
+    let mesh = mesh_from_arrays(positions, normals, uvs, indices, texture_layers, wind)
+      .map_err(|message| VistaError::options(format!("setTreeModel: {message}")))?;
+    self.install_tree_model(species, Some(mesh));
+    Ok(())
+  }
+
+  /// Restore the procedural model for one species.
+  pub fn reset_tree_model(&mut self, species: TreeSpeciesKind) -> VistaResult<()> {
+    self.ensure_live()?;
+    self.install_tree_model(species, None);
+    Ok(())
+  }
+
+  #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
+  fn install_tree_model(&mut self, species: TreeSpeciesKind, mesh: Option<TreeMesh>) {
+    #[cfg(target_arch = "wasm32")]
+    self.gpu.set_tree_model(species.index(), mesh);
+  }
+
+  /// Replace one layer of a baked texture array with RGBA8 texels
+  /// (`TEXTURE_LAYER_SIZE` square, row-major, top row first).
+  pub fn replace_texture(
+    &mut self,
+    target: TextureTarget,
+    layer: u32,
+    rgba: &[u8],
+  ) -> VistaResult<()> {
+    self.ensure_live()?;
+    let layers = texture_layers(target);
+
+    if layer >= layers {
+      return Err(VistaError::options(format!(
+        "texture layer must be between 0 and {}.",
+        layers - 1
+      )));
+    }
+
+    let expected = (TEXTURE_LAYER_SIZE * TEXTURE_LAYER_SIZE * 4) as usize;
+
+    if rgba.len() != expected {
+      return Err(VistaError::options(format!(
+        "texture data must be {TEXTURE_LAYER_SIZE} x {TEXTURE_LAYER_SIZE} RGBA ({expected} bytes), but {} bytes were given.",
+        rgba.len()
+      )));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    self.gpu.replace_texture_layer(target, layer, rgba);
+
+    Ok(())
+  }
+
+  /// Discard every replaced texture layer and restore the procedural
+  /// textures.
+  pub fn reset_textures(&mut self) -> VistaResult<()> {
+    self.ensure_live()?;
+
+    #[cfg(target_arch = "wasm32")]
+    self.gpu.reset_textures();
+
+    Ok(())
+  }
+
   /// Render one frame.
   pub fn render_once(&mut self) -> VistaResult<RenderStats> {
     self.ensure_live()?;
     self.stats.frame_index = self.stats.frame_index.saturating_add(1);
+    let dt = self.frame_delta_seconds();
+
+    if self.weather.options().enabled {
+      self.weather.advance(dt);
+      self.stats.weather = Some(self.weather.dominant());
+    } else {
+      self.stats.weather = None;
+    }
 
     // Native builds have no GPU mesh to measure, so report a theoretical
     // estimate based on the configured clipmap level budget. Browser
@@ -522,6 +719,10 @@ impl EngineCore {
     }
 
     self.applied_rivers = wanted;
+    self.height_range = self
+      .terrain
+      .as_ref()
+      .map_or((0.0, 0.0), terrain_height_range);
 
     #[cfg(target_arch = "wasm32")]
     if let Some(terrain) = self.terrain.as_ref() {
@@ -583,6 +784,15 @@ impl EngineCore {
   /// Regenerate tree instances for the active terrain and current flora and
   /// quality settings, uploading them to the GPU on browser builds.
   fn refresh_flora(&mut self) {
+    if let Some(custom) = &self.custom_trees {
+      self.stats.flora_instances = custom.len() as u32;
+
+      #[cfg(target_arch = "wasm32")]
+      self.gpu.upload_trees(custom);
+
+      return;
+    }
+
     let density_scale = self.quality.flora_density_scale.unwrap_or(1.0);
     let instances = match &self.terrain {
       Some(terrain) => crate::render::flora::build_tree_instances(
@@ -630,6 +840,89 @@ impl EngineCore {
       .set_water_visible(self.water.enabled && self.terrain.is_some());
   }
 
+  /// Resolve the options the weather drives this frame. Systems the
+  /// weather does not drive keep their manual settings.
+  #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+  fn weathered_options(&self) -> Weathered {
+    let mut out = Weathered {
+      atmosphere: self.atmosphere.clone(),
+      water: self.water.clone(),
+      mist: self.mist.clone(),
+      clouds: self.clouds.clone(),
+      flora: self.flora.clone(),
+      weather: FrameWeatherValues::default(),
+    };
+    let options = self.weather.options();
+
+    if !options.enabled {
+      return out;
+    }
+
+    let state = self.weather.state();
+    let effects = &options.effects;
+    let wind = state.wind_speed_metres_per_second;
+
+    if effects.clouds {
+      // Weather without clouds would look wrong, so switch them on.
+      if out.clouds.style == vista_types::CloudStyle::Off {
+        out.clouds.style = vista_types::CloudStyle::Volumetric;
+      }
+
+      out.clouds.coverage = state.cloud_coverage;
+      out.clouds.density = state.cloud_density;
+      out.clouds.thickness_metres *= self.weather.cloud_thickness_scale();
+      out.weather.overcast = ((state.cloud_coverage - 0.6) / 0.4).clamp(0.0, 1.0) * 0.85;
+    }
+
+    if effects.mist {
+      if out.mist.style == vista_types::MistStyle::Off && state.mist_density > 0.01 {
+        out.mist.style = vista_types::MistStyle::Volumetric;
+      }
+
+      out.mist.density = state.mist_density;
+      out.atmosphere.haze_distance_metres *= self.weather.haze_scale();
+    }
+
+    if effects.wind {
+      out.flora.wind_strength = (wind / 14.0).clamp(0.05, 1.0);
+      out.mist.wind_direction_degrees = state.wind_direction_degrees;
+      out.mist.wind_speed_metres_per_second = wind * 0.6;
+      out.clouds.wind_direction_degrees = state.wind_direction_degrees;
+      // Winds aloft are roughly twice the surface wind; `speed` is in
+      // units of 15 m/s.
+      out.clouds.speed = wind * 2.0 / 15.0;
+      let radians = state.wind_direction_degrees.to_radians();
+      out.weather.wind = [radians.sin() * wind, radians.cos() * wind];
+    }
+
+    if effects.water {
+      let sea_state = (0.35 + wind / 7.0).min(3.5);
+      let waves = &mut out.water.waves;
+      waves.amplitude_metres = (waves.amplitude_metres * sea_state).min(30.0);
+      waves.steepness = (waves.steepness * (0.7 + wind / 25.0)).min(1.0);
+      waves.direction_degrees = state.wind_direction_degrees;
+      out.water.foam = out.water.foam.max((wind - 6.0) / 14.0).clamp(0.0, 1.0);
+      out.water.current_direction_degrees = state.wind_direction_degrees;
+      out.water.current_speed *= 0.6 + wind / 12.0;
+    }
+
+    if effects.precipitation {
+      out.weather.rain = state.rain;
+      out.weather.snow = state.snow;
+    }
+
+    if effects.ground {
+      out.weather.wetness = state.wetness;
+      out.weather.snow_cover = state.snow_cover;
+    }
+
+    if effects.lightning {
+      out.weather.lightning = state.lightning;
+    }
+
+    out
+  }
+
   /// Collect every per-frame shading parameter for the GPU.
   #[cfg(target_arch = "wasm32")]
   fn frame_params(&self) -> crate::render::gpu::FrameParams {
@@ -644,32 +937,40 @@ impl EngineCore {
     let camera_right = normalise(cross(camera_forward, [0.0, 1.0, 0.0]));
     let camera_up = cross(camera_right, camera_forward);
     let aspect_ratio = self.render_width as f32 / self.render_height.max(1) as f32;
+    let Weathered {
+      atmosphere,
+      water,
+      mist,
+      clouds,
+      flora,
+      weather,
+    } = self.weathered_options();
 
-    let (mist_density, mist_noise_strength) = match self.mist.style {
+    let (mist_density, mist_noise_strength) = match mist.style {
       vista_types::MistStyle::Off => (0.0, 0.0),
-      vista_types::MistStyle::Flat => (self.mist.density, 0.0),
-      vista_types::MistStyle::Volumetric => (self.mist.density, 1.0),
+      vista_types::MistStyle::Flat => (mist.density, 0.0),
+      vista_types::MistStyle::Volumetric => (mist.density, 1.0),
     };
     // Only feed a real sea level into the shader's rise-above-water term
     // when it is actually requested; otherwise push a sentinel height far
     // from any terrain so that term always evaluates to zero.
-    let mist_water_level_metres = if self.mist.rise_above_water && self.water.enabled {
-      self.water.sea_level_metres
+    let mist_water_level_metres = if mist.rise_above_water && water.enabled {
+      water.sea_level_metres
     } else {
-      self.mist.base_height_metres - 1_000_000.0
+      mist.base_height_metres - 1_000_000.0
     };
-    let (cloud_coverage, cloud_raymarch_steps) = match self.clouds.style {
+    let (cloud_coverage, cloud_raymarch_steps) = match clouds.style {
       vista_types::CloudStyle::Off => (0.0, 0),
-      vista_types::CloudStyle::Painted => (self.clouds.coverage, 0),
+      vista_types::CloudStyle::Painted => (clouds.coverage, 0),
       vista_types::CloudStyle::Volumetric => {
         // Clamped again here: this bounds a shader loop.
         (
-          self.clouds.coverage,
-          self.clouds.raymarch_steps.unwrap_or(32).clamp(8, 64),
+          clouds.coverage,
+          clouds.raymarch_steps.unwrap_or(32).clamp(8, 64),
         )
       }
     };
-    let tree_style = match self.flora.tree_quality {
+    let tree_style = match flora.tree_quality {
       vista_types::TreeQuality::Billboard => 0,
       vista_types::TreeQuality::CrossQuad => 1,
       vista_types::TreeQuality::Mesh => 2,
@@ -687,19 +988,31 @@ impl EngineCore {
       far_metres: self.camera.options.far_metres.unwrap_or(120_000.0),
       sun_direction,
       sun_intensity: self.sun.intensity,
-      atmosphere: self.atmosphere.clone(),
-      water: self.water.clone(),
+      atmosphere,
+      water,
       mist_density,
       mist_noise_strength,
       mist_water_level_metres,
-      mist: self.mist.clone(),
+      mist,
       cloud_coverage,
       cloud_raymarch_steps,
-      clouds: self.clouds.clone(),
+      clouds,
       tree_style,
-      flora: self.flora.clone(),
+      flora,
       grass_view_distance_metres: self.grass.view_distance_metres,
       debug_view: debug_view_index(self.debug_view),
+      shadows: self.shadows.clone(),
+      surface: self.surface_options.clone(),
+      weather: crate::render::gpu::FrameWeather {
+        rain: weather.rain,
+        snow: weather.snow,
+        wetness: weather.wetness,
+        snow_cover: weather.snow_cover,
+        lightning: weather.lightning,
+        overcast: weather.overcast,
+        wind: weather.wind,
+      },
+      height_range: self.height_range,
     }
   }
 
@@ -750,12 +1063,84 @@ impl EngineCore {
     self.mesh_centre_sample = Some((sample_x, sample_z));
   }
 
+  /// Seconds since the previous frame. Native builds (tests) step a fixed
+  /// sixtieth of a second so weather runs deterministically.
+  fn frame_delta_seconds(&mut self) -> f32 {
+    #[cfg(target_arch = "wasm32")]
+    let now = js_sys::Date::now();
+    #[cfg(not(target_arch = "wasm32"))]
+    let now = self.last_frame_ms.map_or(0.0, |last| last + 1_000.0 / 60.0);
+    let dt = self
+      .last_frame_ms
+      .map_or(0.0, |last| ((now - last) / 1_000.0) as f32);
+    self.last_frame_ms = Some(now);
+    dt.clamp(0.0, 0.25)
+  }
+
   fn ensure_live(&self) -> VistaResult<()> {
     if self.state == EngineState::Disposed {
       return Err(VistaError::EngineDisposed);
     }
 
     Ok(())
+  }
+}
+
+/// Number of layers in a replaceable texture array.
+pub fn texture_layers(target: TextureTarget) -> u32 {
+  match target {
+    TextureTarget::TerrainAlbedo | TextureTarget::TerrainNormal => TERRAIN_TEXTURE_LAYERS,
+    TextureTarget::Flora => layers::COUNT,
+  }
+}
+
+/// Validate host-supplied tree instances.
+pub fn validate_tree_instances(trees: &[TreeInstance]) -> VistaResult<()> {
+  if trees.len() > MAX_CUSTOM_TREES {
+    return Err(VistaError::options(format!(
+      "setTreeInstances accepts at most {MAX_CUSTOM_TREES} trees."
+    )));
+  }
+
+  for (index, tree) in trees.iter().enumerate() {
+    let finite = tree.position.iter().all(|value| value.is_finite())
+      && tree.scale.is_finite()
+      && tree.rotation.is_finite()
+      && tree.tint.is_finite()
+      && tree.dryness.is_finite();
+
+    if !finite || tree.scale <= 0.0 || tree.scale > 20.0 {
+      return Err(VistaError::options(format!(
+        "tree {index} must have finite values and a scale between 0 and 20."
+      )));
+    }
+
+    if tree.species as usize >= TreeSpeciesKind::ALL.len() {
+      return Err(VistaError::options(format!(
+        "tree {index} has species {}, but species must be 0 to 7.",
+        tree.species
+      )));
+    }
+  }
+
+  Ok(())
+}
+
+fn terrain_height_range(map: &HeightMap) -> (f32, f32) {
+  let mut low = f32::MAX;
+  let mut high = f32::MIN;
+
+  for (height, missing) in map.heights.iter().zip(&map.no_data) {
+    if !missing {
+      low = low.min(*height);
+      high = high.max(*height);
+    }
+  }
+
+  if low > high {
+    (0.0, 0.0)
+  } else {
+    (low, high)
   }
 }
 
@@ -776,6 +1161,111 @@ fn debug_view_index(view: DebugView) -> u32 {
 mod tests {
   use super::*;
   use vista_types::{FractalTerrainOptions, NoiseKind, NoiseOptions, VistaEngineOptions};
+
+  #[test]
+  fn weather_drives_only_the_enabled_effects() {
+    let mut engine = generated_engine();
+    let manual = engine.weathered_options();
+    assert_eq!(manual.weather, FrameWeatherValues::default());
+
+    engine
+      .set_weather(WeatherOptions {
+        enabled: true,
+        state: vista_types::WeatherKind::Storm,
+        transition_seconds: 0.0,
+        effects: vista_types::WeatherEffects {
+          water: false,
+          ..Default::default()
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    for _ in 0..10 {
+      engine.render_once().unwrap();
+    }
+
+    let stormy = engine.weathered_options();
+    assert!(stormy.clouds.coverage > 0.9);
+    assert_ne!(stormy.clouds.style, vista_types::CloudStyle::Off);
+    assert!(stormy.weather.rain > 0.5);
+    assert_eq!(stormy.water, engine.water);
+    assert_eq!(
+      engine.stats().weather,
+      Some(vista_types::WeatherKind::Storm)
+    );
+    assert!(engine.weather().is_some());
+  }
+
+  #[test]
+  fn custom_trees_replace_procedural_placement() {
+    let mut engine = generated_engine();
+    let tree = TreeInstance {
+      position: [0.0, 10.0, 0.0],
+      scale: 1.0,
+      rotation: 0.0,
+      tint: 0.5,
+      species: 3,
+      dryness: 0.0,
+    };
+
+    engine.set_tree_instances(Some(vec![tree; 3])).unwrap();
+    assert_eq!(engine.stats().flora_instances, 3);
+    assert!(engine
+      .set_tree_instances(Some(vec![TreeInstance { species: 9, ..tree }]))
+      .is_err());
+    assert!(engine
+      .set_tree_instances(Some(vec![TreeInstance {
+        scale: f32::NAN,
+        ..tree
+      }]))
+      .is_err());
+
+    engine.set_tree_instances(None).unwrap();
+    assert_ne!(engine.stats().flora_instances, 3);
+  }
+
+  #[test]
+  fn replacement_textures_and_models_are_validated() {
+    let mut engine = generated_engine();
+    let texels = vec![0u8; (TEXTURE_LAYER_SIZE * TEXTURE_LAYER_SIZE * 4) as usize];
+
+    assert!(engine
+      .replace_texture(TextureTarget::Flora, 9, &texels)
+      .is_ok());
+    assert!(engine
+      .replace_texture(TextureTarget::TerrainAlbedo, 8, &texels)
+      .is_err());
+    assert!(engine
+      .replace_texture(TextureTarget::TerrainNormal, 0, &texels[4..])
+      .is_err());
+
+    let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0];
+    let normals = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let uvs = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    assert!(engine
+      .set_tree_model(
+        TreeSpeciesKind::Oak,
+        &positions,
+        &normals,
+        &uvs,
+        &[0, 1, 2],
+        None,
+        None
+      )
+      .is_ok());
+    assert!(engine
+      .set_tree_model(
+        TreeSpeciesKind::Oak,
+        &positions,
+        &normals,
+        &uvs,
+        &[0, 1, 5],
+        None,
+        None
+      )
+      .is_err());
+  }
 
   #[test]
   fn disposed_engine_rejects_use() {

@@ -45,7 +45,13 @@ pub struct WorldTextures {
   pub noise: wgpu::TextureView,
   /// 3D cloud noise.
   pub cloud: wgpu::TextureView,
-  // Keep the textures alive for as long as their views are used.
+  /// Terrain albedo texture, for replacing layers.
+  pub terrain_albedo_texture: wgpu::Texture,
+  /// Terrain normal texture, for replacing layers.
+  pub terrain_normal_texture: wgpu::Texture,
+  /// Flora texture, for replacing layers.
+  pub flora_texture: wgpu::Texture,
+  // Keep the remaining textures alive for as long as their views are used.
   _textures: Vec<wgpu::Texture>,
 }
 
@@ -130,7 +136,7 @@ impl MipGenerator {
   pub fn new(device: &wgpu::Device) -> Self {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("VistaWASM mip shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/mipgen.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::render::shaders::MIPGEN.into()),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
       label: Some("VistaWASM mip pipeline"),
@@ -220,7 +226,7 @@ pub fn bake_world_textures(
 ) -> WorldTextures {
   let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
     label: Some("VistaWASM texture generation shader"),
-    source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/texture_gen.wgsl").into()),
+    source: wgpu::ShaderSource::Wgsl(crate::render::shaders::TEXTURE_GEN.into()),
   });
   let pipeline = |entry: &str| {
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -388,6 +394,9 @@ pub fn bake_world_textures(
     water: view_2d(&water),
     noise: view_2d(&noise),
     cloud: cloud_view,
-    _textures: vec![terrain_albedo, terrain_normal, flora, water, noise, cloud],
+    terrain_albedo_texture: terrain_albedo,
+    terrain_normal_texture: terrain_normal,
+    flora_texture: flora,
+    _textures: vec![water, noise, cloud],
   }
 }

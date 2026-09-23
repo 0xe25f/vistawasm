@@ -12,6 +12,7 @@ pub mod errors;
 pub mod maths;
 pub mod render;
 pub mod terrain;
+pub mod weather;
 
 #[cfg(target_arch = "wasm32")]
 pub mod api;

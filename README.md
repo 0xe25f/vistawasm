@@ -102,6 +102,12 @@ Unsupported DEM compression returns a clear error.
   placement, quality tiers, and performance.
 - [`docs/sky-atmosphere-and-weather.md`](docs/sky-atmosphere-and-weather.md) —
   sun, atmosphere, clouds, and mist (and the haze-vs-mist distinction).
+- [`docs/weather.md`](docs/weather.md) — weather states, transitions,
+  automatic cycling, and choosing what the weather drives.
+- [`docs/shadows.md`](docs/shadows.md) — terrain, tree, and cloud
+  shadows and their costs.
+- [`docs/hooks.md`](docs/hooks.md) — replacing tree models, species mixes,
+  tree placement, and textures with your own.
 - [`docs/water.md`](docs/water.md) — ocean waves, currents, rivers, and
   lakes.
 - [`docs/camera-and-controls.md`](docs/camera-and-controls.md) — the

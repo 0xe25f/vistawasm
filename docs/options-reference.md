@@ -25,6 +25,9 @@ precise reference; those documents are the tour.
 - [`FloraOptions`](#floraoptions)
 - [`GrassOptions`](#grassoptions)
 - [`BiomeOptions`](#biomeoptions)
+- [`WeatherOptions`](#weatheroptions)
+- [`ShadowOptions`](#shadowoptions)
+- [`SurfaceOptions`](#surfaceoptions)
 - [`RenderQualityOptions`](#renderqualityoptions)
 - [`DebugView`](#debugview)
 - [`FractalTerrainOptions`](#fractalterrainoptions)
@@ -51,6 +54,9 @@ omitted fields use the defaults below.
 | `mist` | `MistOptions` | see [`MistOptions`](#mistoptions) (off by default) |
 | `quality` | `RenderQualityOptions` | see [`RenderQualityOptions`](#renderqualityoptions) |
 | `biomes` | `BiomeOptions` | see [`BiomeOptions`](#biomeoptions) (climate biomes on by default) |
+| `weather` | `WeatherOptions` | see [`WeatherOptions`](#weatheroptions) (off by default) |
+| `shadows` | `ShadowOptions` | see [`ShadowOptions`](#shadowoptions) (all on by default) |
+| `surface` | `SurfaceOptions` | see [`SurfaceOptions`](#surfaceoptions) |
 
 Always pass a real `render.width`/`render.height` matching your canvas's
 actual CSS size — the `{ width: 1, height: 1 }` default exists only so the
@@ -115,7 +121,8 @@ projector model and the bundled fly-camera controller.
 | `evolution` | `number?` | `0.35` | How quickly cloud shapes billow and change while drifting, `0` (rigid) to `1`. |
 | `thicknessMetres` | `number?` | `1600` | Vertical thickness of the cloud layer. Must be `> 0`. |
 | `density` | `number?` | `0.6` | Optical density, `0` (wispy) to `1` (dense cumulus). |
-| `castShadows` | `boolean?` | `true` | Moving cloud shadows on terrain, trees, grass, and water. |
+| `castShadows` | `boolean?` | `true` | Moving cloud shadows on terrain, trees, grass, and water. Also requires `ShadowOptions.clouds.enabled`. |
+| `resolutionScale` | `number?` | `0.5` | Cloud render resolution relative to the canvas, `0.25` to `1`. Lower is faster. |
 
 ## `MistOptions`
 
@@ -184,6 +191,7 @@ projector model and the bundled fly-camera controller.
 | `speciesVariation` | `number?` | `0.6` | `0` to `1`. Per-tree size and colour variety. Must be `>= 0`. |
 | `windStrength` | `number?` | `0.3` | `0` to `1`. Wind sway strength. Must be `>= 0`. |
 | `meshDistanceMetres` | `number?` | `420` | Distance at which `"mesh"` trees cross-fade to impostors. Must be `> 0`. |
+| `speciesRules` | `FloraRule[]?` | `[]` | Per-biome species mix and density, replacing the built-in mix. At most 64 rules of 8 species each. See [`docs/hooks.md`](hooks.md#species-rules). |
 
 Species and density follow the biome under each tree, and placement avoids
 underwater, river, and steep terrain; see
@@ -226,6 +234,60 @@ field is optional. See [`docs/biomes.md`](biomes.md).
 `"outerVolcanic"`, `"calderaVolcanic"`, `"savannahExpanse"`,
 `"coastalBeach"`, `"coastalRocky"`, `"outerJungle"`, `"innerJungle"`,
 `"swampWetlands"`, or `"ocean"`.
+
+## `WeatherOptions`
+
+Passed to `engine.setWeather()`. Every field is optional. See
+[`docs/weather.md`](weather.md).
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `false` | When `false`, every system keeps its manual settings. |
+| `state` | `WeatherKind` | `"partlyCloudy"` | `"clear"`, `"partlyCloudy"`, `"overcast"`, `"fog"`, `"rain"`, `"storm"`, or `"snow"`. |
+| `autoCycle` | `boolean` | `false` | Move on to new weather over time. |
+| `stateDurationSeconds` | `number` | `240` | Average length of each state when cycling. Must be `> 0`. |
+| `transitionSeconds` | `number` | `30` | Blend time between states. Must be `>= 0`. |
+| `allowSnow` | `boolean` | `false` | Whether cycling may choose snow. |
+| `seedOffset` | `number \| bigint` | `4111` | Seed for the cycle sequence and gusts. |
+| `windDirectionDegrees` | `number` | `70` | Prevailing wind direction. |
+| `windScale` | `number` | `1` | `0` to `4`. |
+| `precipitationScale` | `number` | `1` | `0` to `2`. |
+| `effects` | `WeatherEffects` | all `true` | `clouds`, `mist`, `wind`, `water`, `precipitation`, `ground`, `lightning`. |
+
+`engine.getWeather()` returns the blended `WeatherState` (`from`, `to`,
+`blend`, `cloudCoverage`, `cloudDensity`, `mistDensity`,
+`windSpeedMetresPerSecond`, `windDirectionDegrees`, `rain`, `snow`,
+`wetness`, `snowCover`, `lightning`), or `undefined` when the weather is
+off.
+
+## `ShadowOptions`
+
+Passed to `engine.setShadows()`. Every field is optional. See
+[`docs/shadows.md`](shadows.md).
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `terrain.enabled` | `boolean` | `true` | Hills and mountains cast shadows. |
+| `terrain.strength` | `number` | `0.9` | `0` to `1`. |
+| `terrain.softness` | `number` | `0.35` | Penumbra width, `0` to `1`. |
+| `trees.enabled` | `boolean` | `true` | Trees cast shadows. |
+| `trees.distanceMetres` | `number` | `260` | `10` to `4000`. |
+| `trees.resolution` | `512 \| 1024 \| 2048 \| 4096` | `2048` | Shadow map size. |
+| `trees.strength` | `number` | `0.8` | `0` to `1`. |
+| `trees.softness` | `number` | `0.5` | Filter width, `0` to `1`. |
+| `clouds.enabled` | `boolean` | `true` | Also requires `CloudsOptions.castShadows`. |
+| `clouds.strength` | `number` | `0.78` | `0` to `1`. |
+
+## `SurfaceOptions`
+
+Passed to `engine.setSurface()`. Every field is optional.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `textures` | `boolean` | `true` | `false` shades each material as a flat colour. |
+| `detailNormals` | `boolean` | `true` | Detail normal maps. |
+| `textureScale` | `number` | `1` | `0.05` to `20`. Larger stretches textures over more ground. |
+| `materialTints` | `[r, g, b][8]` | all `[1, 1, 1]` | Colour multipliers (`0` to `4`) for lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic. |
 
 ## `RenderQualityOptions`
 
@@ -371,6 +433,7 @@ These are never passed *in* — the engine returns them.
 | `grassInstances` | `number` | |
 | `clipmapLevels` | `number` | Number of exponential LOD bands the terrain mesh's half-span currently spans. |
 | `activeGpuMemoryBytes` | `number \| null` | Not currently populated. |
+| `weather` | `WeatherKind \| null` | The dominant weather, or `null` when the weather system is off. |
 
 See [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md)
 for how to use these for a performance HUD.

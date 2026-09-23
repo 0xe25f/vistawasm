@@ -1,4 +1,4 @@
-use vista_types::{BiomeKind, FloraOptions};
+use vista_types::{BiomeKind, FloraOptions, FloraRule};
 
 use crate::maths::hash_noise;
 use crate::render::tree_models::TreeSpecies;
@@ -112,6 +112,33 @@ pub fn choose_species(biome: BiomeKind, temperature: f32, roll: f32) -> Option<T
   }
 
   table.last().map(|(species, _)| *species)
+}
+
+/// Pick a species using a host-supplied rule instead of the built-in mix.
+pub fn choose_species_by_rule(rule: &FloraRule, roll: f32) -> Option<TreeSpecies> {
+  let total: f32 = rule
+    .species
+    .iter()
+    .map(|choice| choice.weight.max(0.0))
+    .sum();
+
+  if total <= 0.0 {
+    return None;
+  }
+
+  let mut remaining = roll.clamp(0.0, 0.9999) * total;
+
+  for choice in &rule.species {
+    let weight = choice.weight.max(0.0);
+
+    if remaining < weight {
+      return Some(TreeSpecies::ALL[choice.species.index()]);
+    }
+
+    remaining -= weight;
+  }
+
+  None
 }
 
 /// Scatter deterministic tree instances according to the biome map.
@@ -264,12 +291,22 @@ fn candidate_at(
   let cover = sample.forest as f32 / 255.0 * tree_line_fade;
   let placement_roll = unit_from_hash(hash_noise(seed, x as i32, y as i32));
 
-  if placement_roll > density * cover * 1.6 {
+  let biome = sample.biome_kind();
+  let rule = options
+    .species_rules
+    .iter()
+    .find(|rule| rule.biome == biome);
+  let rule_density = rule.map_or(1.0, |rule| rule.density.clamp(0.0, 4.0));
+
+  if placement_roll > density * cover * 1.6 * rule_density {
     return None;
   }
 
   let species_roll = unit_from_hash(hash_noise(seed ^ 0x7f4a_7c15, x as i32, y as i32));
-  let species = choose_species(sample.biome_kind(), sample.temperature_unit(), species_roll)?;
+  let species = match rule {
+    Some(rule) => choose_species_by_rule(rule, species_roll)?,
+    None => choose_species(biome, sample.temperature_unit(), species_roll)?,
+  };
   let scale_roll = unit_from_hash(hash_noise(seed ^ 0x1234_5678, x as i32, y as i32));
   let tint_roll = unit_from_hash(hash_noise(seed ^ 0x4321_dcba, x as i32, y as i32));
   let rotation_roll = unit_from_hash(hash_noise(seed ^ 0x2468_ace0, x as i32, y as i32));
@@ -334,6 +371,31 @@ mod tests {
       max_instances: 10_000,
       ..FloraOptions::default()
     }
+  }
+
+  #[test]
+  fn species_rules_replace_the_built_in_mix() {
+    let map = flat_map(48, 50.0);
+    let surface = forest_surface(&map);
+    let biome = surface[48 * 24 + 24].biome_kind();
+    let mut options = flora_options();
+    options.species_rules = vec![FloraRule {
+      biome,
+      species: vec![vista_types::SpeciesWeight {
+        species: vista_types::TreeSpeciesKind::Palm,
+        weight: 2.0,
+      }],
+      density: 1.0,
+    }];
+    let trees = build_tree_instances(&map, &surface, &options, 1.0);
+
+    assert!(!trees.is_empty());
+    assert!(trees
+      .iter()
+      .all(|tree| tree.species == TreeSpecies::Palm as u32));
+
+    options.species_rules[0].species.clear();
+    assert!(build_tree_instances(&map, &surface, &options, 1.0).is_empty());
   }
 
   #[test]

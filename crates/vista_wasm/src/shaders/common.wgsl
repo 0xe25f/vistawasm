@@ -56,6 +56,17 @@ struct FrameUniforms {
   vegetation2: vec4<f32>,
   // xy: viewport size in pixels, zw: reciprocal.
   viewport: vec4<f32>,
+  // Light-space transform for the tree shadow map.
+  shadow_view_proj: mat4x4<f32>,
+  // x: tree shadow strength (0 = off), y: filter radius in texels,
+  // z: terrain shadow strength (0 = off), w: cloud shadow strength.
+  shadow_params: vec4<f32>,
+  // x: rain, y: snowfall, z: ground wetness, w: settled snow.
+  weather: vec4<f32>,
+  // x: lightning flash, y: overcast greyness, zw: wind (m/s) for rain.
+  weather2: vec4<f32>,
+  // x: textures on, y: detail normals on, z: texture scale, w: unused.
+  surface: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -67,6 +78,8 @@ struct WorldInfo {
   terrain: vec4<f32>,
   // xy: height texture size, z: 1 when a terrain is loaded, w: unused.
   terrain2: vec4<f32>,
+  // Per material colour multiplier (rgb).
+  material_tints: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -81,6 +94,12 @@ struct WorldInfo {
 @group(1) @binding(7) var water_texture: texture_2d<f32>;
 @group(1) @binding(8) var height_texture: texture_2d<f32>;
 @group(1) @binding(9) var<uniform> world: WorldInfo;
+@group(1) @binding(10) var terrain_shadow_texture: texture_2d<f32>;
+@group(1) @binding(11) var clamp_sampler: sampler;
+
+// Shadow receivers only (terrain, trees, grass, water).
+@group(2) @binding(0) var tree_shadow_map: texture_depth_2d;
+@group(2) @binding(1) var shadow_sampler: sampler_comparison;
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.2831853;
@@ -176,9 +195,15 @@ fn sun_transmittance(cos_zenith: f32) -> vec3<f32> {
   return transmittance * smoothstep(-0.08, 0.02, cos_zenith);
 }
 
-// Sunlight reaching the ground, in the same units as `sky_radiance`.
+// Sunlight reaching the ground, in the same units as `sky_radiance`. A
+// full overcast diffuses most direct light into the sky's ambient.
 fn sun_light() -> vec3<f32> {
-  return sun_transmittance(sun_dir().y) * frame.sun_direction.w * 2.35;
+  let overcast = 1.0 - frame.weather2.y * 0.9;
+  return sun_transmittance(sun_dir().y) * frame.sun_direction.w * 2.35 * overcast;
+}
+
+fn luminance(colour: vec3<f32>) -> f32 {
+  return dot(colour, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 fn sky_radiance(direction: vec3<f32>) -> vec3<f32> {
@@ -203,8 +228,13 @@ fn sky_radiance(direction: vec3<f32>) -> vec3<f32> {
   // pitch black and deep blue survives near the zenith.
   let fill = vec3<f32>(0.004, 0.009, 0.022) * smoothstep(-0.3, 0.2, sun.y);
   let night = vec3<f32>(0.0012, 0.0018, 0.004);
-  return (inscatter * sun_colour * SUN_RADIANCE * frame.sun_direction.w + fill + night)
+  var sky = (inscatter * sun_colour * SUN_RADIANCE * frame.sun_direction.w + fill + night)
     * frame.sky_tint.rgb;
+  // Weather: overcast skies turn a flat, darker grey; lightning lights the
+  // whole sky for a moment.
+  let overcast = frame.weather2.y;
+  sky = mix(sky, vec3<f32>(luminance(sky)) * vec3<f32>(0.92, 0.95, 1.0) * (1.0 - overcast * 0.45), overcast);
+  return sky + vec3<f32>(0.75, 0.8, 1.0) * frame.weather2.x * 1.6;
 }
 
 // Diffuse sky light arriving on a surface with normal `normal`.
@@ -267,7 +297,63 @@ fn cloud_shadow(position: vec3<f32>) -> f32 {
   let shadow_point = position.xz + sun.xz * travel;
   let weather = cloud_weather(shadow_point);
   let density = smoothstep(0.05, 0.6, weather) * saturate(frame.cloud_motion.w * 1.4 + 0.2);
-  return 1.0 - density * 0.78;
+  return 1.0 - density * frame.shadow_params.w;
+}
+
+// Sunlight blocked by hills and mountains, from the baked terrain shadow
+// texture (recomputed only when the sun or terrain changes).
+fn terrain_shadow(position: vec3<f32>) -> f32 {
+  let strength = frame.shadow_params.z;
+
+  if (strength <= 0.001 || world.terrain2.z < 0.5) {
+    return 1.0;
+  }
+
+  let uv = (position.xz + world.terrain.xy) / max(world.terrain.xy * 2.0, vec2<f32>(1.0));
+
+  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+    return 1.0;
+  }
+
+  let lit = textureSampleLevel(terrain_shadow_texture, clamp_sampler, uv, 0.0).r;
+  return mix(1.0, lit, strength);
+}
+
+// Tree shadows from the light-space shadow map, with a rotated four-tap
+// comparison filter (each tap is itself bilinearly filtered by the
+// comparison sampler, so this is effectively a 16-texel soft kernel).
+fn tree_shadow(position: vec3<f32>, normal: vec3<f32>) -> f32 {
+  let strength = frame.shadow_params.x;
+
+  if (strength <= 0.001) {
+    return 1.0;
+  }
+
+  // Normal offset hides self-shadowing acne without a large depth bias.
+  let clip = frame.shadow_view_proj * vec4<f32>(position + normal * 0.25, 1.0);
+  let uv = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+
+  if (any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) || clip.z >= 1.0) {
+    return 1.0;
+  }
+
+  let texel = frame.shadow_params.y / f32(textureDimensions(tree_shadow_map).x);
+  let depth = clip.z - 0.0008;
+  var lit = 0.0;
+  lit = lit + textureSampleCompareLevel(tree_shadow_map, shadow_sampler, uv + vec2<f32>(-0.7, -0.3) * texel, depth);
+  lit = lit + textureSampleCompareLevel(tree_shadow_map, shadow_sampler, uv + vec2<f32>(0.3, -0.7) * texel, depth);
+  lit = lit + textureSampleCompareLevel(tree_shadow_map, shadow_sampler, uv + vec2<f32>(0.7, 0.3) * texel, depth);
+  lit = lit + textureSampleCompareLevel(tree_shadow_map, shadow_sampler, uv + vec2<f32>(-0.3, 0.7) * texel, depth);
+  lit = lit * 0.25;
+  // Fade out towards the edge of the shadowed area instead of cutting off.
+  let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+  lit = mix(1.0, lit, smoothstep(0.0, 0.08, edge));
+  return mix(1.0, lit, strength);
+}
+
+// Combined direct-sun visibility from clouds, terrain, and trees.
+fn sun_visibility(position: vec3<f32>, normal: vec3<f32>) -> f32 {
+  return cloud_shadow(position) * terrain_shadow(position) * tree_shadow(position, normal);
 }
 
 // --- Fog and aerial perspective -----------------------------------------
@@ -384,7 +470,7 @@ fn shade_surface(
 ) -> vec3<f32> {
   let sun = sun_dir();
   let n_dot_l = saturate(dot(normal, sun));
-  let shadow = cloud_shadow(world_position);
+  let shadow = sun_visibility(world_position, normal);
   let direct = sun_light() * n_dot_l * shadow;
   let ambient = sky_irradiance(normal) * occlusion;
   var colour = albedo * (direct + ambient * 0.75) / PI * 2.6;

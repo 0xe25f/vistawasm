@@ -9,6 +9,8 @@ pub mod flora;
 pub mod gpu;
 pub mod grass;
 pub mod pipelines;
+pub mod shaders;
+pub mod shadow_math;
 pub mod terrain_mesh;
 #[cfg(target_arch = "wasm32")]
 pub mod textures;

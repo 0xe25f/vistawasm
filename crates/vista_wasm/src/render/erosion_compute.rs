@@ -96,11 +96,11 @@ impl ErosionCompute {
 
     let hydraulic_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("VistaWASM hydraulic erosion shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/hydraulic_erosion.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::render::shaders::HYDRAULIC_EROSION.into()),
     });
     let thermal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("VistaWASM thermal erosion shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/thermal_erosion.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::render::shaders::THERMAL_EROSION.into()),
     });
 
     let hydraulic_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

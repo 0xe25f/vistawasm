@@ -74,13 +74,37 @@ struct MaterialSample {
   roughness: f32,
 };
 
+// Average colour of each material, used when textures are switched off.
+fn flat_colour(material: i32) -> vec3<f32> {
+  switch material {
+    case 0: { return vec3<f32>(0.05, 0.1, 0.02); }
+    case 1: { return vec3<f32>(0.24, 0.18, 0.08); }
+    case 2: { return vec3<f32>(0.035, 0.028, 0.016); }
+    case 3: { return vec3<f32>(0.45, 0.37, 0.24); }
+    case 4: { return vec3<f32>(0.14, 0.13, 0.12); }
+    case 5: { return vec3<f32>(0.78, 0.82, 0.88); }
+    case 6: { return vec3<f32>(0.045, 0.03, 0.02); }
+    default: { return vec3<f32>(0.015, 0.013, 0.012); }
+  }
+}
+
 fn sample_planar(
   material: i32,
   uv: vec2<f32>,
   ddx_uv: vec2<f32>,
   ddy_uv: vec2<f32>
 ) -> MaterialSample {
+  // `surface` is uniform, so these branches never diverge.
+  if (frame.surface.x < 0.5) {
+    return MaterialSample(flat_colour(material), 0.5, vec2<f32>(0.0), 1.0, 0.85);
+  }
+
   let a = textureSampleGrad(terrain_albedo, linear_sampler, uv, material, ddx_uv, ddy_uv);
+
+  if (frame.surface.y < 0.5) {
+    return MaterialSample(srgb_to_linear(a.rgb), a.a, vec2<f32>(0.0), 1.0, 0.85);
+  }
+
   let n = textureSampleGrad(terrain_normal, linear_sampler, uv, material, ddx_uv, ddy_uv);
   return MaterialSample(srgb_to_linear(a.rgb), a.a, n.rg * 2.0 - 1.0, n.b, n.a);
 }
@@ -95,7 +119,7 @@ fn sample_material(
   normal: vec3<f32>,
   far_blend: f32
 ) -> MaterialSample {
-  let scale = material_scale(material);
+  let scale = material_scale(material) * max(frame.surface.z, 0.01);
 
   if (material == MAT_ROCK) {
     // Triplanar projection weighted by the geometric normal.
@@ -270,7 +294,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   for (var k = 0; k < 3; k = k + 1) {
     if (top_weight[k] > 0.02) {
       let w = max(blend_height[k] - max_height + 0.22, 0.0);
-      albedo = albedo + samples[k].albedo * w;
+      albedo = albedo + samples[k].albedo * world.material_tints[top[k]].rgb * w;
       detail = detail + samples[k].detail * w;
       occlusion = occlusion + samples[k].occlusion * w;
       roughness = roughness + samples[k].roughness * w;
@@ -317,21 +341,50 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let macro_noise = textureSampleGrad(noise_texture, linear_sampler, macro_uv, ddx_p.xz / 380.0, ddy_p.xz / 380.0);
   albedo = albedo * (0.84 + macro_noise.g * 0.32) * mix(vec3<f32>(1.0), vec3<f32>(1.05, 1.0, 0.9), macro_noise.b * 0.5);
 
-  // Damp ground near water and in wet biomes darkens and turns glossy.
+  // Damp ground near water, in wet biomes, and after rain darkens and
+  // turns glossy; flat hollows collect puddles that mirror the sky.
   let shore = saturate(1.0 - (position.y - frame.water_shallow.w) / 2.5);
-  let wetness = saturate(max(wet_amount * 0.7, shore * 0.8) + (moisture - 0.8) * 0.5);
+  let rain_wet = frame.weather.z * (1.0 - snow_amount);
+  let wetness = saturate(max(max(wet_amount * 0.7, shore * 0.8), rain_wet * 0.85) + (moisture - 0.8) * 0.5);
   albedo = albedo * (1.0 - wetness * 0.35);
   roughness = mix(roughness, 0.18, wetness * 0.8);
+  var blend_height_avg = 0.0;
+
+  for (var k = 0; k < 3; k = k + 1) {
+    if (top_weight[k] > 0.02) {
+      blend_height_avg = max(blend_height_avg, samples[k].height);
+    }
+  }
+
+  let puddle = rain_wet * smoothstep(0.93, 0.99, geometric_normal.y)
+    * (1.0 - smoothstep(0.25, 0.42, blend_height_avg)) * smoothstep(0.35, 0.9, frame.weather.z);
 
   // Detail normal in world space (the textures are projected on XZ).
-  let detail_strength = mix(1.0, 0.35, far_blend);
+  let detail_strength = mix(1.0, 0.35, far_blend) * (1.0 - puddle);
   var normal = normalize(geometric_normal + vec3<f32>(detail.x, 0.0, detail.y) * detail_strength);
+
+  // Settled snow from the weather covers upward-facing ground.
+  let settled = frame.weather.w * smoothstep(0.55, 0.85, geometric_normal.y);
+
+  if (settled > 0.001) {
+    let snow_cover = saturate(settled * (0.75 + blend_height_avg * 0.5));
+    albedo = mix(albedo, vec3<f32>(0.8, 0.84, 0.9), snow_cover);
+    roughness = mix(roughness, 0.45, snow_cover);
+    snow_amount = max(snow_amount, snow_cover);
+  }
   // Snow settles on the upward-facing side of bumps.
   normal = normalize(mix(normal, geometric_normal, snow_amount * 0.5));
 
   let ao = occlusion * cavity;
   let specular = mix(0.35, 1.0, wetness) * (1.0 - roughness);
   var colour = shade_surface(albedo, normal, position, ao, specular + snow_amount * 0.25, max(roughness, 0.12));
+
+  if (puddle > 0.01) {
+    let view = normalize(frame.camera_position.xyz - position);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - saturate(view.y), 5.0);
+    let reflection = sky_radiance(reflect(-view, vec3<f32>(0.0, 1.0, 0.0)));
+    colour = mix(colour, colour * 0.4 + reflection * fresnel, puddle);
+  }
 
   // Snow glitter.
   if (snow_amount > 0.05) {

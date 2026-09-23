@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mist wind drift and sun scattering.
 - `"height"`, `"slope"`, `"normals"`, and `"materials"` debug views now
   render.
+- Weather system: clear, partly cloudy, overcast, fog, rain, storm, and
+  snow, with smooth transitions, optional automatic cycling, and per-effect
+  control. Rain and snow fall, ground gets wet with puddles, snow settles,
+  and storms bring lightning. New `setWeather()`, `getWeather()`,
+  `RenderStats.weather`, and the `"weatherChanged"` event.
+- Shadows from terrain (baked horizon map), trees (sun shadow map), and
+  clouds, each configurable through `ShadowOptions` and `setShadows()`.
+- Replacement hooks: `setTreeModel()`, `resetTreeModel()`,
+  `setTreeInstances()`, `replaceTexture()`, `resetTextures()`,
+  `FloraOptions.speciesRules`, and the `imageToRgba()` helper.
+- `SurfaceOptions` and `setSurface()`: flat-colour mode, detail normals,
+  texture scale, and per-material tints.
+- `CloudsOptions.resolutionScale`: clouds render at half resolution by
+  default.
+- The demo links to the GitHub repository and has weather, shadow, and
+  surface controls, including texture replacement from an image file.
 
 ### Changed
 
@@ -46,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Animation uses a real-time clock instead of a frame counter.
 - `setWater`, `setFlora`, `setGrass`, `setClouds`, and `setMist` now
   validate their input at the JavaScript boundary.
+- Clouds narrow into rounded domes instead of rising as straight-sided
+  columns.
+- Release builds use link-time optimisation, one codegen unit, size
+  optimisation, and `panic = "abort"`. Shaders are minified at build time
+  and `common.wgsl` is embedded once instead of once per shader.
 
 ### Removed
 

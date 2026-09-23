@@ -4,7 +4,9 @@ VistaWASM grows vegetation procedurally. No model files or image textures
 ship with the library: tree species are modelled from code and their bark
 and leaf textures are generated on the GPU when the engine starts. Trees
 and grass are two independent systems (`FloraOptions` and `GrassOptions`),
-and both follow the biome map (see [`docs/biomes.md`](biomes.md)).
+and both follow the biome map (see [`docs/biomes.md`](biomes.md)). To use
+your own tree models, species mixes, placement, or textures, see
+[`docs/hooks.md`](hooks.md).
 
 For the exact field list, see
 [`docs/options-reference.md`](options-reference.md#floraoptions) and

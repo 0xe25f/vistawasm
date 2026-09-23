@@ -18,8 +18,14 @@ import type {
   RenderQualityOptions,
   RenderStats,
   SnapshotOptions,
+  ShadowOptions,
   SunOptions,
+  SurfaceOptions,
   TerrainHandle,
+  TextureTarget,
+  TreeModel,
+  TreePlacement,
+  TreeSpecies,
   VistaEngine,
   VistaEngineOptions,
   VistaEventListener,
@@ -28,8 +34,25 @@ import type {
   VistaWasmGeneratedModule,
   VistaWasmInitOptions,
   VistaWasmRawEngine,
-  WaterOptions
+  WaterOptions,
+  WeatherKind,
+  WeatherOptions,
+  WeatherState
 } from "./types.js";
+
+const TREE_SPECIES: readonly TreeSpecies[] = [
+  "oak",
+  "pine",
+  "spruce",
+  "palm",
+  "jungle",
+  "cypress",
+  "acacia",
+  "shrub"
+];
+
+/** Edge length, in texels, of every replaceable texture layer. */
+export const TEXTURE_LAYER_SIZE = 512;
 
 
 export { VistaWasmError, detectVistaWasmSupport };
@@ -119,6 +142,8 @@ class VistaEngineWrapper implements VistaEngine {
    * and so on) must check this and skip rather than reenter the object.
    */
   private pendingCall: Promise<unknown> | null = null;
+
+  private lastWeather: WeatherKind | null = null;
 
   private lastStats: RenderStats = {
     frameIndex: 0,
@@ -282,6 +307,130 @@ class VistaEngineWrapper implements VistaEngine {
     this.call(() => this.raw.setDebugView(debugView));
   }
 
+  public setWeather(weather: WeatherOptions): void {
+    if (this.pendingCall) {
+      return;
+    }
+
+    const normalised =
+      weather.seedOffset === undefined
+        ? { ...weather }
+        : { ...weather, seedOffset: normaliseInteger(weather.seedOffset) };
+    this.call(() => this.raw.setWeather(normalised));
+  }
+
+  public getWeather(): WeatherState | undefined {
+    if (this.pendingCall) {
+      return undefined;
+    }
+
+    return this.call<WeatherState | undefined>(() => this.raw.getWeather());
+  }
+
+  public setShadows(shadows: ShadowOptions): void {
+    if (this.pendingCall) {
+      return;
+    }
+
+    this.call(() => this.raw.setShadows(shadows));
+  }
+
+  public setSurface(surface: SurfaceOptions): void {
+    if (this.pendingCall) {
+      return;
+    }
+
+    this.call(() => this.raw.setSurface(surface));
+  }
+
+  public setTreeModel(species: TreeSpecies, model: TreeModel): void {
+    assertSpecies(species);
+
+    if (!model || typeof model !== "object") {
+      throw new TypeError("setTreeModel() expects a model with positions, normals, uvs, and indices.");
+    }
+
+    const positions = toFloat32("positions", model.positions);
+    const normals = toFloat32("normals", model.normals);
+    const uvs = toFloat32("uvs", model.uvs);
+    const indices = toUint32("indices", model.indices);
+    const layers = model.textureLayers === undefined ? undefined : toFloat32("textureLayers", model.textureLayers);
+    const wind = model.wind === undefined ? undefined : toFloat32("wind", model.wind);
+    this.callWhenIdle(() =>
+      this.raw.setTreeModel(species, positions, normals, uvs, indices, layers, wind)
+    );
+  }
+
+  public resetTreeModel(species: TreeSpecies): void {
+    assertSpecies(species);
+    this.callWhenIdle(() => this.raw.resetTreeModel(species));
+  }
+
+  public setTreeInstances(trees: TreePlacement[] | undefined): void {
+    if (trees === undefined) {
+      this.callWhenIdle(() => this.raw.setTreeInstances(undefined));
+      return;
+    }
+
+    if (!Array.isArray(trees)) {
+      throw new TypeError("setTreeInstances() expects an array of trees or undefined.");
+    }
+
+    // Eight floats per tree keeps this one boundary crossing, however many
+    // trees there are.
+    const packed = new Float32Array(trees.length * 8);
+
+    trees.forEach((tree, index) => {
+      const species = TREE_SPECIES.indexOf(tree.species);
+
+      if (species < 0) {
+        throw new TypeError(
+          `Tree ${index} has an unknown species. Use one of: ${TREE_SPECIES.join(", ")}.`
+        );
+      }
+
+      packed.set(
+        [
+          tree.x,
+          tree.y,
+          tree.z,
+          tree.scale ?? 1,
+          tree.rotation ?? 0,
+          tree.tint ?? 0.5,
+          species,
+          tree.dryness ?? 0
+        ],
+        index * 8
+      );
+    });
+    this.callWhenIdle(() => this.raw.setTreeInstances(packed));
+  }
+
+  public replaceTexture(
+    target: TextureTarget,
+    layer: number,
+    rgba: Uint8Array | Uint8ClampedArray
+  ): void {
+    if (target !== "terrainAlbedo" && target !== "terrainNormal" && target !== "flora") {
+      throw new TypeError('replaceTexture() target must be "terrainAlbedo", "terrainNormal", or "flora".');
+    }
+
+    if (!Number.isInteger(layer) || layer < 0) {
+      throw new TypeError("replaceTexture() layer must be a whole number of at least 0.");
+    }
+
+    if (!(rgba instanceof Uint8Array || rgba instanceof Uint8ClampedArray)) {
+      throw new TypeError("replaceTexture() expects RGBA texels in a Uint8Array.");
+    }
+
+    const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+    this.callWhenIdle(() => this.raw.replaceTexture(target, layer, bytes));
+  }
+
+  public resetTextures(): void {
+    this.callWhenIdle(() => this.raw.resetTextures());
+  }
+
   public renderOnce(): RenderStats {
     if (this.pendingCall) {
       return this.lastStats;
@@ -290,8 +439,16 @@ class VistaEngineWrapper implements VistaEngine {
     const start = performance.now();
     const stats = this.call<RenderStats>(() => this.raw.renderOnce());
     stats.frameTimeMs = performance.now() - start;
+    stats.weather ??= null;
+    const weatherChanged = stats.weather !== this.lastWeather;
+    this.lastWeather = stats.weather;
     this.lastStats = stats;
     this.emit("stats", stats);
+
+    if (weatherChanged) {
+      this.emit("weatherChanged", stats.weather);
+    }
+
     return stats;
   }
 
@@ -440,6 +597,21 @@ class VistaEngineWrapper implements VistaEngine {
     }
   }
 
+  /**
+   * Hooks change engine state that must not be dropped silently, so unlike
+   * per-frame setters they fail loudly while terrain is generating.
+   */
+  private callWhenIdle(fn: () => unknown): void {
+    if (this.pendingCall) {
+      throw new VistaWasmError(
+        "INTERNAL_ERROR",
+        "Cannot replace trees or textures while terrain is generating. Await the terrain call first."
+      );
+    }
+
+    this.call(fn);
+  }
+
   private call<Result>(fn: () => unknown): Result {
     this.ensureLive();
 
@@ -516,8 +688,72 @@ function normaliseEngineOptions(options: VistaEngineOptions): VistaEngineOptions
     grass: options.grass ? normaliseGrassOptions(options.grass) : undefined,
     clouds: options.clouds ? normaliseCloudsOptions(options.clouds) : undefined,
     mist: options.mist ? normaliseMistOptions(options.mist) : undefined,
-    biomes: options.biomes ? normaliseBiomeOptions(options.biomes) : undefined
+    biomes: options.biomes ? normaliseBiomeOptions(options.biomes) : undefined,
+    weather:
+      options.weather?.seedOffset === undefined
+        ? options.weather
+        : { ...options.weather, seedOffset: normaliseInteger(options.weather.seedOffset) }
   };
+}
+
+function assertSpecies(species: TreeSpecies): void {
+  if (!TREE_SPECIES.includes(species)) {
+    throw new TypeError(`Unknown tree species. Use one of: ${TREE_SPECIES.join(", ")}.`);
+  }
+}
+
+function toFloat32(name: string, values: Float32Array | number[]): Float32Array {
+  if (values instanceof Float32Array) {
+    return values;
+  }
+
+  if (!Array.isArray(values)) {
+    throw new TypeError(`Tree model ${name} must be a Float32Array or an array of numbers.`);
+  }
+
+  return Float32Array.from(values);
+}
+
+function toUint32(name: string, values: Uint32Array | number[]): Uint32Array {
+  if (values instanceof Uint32Array) {
+    return values;
+  }
+
+  if (!Array.isArray(values)) {
+    throw new TypeError(`Tree model ${name} must be a Uint32Array or an array of numbers.`);
+  }
+
+  return Uint32Array.from(values);
+}
+
+/**
+ * Draw an image into a 512 x 512 RGBA8 texture layer for
+ * `replaceTexture()`. The image is stretched to fill the square, so use a
+ * square, seamlessly tiling image.
+ */
+export async function imageToRgba(
+  source: ImageBitmapSource,
+  size = TEXTURE_LAYER_SIZE
+): Promise<Uint8Array<ArrayBuffer>> {
+  const bitmap = await createImageBitmap(source, {
+    resizeWidth: size,
+    resizeHeight: size,
+    resizeQuality: "high",
+    premultiplyAlpha: "none",
+    colorSpaceConversion: "none"
+  });
+  const canvas = new OffscreenCanvas(size, size);
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    bitmap.close();
+    throw new VistaWasmError("INTERNAL_ERROR", "Could not create a 2D canvas to read the image.");
+  }
+
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const pixels = context.getImageData(0, 0, size, size).data;
+  return new Uint8Array(pixels.buffer.slice(0) as ArrayBuffer);
 }
 
 function normaliseFractalOptions(options: FractalTerrainOptions): FractalTerrainOptions {

@@ -7,6 +7,7 @@ import {
   downloadText,
   exportHeightmapImage,
   exportTerrainObj,
+  imageToRgba,
   renderHeightmapToCanvas
 } from "@vista-wasm/vista-wasm";
 
@@ -85,6 +86,24 @@ const inputs = {
   mistWindSpeed: input("mistWindSpeed"),
   mistWindDirection: input("mistWindDirection"),
   mistSunScattering: input("mistSunScattering"),
+  weatherEnabled: input("weatherEnabled"),
+  weatherState: select("weatherState"),
+  weatherAutoCycle: input("weatherAutoCycle"),
+  weatherAllowSnow: input("weatherAllowSnow"),
+  weatherTransition: input("weatherTransition"),
+  weatherWindScale: input("weatherWindScale"),
+  weatherPrecipitation: input("weatherPrecipitation"),
+  terrainShadows: input("terrainShadows"),
+  terrainShadowSoftness: input("terrainShadowSoftness"),
+  treeShadows: input("treeShadows"),
+  treeShadowDistance: input("treeShadowDistance"),
+  treeShadowResolution: select("treeShadowResolution"),
+  shadowStrength: input("shadowStrength"),
+  surfaceTextures: input("surfaceTextures"),
+  surfaceNormals: input("surfaceNormals"),
+  surfaceTextureScale: input("surfaceTextureScale"),
+  replaceTarget: select("replaceTarget"),
+  replaceFile: input("replaceFile"),
   quality: select("quality"),
   debugView: select("debugView")
 };
@@ -94,7 +113,19 @@ const buttons = {
   screenshot: button("screenshot"),
   downloadMap: button("downloadMap"),
   downloadModel: button("downloadModel"),
-  downloadHeightmap: button("downloadHeightmap")
+  downloadHeightmap: button("downloadHeightmap"),
+  resetTextures: button("resetTextures")
+};
+
+const weatherReadout = document.querySelector("#weatherReadout");
+const WEATHER_NAMES = {
+  clear: "clear",
+  partlyCloudy: "partly cloudy",
+  overcast: "overcast",
+  fog: "fog",
+  rain: "rain",
+  storm: "storm",
+  snow: "snow"
 };
 
 let engine = null;
@@ -295,6 +326,60 @@ function applyMist() {
   });
 }
 
+function applyWeather() {
+  engine?.setWeather({
+    enabled: inputs.weatherEnabled.checked,
+    state: inputs.weatherState.value,
+    autoCycle: inputs.weatherAutoCycle.checked,
+    allowSnow: inputs.weatherAllowSnow.checked,
+    transitionSeconds: readNumber(inputs.weatherTransition, 20),
+    windScale: readNumber(inputs.weatherWindScale, 1),
+    precipitationScale: readNumber(inputs.weatherPrecipitation, 1)
+  });
+
+  if (!inputs.weatherEnabled.checked && weatherReadout) {
+    weatherReadout.textContent = "Weather: off";
+  }
+}
+
+function applyShadows() {
+  const strength = readNumber(inputs.shadowStrength, 0.85);
+  engine?.setShadows({
+    terrain: {
+      enabled: inputs.terrainShadows.checked,
+      strength,
+      softness: readNumber(inputs.terrainShadowSoftness, 0.35)
+    },
+    trees: {
+      enabled: inputs.treeShadows.checked,
+      strength,
+      distanceMetres: readNumber(inputs.treeShadowDistance, 260),
+      resolution: readNumber(inputs.treeShadowResolution, 2048)
+    }
+  });
+}
+
+function applySurface() {
+  engine?.setSurface({
+    textures: inputs.surfaceTextures.checked,
+    detailNormals: inputs.surfaceNormals.checked,
+    textureScale: readNumber(inputs.surfaceTextureScale, 1)
+  });
+}
+
+async function replaceTextureFromFile() {
+  const file = inputs.replaceFile.files?.[0];
+
+  if (!engine || !file) {
+    return;
+  }
+
+  const [target, layer] = inputs.replaceTarget.value.split(":");
+  const rgba = await imageToRgba(file);
+  engine.replaceTexture(target, Number(layer), rgba);
+  setStatus(`Replaced the ${inputs.replaceTarget.selectedOptions[0].textContent} texture.`);
+}
+
 function applyQuality() {
   engine?.setRenderQuality({
     preset: inputs.quality.value,
@@ -316,6 +401,9 @@ function applyAllLiveControls() {
   applyGrass();
   applyClouds();
   applyMist();
+  applyWeather();
+  applyShadows();
+  applySurface();
   applyQuality();
   applyDebugView();
 }
@@ -484,6 +572,48 @@ function wireLiveControls() {
 
   inputs.mistStyle.addEventListener("change", applyMist);
 
+  for (const element of [
+    inputs.weatherEnabled,
+    inputs.weatherAutoCycle,
+    inputs.weatherAllowSnow,
+    inputs.weatherTransition,
+    inputs.weatherWindScale,
+    inputs.weatherPrecipitation
+  ]) {
+    element.addEventListener("input", applyWeather);
+  }
+
+  inputs.weatherState.addEventListener("change", applyWeather);
+
+  for (const element of [
+    inputs.terrainShadows,
+    inputs.terrainShadowSoftness,
+    inputs.treeShadows,
+    inputs.treeShadowDistance,
+    inputs.shadowStrength
+  ]) {
+    element.addEventListener("input", applyShadows);
+  }
+
+  inputs.treeShadowResolution.addEventListener("change", applyShadows);
+
+  for (const element of [
+    inputs.surfaceTextures,
+    inputs.surfaceNormals,
+    inputs.surfaceTextureScale
+  ]) {
+    element.addEventListener("input", applySurface);
+  }
+
+  inputs.replaceFile.addEventListener("change", () => {
+    replaceTextureFromFile().catch(showError);
+  });
+  buttons.resetTextures.addEventListener("click", () => {
+    engine?.resetTextures();
+    inputs.replaceFile.value = "";
+    setStatus("Restored the procedural textures.");
+  });
+
   inputs.quality.addEventListener("change", applyQuality);
   inputs.debugView.addEventListener("change", applyDebugView);
 }
@@ -592,6 +722,12 @@ async function run() {
       `Grass instances ${stats.grassInstances.toLocaleString()}`,
       `Clipmap levels ${stats.clipmapLevels}`
     ].join("\n");
+  });
+
+  engine.on("weatherChanged", (kind) => {
+    if (weatherReadout) {
+      weatherReadout.textContent = kind ? `Weather: ${WEATHER_NAMES[kind]}` : "Weather: off";
+    }
   });
 
   window.addEventListener("beforeunload", () => {

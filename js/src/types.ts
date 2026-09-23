@@ -75,6 +75,23 @@ export interface VistaWasmRawEngine {
   dispose(): void;
   exportHeightmap(): Uint8Array<ArrayBuffer>;
   getStats(): unknown;
+  setWeather(weather: unknown): void;
+  getWeather(): unknown;
+  setShadows(shadows: unknown): void;
+  setSurface(surface: unknown): void;
+  setTreeModel(
+    species: unknown,
+    positions: Float32Array,
+    normals: Float32Array,
+    uvs: Float32Array,
+    indices: Uint32Array,
+    textureLayers?: Float32Array,
+    wind?: Float32Array
+  ): void;
+  resetTreeModel(species: unknown): void;
+  setTreeInstances(packed?: Float32Array): void;
+  replaceTexture(target: unknown, layer: number, rgba: Uint8Array): void;
+  resetTextures(): void;
 }
 
 /**
@@ -92,6 +109,9 @@ export interface VistaEngineOptions {
   mist?: MistOptions;
   quality?: RenderQualityOptions;
   biomes?: BiomeOptions;
+  weather?: WeatherOptions;
+  shadows?: ShadowOptions;
+  surface?: SurfaceOptions;
 }
 
 /**
@@ -365,6 +385,206 @@ export interface FloraOptions {
   windStrength?: number;
   /** Distance at which meshes cross-fade to impostors. Defaults to `420`. */
   meshDistanceMetres?: number;
+  /**
+   * Per-biome rules that replace the built-in species mix. Biomes without
+   * a rule keep the built-in mix. Defaults to `[]`.
+   */
+  speciesRules?: FloraRule[];
+}
+
+/**
+ * Tree species slots. Each slot has a procedural model that
+ * `setTreeModel()` can replace.
+ */
+export type TreeSpecies =
+  | "oak"
+  | "pine"
+  | "spruce"
+  | "palm"
+  | "jungle"
+  | "cypress"
+  | "acacia"
+  | "shrub";
+
+/**
+ * Replaces the species mix for one biome.
+ */
+export interface FloraRule {
+  biome: BiomeKind;
+  /** Species by relative weight. An empty list keeps the biome treeless. */
+  species: { species: TreeSpecies; weight: number }[];
+  /** Multiplier on the biome's tree density, 0 to 4. Defaults to `1`. */
+  density?: number;
+}
+
+/**
+ * A host-supplied tree model. Units are metres with the base of the trunk
+ * at the origin and +Y up.
+ */
+export interface TreeModel {
+  /** Three numbers per vertex. At most 65,536 vertices. */
+  positions: Float32Array | number[];
+  /** Three numbers per vertex. */
+  normals: Float32Array | number[];
+  /** Two numbers per vertex. */
+  uvs: Float32Array | number[];
+  /** Three indices per triangle. */
+  indices: Uint32Array | number[];
+  /**
+   * Flora texture layer per vertex (0 to 9, see `docs/hooks.md`). Layers
+   * 4 and above are alpha-tested foliage. Defaults to `0` (oak bark).
+   */
+  textureLayers?: Float32Array | number[];
+  /** Sway weight per vertex, 0 (rigid) to 1. Defaults to rising with height. */
+  wind?: Float32Array | number[];
+}
+
+/**
+ * One host-placed tree.
+ */
+export interface TreePlacement {
+  x: number;
+  /** Height of the base of the trunk in metres. */
+  y: number;
+  z: number;
+  species: TreeSpecies;
+  /** Uniform scale, above 0 and at most 20. Defaults to `1`. */
+  scale?: number;
+  /** Rotation around the vertical axis in radians. Defaults to `0`. */
+  rotation?: number;
+  /** Colour variation, 0 to 1. Defaults to `0.5`. */
+  tint?: number;
+  /** Colour dryness, 0 (lush) to 1 (dry). Defaults to `0`. */
+  dryness?: number;
+}
+
+/**
+ * A texture array that host textures can replace, one layer at a time.
+ */
+export type TextureTarget = "terrainAlbedo" | "terrainNormal" | "flora";
+
+/**
+ * A weather state.
+ */
+export type WeatherKind =
+  | "clear"
+  | "partlyCloudy"
+  | "overcast"
+  | "fog"
+  | "rain"
+  | "storm"
+  | "snow";
+
+/**
+ * Which systems the weather drives. Anything switched off keeps its own
+ * manual settings. Every effect defaults to `true`.
+ */
+export interface WeatherEffects {
+  clouds?: boolean;
+  mist?: boolean;
+  wind?: boolean;
+  water?: boolean;
+  precipitation?: boolean;
+  ground?: boolean;
+  lightning?: boolean;
+}
+
+/**
+ * Weather pattern controls. Every field is optional.
+ */
+export interface WeatherOptions {
+  /** Whether the weather system is active. Defaults to `false`. */
+  enabled?: boolean;
+  /** The weather to move towards. Defaults to `"partlyCloudy"`. */
+  state?: WeatherKind;
+  /** Automatically move on to new weather over time. Defaults to `false`. */
+  autoCycle?: boolean;
+  /** Average time each state lasts when cycling. Defaults to `240`. */
+  stateDurationSeconds?: number;
+  /** Time taken to blend between states. Defaults to `30`. */
+  transitionSeconds?: number;
+  /** Whether snow may occur when cycling. Defaults to `false`. */
+  allowSnow?: boolean;
+  /** Seed for the weather sequence and gusts. Defaults to `4111`. */
+  seedOffset?: number | bigint;
+  /** Direction the wind blows towards. Defaults to `70`. */
+  windDirectionDegrees?: number;
+  /** Multiplier on wind speed, 0 to 4. Defaults to `1`. */
+  windScale?: number;
+  /** Multiplier on rain and snow, 0 to 2. Defaults to `1`. */
+  precipitationScale?: number;
+  effects?: WeatherEffects;
+}
+
+/**
+ * The current, blended weather reported by `getWeather()`.
+ */
+export interface WeatherState {
+  from: WeatherKind;
+  to: WeatherKind;
+  /** Blend from `from` (0) to `to` (1). */
+  blend: number;
+  cloudCoverage: number;
+  cloudDensity: number;
+  mistDensity: number;
+  windSpeedMetresPerSecond: number;
+  windDirectionDegrees: number;
+  rain: number;
+  snow: number;
+  /** Ground wetness; lags behind the rain. */
+  wetness: number;
+  /** Settled snow; builds up and melts slowly. */
+  snowCover: number;
+  lightning: number;
+}
+
+/**
+ * Shadow controls. Every field is optional.
+ */
+export interface ShadowOptions {
+  terrain?: {
+    /** Defaults to `true`. */
+    enabled?: boolean;
+    /** Darkness, 0 to 1. Defaults to `0.9`. */
+    strength?: number;
+    /** Penumbra width, 0 to 1. Defaults to `0.35`. */
+    softness?: number;
+  };
+  trees?: {
+    /** Defaults to `true`. */
+    enabled?: boolean;
+    /** Radius around the camera that trees shadow, 10 to 4000. Defaults to `260`. */
+    distanceMetres?: number;
+    /** Shadow map size. Defaults to `2048`. */
+    resolution?: 512 | 1024 | 2048 | 4096;
+    /** Darkness, 0 to 1. Defaults to `0.8`. */
+    strength?: number;
+    /** Filter width, 0 to 1. Defaults to `0.5`. */
+    softness?: number;
+  };
+  clouds?: {
+    /** Defaults to `true`. Also requires `CloudsOptions.castShadows`. */
+    enabled?: boolean;
+    /** Darkness, 0 to 1. Defaults to `0.78`. */
+    strength?: number;
+  };
+}
+
+/**
+ * Terrain surface shading controls. Every field is optional.
+ */
+export interface SurfaceOptions {
+  /** Detailed textured materials; `false` uses flat colours. Defaults to `true`. */
+  textures?: boolean;
+  /** Detail normal maps. Defaults to `true`. */
+  detailNormals?: boolean;
+  /** Multiplier on texture size, 0.05 to 20. Defaults to `1`. */
+  textureScale?: number;
+  /**
+   * Colour multiplier per material (0 to 4 per channel), in the order
+   * lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic.
+   */
+  materialTints?: [number, number, number][];
 }
 
 /**
@@ -465,6 +685,11 @@ export interface CloudsOptions {
   density?: number;
   /** Whether clouds cast moving shadows. Defaults to `true`. */
   castShadows?: boolean;
+  /**
+   * Cloud render resolution relative to the canvas, 0.25 to 1. Lower is
+   * faster; the soft clouds hide the difference. Defaults to `0.5`.
+   */
+  resolutionScale?: number;
 }
 
 /**
@@ -536,6 +761,8 @@ export interface RenderStats {
   grassInstances: number;
   clipmapLevels: number;
   activeGpuMemoryBytes?: number | null;
+  /** The dominant weather, or `null` when the weather system is off. */
+  weather?: WeatherKind | null;
 }
 
 /**
@@ -564,6 +791,8 @@ export interface VistaEventMap {
   stats: RenderStats;
   fatalError: Error;
   deviceLost: Error;
+  /** The dominant weather changed. */
+  weatherChanged: WeatherKind | null;
 }
 
 /**
@@ -598,6 +827,28 @@ export interface VistaEngine {
   setBiomes(biomes: BiomeOptions): void;
   biomeAt(x: number, z: number): BiomeKind | undefined;
   setDebugView(debugView: DebugView): void;
+  /** Replace weather controls. Changing `state` blends to the new weather. */
+  setWeather(weather: WeatherOptions): void;
+  /** The current blended weather, or `undefined` when the weather is off. */
+  getWeather(): WeatherState | undefined;
+  setShadows(shadows: ShadowOptions): void;
+  setSurface(surface: SurfaceOptions): void;
+  /** Replace one species' model. Impostors and shadows follow the new model. */
+  setTreeModel(species: TreeSpecies, model: TreeModel): void;
+  /** Restore one species' procedural model. */
+  resetTreeModel(species: TreeSpecies): void;
+  /**
+   * Replace procedural tree placement with your own trees, or pass
+   * `undefined` to restore procedural placement.
+   */
+  setTreeInstances(trees: TreePlacement[] | undefined): void;
+  /**
+   * Replace one texture layer with 512 x 512 RGBA8 texels. Use
+   * `imageToRgba()` to convert an image.
+   */
+  replaceTexture(target: TextureTarget, layer: number, rgba: Uint8Array | Uint8ClampedArray): void;
+  /** Restore every procedural texture. */
+  resetTextures(): void;
   renderOnce(): RenderStats;
   start(): void;
   stop(): void;

@@ -5,7 +5,8 @@ use web_sys::HtmlCanvasElement;
 use vista_types::{
   AtmosphereOptions, BiomeOptions, CameraOptions, CloudsOptions, DebugView, DemLoadOptions,
   FloraOptions, FractalTerrainOptions, GrassOptions, MistOptions, RawHeightmapOptions,
-  RenderQualityOptions, SunOptions, WaterOptions,
+  RenderQualityOptions, ShadowOptions, SunOptions, SurfaceOptions, TextureTarget, TreeSpeciesKind,
+  WaterOptions, WeatherOptions,
 };
 
 use crate::config::VistaEngineConfig;
@@ -250,6 +251,157 @@ impl VistaEngine {
       .map_err(|error| error.to_js_value())?;
 
     Ok(Uint8Array::from(bytes.as_slice()))
+  }
+
+  /// Replace weather controls.
+  #[wasm_bindgen(js_name = setWeather)]
+  pub fn set_weather(&mut self, weather: JsValue) -> Result<(), JsValue> {
+    let weather = from_js::<WeatherOptions>(weather)?;
+    crate::config::validate_weather(&weather).map_err(|error| error.to_js_value())?;
+    self
+      .core_mut()?
+      .set_weather(weather)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Return the current blended weather, or `undefined` when the weather
+  /// system is off.
+  #[wasm_bindgen(js_name = getWeather)]
+  pub fn get_weather(&self) -> Result<JsValue, JsValue> {
+    match self.core_ref()?.weather() {
+      Some(state) => to_js(&state),
+      None => Ok(JsValue::UNDEFINED),
+    }
+  }
+
+  /// Replace shadow controls.
+  #[wasm_bindgen(js_name = setShadows)]
+  pub fn set_shadows(&mut self, shadows: JsValue) -> Result<(), JsValue> {
+    let shadows = from_js::<ShadowOptions>(shadows)?;
+    crate::config::validate_shadows(&shadows).map_err(|error| error.to_js_value())?;
+    self
+      .core_mut()?
+      .set_shadows(shadows)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Replace terrain surface controls.
+  #[wasm_bindgen(js_name = setSurface)]
+  pub fn set_surface(&mut self, surface: JsValue) -> Result<(), JsValue> {
+    let surface = from_js::<SurfaceOptions>(surface)?;
+    crate::config::validate_surface(&surface).map_err(|error| error.to_js_value())?;
+    self
+      .core_mut()?
+      .set_surface(surface)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Replace one species' model. Arrays are copied; see the TypeScript
+  /// `TreeModel` type for the layout.
+  #[wasm_bindgen(js_name = setTreeModel)]
+  #[allow(clippy::too_many_arguments)]
+  pub fn set_tree_model(
+    &mut self,
+    species: JsValue,
+    positions: Vec<f32>,
+    normals: Vec<f32>,
+    uvs: Vec<f32>,
+    indices: Vec<u32>,
+    texture_layers: Option<Vec<f32>>,
+    wind: Option<Vec<f32>>,
+  ) -> Result<(), JsValue> {
+    let species = from_js::<TreeSpeciesKind>(species)?;
+    self
+      .core_mut()?
+      .set_tree_model(
+        species,
+        &positions,
+        &normals,
+        &uvs,
+        &indices,
+        texture_layers.as_deref(),
+        wind.as_deref(),
+      )
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Restore the procedural model for one species.
+  #[wasm_bindgen(js_name = resetTreeModel)]
+  pub fn reset_tree_model(&mut self, species: JsValue) -> Result<(), JsValue> {
+    let species = from_js::<TreeSpeciesKind>(species)?;
+    self
+      .core_mut()?
+      .reset_tree_model(species)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Replace procedural tree placement with packed instances (eight floats
+  /// per tree: x, y, z, scale, rotation, tint, species, dryness), or
+  /// restore procedural placement with `undefined`.
+  #[wasm_bindgen(js_name = setTreeInstances)]
+  pub fn set_tree_instances(&mut self, packed: Option<Vec<f32>>) -> Result<(), JsValue> {
+    let trees = match packed {
+      None => None,
+      Some(packed) => {
+        if !packed.len().is_multiple_of(8) {
+          return Err(
+            VistaError::options("tree instances must hold eight numbers per tree.").to_js_value(),
+          );
+        }
+
+        let mut trees = Vec::with_capacity(packed.len() / 8);
+
+        for tree in packed.chunks_exact(8) {
+          let species = tree[6];
+
+          if !(0.0..8.0).contains(&species) || species.fract() != 0.0 {
+            return Err(
+              VistaError::options("tree species must be a whole number from 0 to 7.").to_js_value(),
+            );
+          }
+
+          trees.push(crate::render::flora::TreeInstance {
+            position: [tree[0], tree[1], tree[2]],
+            scale: tree[3],
+            rotation: tree[4],
+            tint: tree[5],
+            species: species as u32,
+            dryness: tree[7],
+          });
+        }
+
+        Some(trees)
+      }
+    };
+
+    self
+      .core_mut()?
+      .set_tree_instances(trees)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Replace one layer of a texture array with 512 x 512 RGBA8 texels.
+  #[wasm_bindgen(js_name = replaceTexture)]
+  pub fn replace_texture(
+    &mut self,
+    target: JsValue,
+    layer: u32,
+    rgba: Vec<u8>,
+  ) -> Result<(), JsValue> {
+    let target = from_js::<TextureTarget>(target)?;
+    self
+      .core_mut()?
+      .replace_texture(target, layer, &rgba)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// Restore every procedural texture.
+  #[wasm_bindgen(js_name = resetTextures)]
+  pub fn reset_textures(&mut self) -> Result<(), JsValue> {
+    self
+      .core_mut()?
+      .reset_textures()
+      .map_err(|error| error.to_js_value())
   }
 
   /// Return current render statistics.

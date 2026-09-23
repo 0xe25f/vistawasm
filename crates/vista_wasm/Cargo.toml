@@ -36,3 +36,4 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 futures-executor = "0.3"
+naga = { version = "30", features = ["wgsl-in"] }

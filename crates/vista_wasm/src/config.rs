@@ -1,7 +1,7 @@
 use vista_types::{
   AtmosphereOptions, BiomeOptions, CameraOptions, CloudStyle, CloudsOptions, FloraOptions,
-  GrassOptions, MistOptions, RenderQualityOptions, RenderSizeOptions, SunOptions,
-  VistaEngineOptions, WaterOptions,
+  GrassOptions, MistOptions, RenderQualityOptions, RenderSizeOptions, ShadowOptions, SunOptions,
+  SurfaceOptions, VistaEngineOptions, WaterOptions, WeatherOptions,
 };
 
 use crate::errors::{VistaError, VistaResult};
@@ -38,6 +38,12 @@ pub struct VistaEngineConfig {
   pub quality: RenderQualityOptions,
   /// Initial biome controls.
   pub biomes: BiomeOptions,
+  /// Initial weather controls.
+  pub weather: WeatherOptions,
+  /// Initial shadow controls.
+  pub shadows: ShadowOptions,
+  /// Initial terrain surface controls.
+  pub surface: SurfaceOptions,
 }
 
 impl VistaEngineConfig {
@@ -58,6 +64,9 @@ impl VistaEngineConfig {
     let mist = options.mist.or(defaults.mist).unwrap_or_default();
     let quality = options.quality.or(defaults.quality).unwrap_or_default();
     let biomes = options.biomes.or(defaults.biomes).unwrap_or_default();
+    let weather = options.weather.or(defaults.weather).unwrap_or_default();
+    let shadows = options.shadows.or(defaults.shadows).unwrap_or_default();
+    let surface = options.surface.or(defaults.surface).unwrap_or_default();
 
     validate_render_size(&render)?;
     validate_camera(&camera)?;
@@ -75,6 +84,9 @@ impl VistaEngineConfig {
     validate_clouds(&clouds)?;
     validate_mist(&mist)?;
     validate_biomes(&biomes)?;
+    validate_weather(&weather)?;
+    validate_shadows(&shadows)?;
+    validate_surface(&surface)?;
 
     Ok(Self {
       render,
@@ -88,6 +100,9 @@ impl VistaEngineConfig {
       mist,
       quality,
       biomes,
+      weather,
+      shadows,
+      surface,
     })
   }
 
@@ -290,6 +305,27 @@ pub fn validate_flora(flora: &FloraOptions) -> VistaResult<()> {
   validate_non_negative("flora.speciesVariation", flora.species_variation)?;
   validate_non_negative("flora.windStrength", flora.wind_strength)?;
   validate_positive("flora.meshDistanceMetres", flora.mesh_distance_metres)?;
+
+  if flora.species_rules.len() > 64 {
+    return Err(VistaError::options(
+      "flora.speciesRules may hold at most 64 rules.",
+    ));
+  }
+
+  for rule in &flora.species_rules {
+    validate_unit_range("flora.speciesRules density", rule.density, 0.0, 4.0)?;
+
+    if rule.species.len() > 8 {
+      return Err(VistaError::options(
+        "each flora.speciesRules entry may list at most 8 species.",
+      ));
+    }
+
+    for choice in &rule.species {
+      validate_non_negative("flora.speciesRules weight", choice.weight)?;
+    }
+  }
+
   Ok(())
 }
 
@@ -325,6 +361,7 @@ pub fn validate_clouds(clouds: &CloudsOptions) -> VistaResult<()> {
   validate_positive("clouds.thicknessMetres", clouds.thickness_metres)?;
   validate_non_negative("clouds.density", clouds.density)?;
   validate_colour("clouds.colour", clouds.colour)?;
+  validate_unit_range("clouds.resolutionScale", clouds.resolution_scale, 0.25, 1.0)?;
 
   if clouds.style == CloudStyle::Volumetric {
     let steps = clouds.raymarch_steps.unwrap_or(24);
@@ -354,9 +391,123 @@ pub fn validate_mist(mist: &MistOptions) -> VistaResult<()> {
   Ok(())
 }
 
+/// Validate that a value lies in an inclusive floating-point range.
+pub fn validate_unit_range(name: &str, value: f32, min: f32, max: f32) -> VistaResult<()> {
+  validate_finite(name, value)?;
+
+  if value < min || value > max {
+    return Err(VistaError::options(format!(
+      "{name} must be between {min} and {max}."
+    )));
+  }
+
+  Ok(())
+}
+
+/// Validate weather controls.
+pub fn validate_weather(weather: &WeatherOptions) -> VistaResult<()> {
+  validate_positive(
+    "weather.stateDurationSeconds",
+    weather.state_duration_seconds,
+  )?;
+  validate_non_negative("weather.transitionSeconds", weather.transition_seconds)?;
+  validate_finite(
+    "weather.windDirectionDegrees",
+    weather.wind_direction_degrees,
+  )?;
+  validate_unit_range("weather.windScale", weather.wind_scale, 0.0, 4.0)?;
+  validate_unit_range(
+    "weather.precipitationScale",
+    weather.precipitation_scale,
+    0.0,
+    2.0,
+  )?;
+  Ok(())
+}
+
+/// Tree shadow map resolutions the renderer accepts.
+pub const TREE_SHADOW_RESOLUTIONS: [u32; 4] = [512, 1024, 2048, 4096];
+
+/// Validate shadow controls.
+pub fn validate_shadows(shadows: &ShadowOptions) -> VistaResult<()> {
+  validate_unit_range(
+    "shadows.terrain.strength",
+    shadows.terrain.strength,
+    0.0,
+    1.0,
+  )?;
+  validate_unit_range(
+    "shadows.terrain.softness",
+    shadows.terrain.softness,
+    0.0,
+    1.0,
+  )?;
+  validate_unit_range(
+    "shadows.trees.distanceMetres",
+    shadows.trees.distance_metres,
+    10.0,
+    4_000.0,
+  )?;
+
+  if !TREE_SHADOW_RESOLUTIONS.contains(&shadows.trees.resolution) {
+    return Err(VistaError::options(
+      "shadows.trees.resolution must be 512, 1024, 2048, or 4096.",
+    ));
+  }
+
+  validate_unit_range("shadows.trees.strength", shadows.trees.strength, 0.0, 1.0)?;
+  validate_unit_range("shadows.trees.softness", shadows.trees.softness, 0.0, 1.0)?;
+  validate_unit_range("shadows.clouds.strength", shadows.clouds.strength, 0.0, 1.0)?;
+  Ok(())
+}
+
+/// Validate terrain surface controls.
+pub fn validate_surface(surface: &SurfaceOptions) -> VistaResult<()> {
+  validate_unit_range("surface.textureScale", surface.texture_scale, 0.05, 20.0)?;
+
+  for tint in surface.material_tints {
+    validate_colour("surface.materialTints", tint)?;
+  }
+
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn rejects_invalid_weather_shadow_and_surface_options() {
+    let shadows = VistaEngineOptions {
+      shadows: Some(ShadowOptions {
+        trees: vista_types::TreeShadowOptions {
+          resolution: 3000,
+          ..Default::default()
+        },
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+    let weather = VistaEngineOptions {
+      weather: Some(WeatherOptions {
+        wind_scale: f32::NAN,
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+    let surface = VistaEngineOptions {
+      surface: Some(SurfaceOptions {
+        texture_scale: 0.0,
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+
+    assert!(VistaEngineConfig::from_options(shadows).is_err());
+    assert!(VistaEngineConfig::from_options(weather).is_err());
+    assert!(VistaEngineConfig::from_options(surface).is_err());
+    assert!(VistaEngineConfig::from_options(VistaEngineOptions::default()).is_ok());
+  }
 
   #[test]
   fn rejects_zero_render_size() {

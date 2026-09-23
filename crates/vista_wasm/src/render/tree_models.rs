@@ -1315,13 +1315,21 @@ pub struct TreeLibrary {
 
 /// Build every species and merge them.
 pub fn build_tree_library() -> TreeLibrary {
+  let meshes: Vec<TreeMesh> = TreeSpecies::ALL
+    .iter()
+    .map(|species| build_species_mesh(*species))
+    .collect();
+  merge_tree_meshes(&meshes)
+}
+
+/// Merge one mesh per species slot into a library.
+pub fn merge_tree_meshes(meshes: &[TreeMesh]) -> TreeLibrary {
   let mut vertices = Vec::new();
   let mut indices = Vec::new();
   let mut ranges = [(0, 0, 0); SPECIES_COUNT];
   let mut bounds = [(1.0, 1.0); SPECIES_COUNT];
 
-  for (slot, species) in TreeSpecies::ALL.iter().enumerate() {
-    let mesh = build_species_mesh(*species);
+  for (slot, mesh) in meshes.iter().take(SPECIES_COUNT).enumerate() {
     ranges[slot] = (
       indices.len() as u32,
       mesh.indices.len() as u32,
@@ -1338,6 +1346,111 @@ pub fn build_tree_library() -> TreeLibrary {
     ranges,
     bounds,
   }
+}
+
+/// Largest custom tree mesh accepted, in vertices.
+pub const MAX_CUSTOM_TREE_VERTICES: usize = 65_536;
+
+/// Build a tree mesh from host-supplied arrays, validating everything.
+///
+/// `positions` and `normals` hold three floats per vertex, `uvs` two, and
+/// `indices` three per triangle. `layers` optionally gives a flora texture
+/// layer per vertex (default 0, opaque bark); layers at or above
+/// [`layers::FIRST_FOLIAGE`] are alpha-tested. `wind` optionally gives a
+/// sway weight from 0 (rigid) to 1 per vertex; by default it grows with
+/// height. Units are metres with the base of the trunk at the origin.
+pub fn mesh_from_arrays(
+  positions: &[f32],
+  normals: &[f32],
+  uvs: &[f32],
+  indices: &[u32],
+  texture_layers: Option<&[f32]>,
+  wind: Option<&[f32]>,
+) -> Result<TreeMesh, String> {
+  if positions.is_empty() || !positions.len().is_multiple_of(3) {
+    return Err("positions must hold three numbers per vertex.".to_string());
+  }
+
+  let count = positions.len() / 3;
+
+  if count > MAX_CUSTOM_TREE_VERTICES {
+    return Err(format!(
+      "a tree model may have at most {MAX_CUSTOM_TREE_VERTICES} vertices."
+    ));
+  }
+
+  if normals.len() != count * 3 {
+    return Err("normals must hold three numbers per vertex.".to_string());
+  }
+
+  if uvs.len() != count * 2 {
+    return Err("uvs must hold two numbers per vertex.".to_string());
+  }
+
+  if indices.is_empty() || !indices.len().is_multiple_of(3) {
+    return Err("indices must hold three indices per triangle.".to_string());
+  }
+
+  if indices.iter().any(|index| *index as usize >= count) {
+    return Err("indices must refer to existing vertices.".to_string());
+  }
+
+  if positions
+    .iter()
+    .chain(normals)
+    .chain(uvs)
+    .any(|value| !value.is_finite())
+  {
+    return Err("positions, normals, and uvs must be finite.".to_string());
+  }
+
+  if let Some(layers) = texture_layers {
+    if layers.len() != count {
+      return Err("textureLayers must hold one layer per vertex.".to_string());
+    }
+
+    if layers
+      .iter()
+      .any(|layer| !layer.is_finite() || *layer < 0.0 || *layer >= layers::COUNT as f32)
+    {
+      return Err(format!(
+        "textureLayers must be between 0 and {}.",
+        layers::COUNT - 1
+      ));
+    }
+  }
+
+  if let Some(weights) = wind {
+    if weights.len() != count || weights.iter().any(|value| !(0.0..=1.0).contains(value)) {
+      return Err("windWeights must hold one value from 0 to 1 per vertex.".to_string());
+    }
+  }
+
+  let height = (0..count)
+    .map(|i| positions[i * 3 + 1])
+    .fold(0.0f32, f32::max)
+    .max(0.1);
+  let mut builder = Builder::new(height);
+
+  for i in 0..count {
+    let position = [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]];
+    let layer = texture_layers.map_or(0.0, |layers| layers[i].floor());
+    let sway = wind.map_or_else(|| builder.wind_for(position, 0.0), |weights| weights[i]);
+    builder.push(
+      position,
+      [normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]],
+      [uvs[i * 2], uvs[i * 2 + 1]],
+      sway,
+      Surface {
+        layer,
+        ao: 1.0,
+        phase: (i as f32 * 0.618).fract() * TAU,
+      },
+    );
+  }
+
+  builder.indices.extend_from_slice(indices);
+  Ok(builder.finish())
 }
 
 const _: () = assert!(std::mem::size_of::<TreeVertex>() == 48);
@@ -1410,6 +1523,29 @@ mod tests {
       .vertices
       .iter()
       .any(|vertex| vertex.params[0] < layers::FIRST_FOLIAGE));
+  }
+
+  #[test]
+  fn custom_meshes_are_validated() {
+    let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 5.0, 0.0];
+    let normals = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let uvs = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let mesh = mesh_from_arrays(&positions, &normals, &uvs, &[0, 1, 2], None, None).unwrap();
+
+    assert_eq!(mesh.vertices.len(), 3);
+    assert!((mesh.height - 5.0).abs() < 1e-5);
+    assert!(mesh_from_arrays(&positions, &normals, &uvs, &[0, 1, 3], None, None).is_err());
+    assert!(mesh_from_arrays(&positions, &normals[..6], &uvs, &[0, 1, 2], None, None).is_err());
+    assert!(mesh_from_arrays(
+      &positions,
+      &normals,
+      &uvs,
+      &[0, 1, 2],
+      Some(&[0.0, 12.0, 0.0]),
+      None
+    )
+    .is_err());
+    assert!(mesh_from_arrays(&[f32::NAN; 9], &normals, &uvs, &[0, 1, 2], None, None).is_err());
   }
 
   #[test]

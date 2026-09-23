@@ -4,6 +4,9 @@ VistaWASM's sky, clouds, and fog are drawn by one full-screen composite
 pass (`shaders/atmosphere.wgsl`) after the opaque scene, reading its depth
 buffer. The sky model itself lives in `shaders/common.wgsl`, shared by every
 shader. This document covers the sun, the sky, clouds, and ground mist.
+To have them change together with rain, snow, and wind, use the weather
+system in [`docs/weather.md`](weather.md). Shadows are covered in
+[`docs/shadows.md`](shadows.md).
 
 For the exact field list of every option mentioned here, see
 [`docs/options-reference.md`](options-reference.md).

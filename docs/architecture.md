@@ -100,31 +100,52 @@ three. Other setters only change uniforms.
 
 ### Per frame
 
-1. **Tree culling** (compute, `shaders/tree_cull.wgsl`) frustum-tests every
+1. **Weather** (CPU, `weather.rs`) advances by the frame time and is
+    applied to the cloud, mist, wind, water, and haze options before they
+    reach the GPU. Nothing is uploaded when the weather is off.
+2. **Terrain shadow bake** (compute, `shaders/terrain_shadow.wgsl`) runs
+    only when the sun, softness, or terrain has changed. It marches across
+    the height texture towards the sun and writes a lit fraction per texel.
+3. **Tree culling** (compute, `shaders/tree_cull.wgsl`) frustum-tests every
     tree and appends it to per-species mesh and/or impostor lists by
     distance, writing the instance counts of the indirect draw arguments.
-2. **Opaque pass** into a linear `rgba16float` target plus depth:
+    Trees near the camera also go to a shadow-caster list, frustum or not.
+4. **Tree shadow pass** (`shaders/shadow.wgsl`) draws each caster as one
+    sun-facing, alpha-tested impostor quad into a depth-only orthographic
+    shadow map, texel-snapped to stop shimmering.
+5. **Opaque pass** into a linear `rgba16float` target plus depth:
     - terrain (`shaders/clipmap_render.wgsl`), texture-splatting the three
       strongest of eight materials with height blending, triplanar rock,
-      detail normals, and climate tinting;
+      detail normals, climate tinting, wetness, puddles, and snow;
     - tree meshes and impostors (`shaders/trees.wgsl`) via indirect draws;
     - grass (`shaders/grass_instances.wgsl`), alpha-tested.
-3. **Composite pass** (`shaders/atmosphere.wgsl`) onto the canvas: reads
-    the HDR target and depth, draws sky, sun, and clouds behind (and in front
-    of) geometry, applies haze and mist along each pixel's true view ray,
-    and tone maps (ACES).
-4. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
+6. **Cloud pass** (`shaders/atmosphere.wgsl`, `cloud_main`) raymarches the
+    clouds at a reduced resolution (`CloudsOptions.resolutionScale`,
+    default half) into an `rgba16float` target. Skipped when there are no
+    clouds.
+7. **Composite pass** (`shaders/atmosphere.wgsl`) onto the canvas: reads
+    the HDR target, depth, and upsampled clouds, draws sky and sun, applies
+    haze and mist along each pixel's true view ray, adds rain and snow, and
+    tone maps (ACES).
+8. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
     depth-tested against the opaque scene, alpha-blended, fogged, and tone
     mapped in the same way.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (432 bytes), the shared world
-textures (bind group 1), the sky model, lighting, fog integrals, and cloud
-shadows. Because there is exactly one declaration, the Rust struct in
-`render/gpu.rs` and the WGSL struct cannot drift apart per shader, and a
-compile-time size assertion guards the Rust side. Animation uses a
-real-time clock (`camera_position.w`), so wind, water, clouds, and mist
-move at the same speed regardless of frame rate.
+declares the one `FrameUniforms` struct (560 bytes), the shared world
+textures (bind group 1), shadow receivers (bind group 2), the sky model,
+lighting, fog integrals, and every shadow lookup. Because there is exactly
+one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct
+cannot drift apart per shader, and a compile-time size assertion guards the
+Rust side. `build.rs` strips comments and indentation from each shader, and
+`common.wgsl` is embedded once and prepended at run time, which keeps the
+binary small. Every shader is validated with naga in `cargo test`. Each
+shader module is compiled once and shared by every pipeline that uses it.
+
+Animation uses a real-time clock (`camera_position.w`), and wind-driven
+offsets are integrated over time, so wind, water, clouds, and mist move at
+the same speed regardless of frame rate and never jump when the wind
+changes.
 
 ### Terrain rendering and level of detail
 

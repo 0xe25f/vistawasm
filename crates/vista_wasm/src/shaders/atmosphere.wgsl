@@ -9,14 +9,21 @@
 // - apply haze and height-based mist with the true distance to every
 //   pixel, in one place, instead of each object shader approximating it.
 //
+// Clouds are raymarched in their own pass (`cloud_main`) at a reduced
+// resolution (`CloudsOptions.resolutionScale`) into an `rgba16float` target
+// holding in-scattered light and transmittance; the composite upsamples it.
+// Clouds are soft, so half resolution is indistinguishable from full at a
+// quarter of the cost. The composite also draws rain and snow.
+//
 // Clouds have two styles. `Painted` shades a single 2D weather layer with
 // a cheap sun-offset self-shadow. `Volumetric` raymarches a cloud slab
 // through baked 3D Perlin-Worley noise, with a short secondary march
 // towards the sun (Beer-powder lighting), a dual-lobe phase function for
 // silver linings, and wind drift plus slow billowing evolution.
 
-@group(2) @binding(0) var scene_texture: texture_2d<f32>;
-@group(2) @binding(1) var depth_texture: texture_depth_2d;
+@group(3) @binding(0) var scene_texture: texture_2d<f32>;
+@group(3) @binding(1) var depth_texture: texture_depth_2d;
+@group(3) @binding(2) var cloud_texture_low: texture_2d<f32>;
 
 struct VertexOut {
   @builtin(position) clip_position: vec4<f32>,
@@ -70,11 +77,13 @@ fn cloud_shape(p: vec3<f32>, weather: f32) -> f32 {
     return 0.0;
   }
 
-  // Denser weather grows taller clouds; bases are flat, tops rounded.
-  let top = mix(0.3, 1.0, weather);
-  let profile = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(top * 0.55, top, h));
+  // Denser weather grows taller clouds. Bases are flat; the threshold
+  // rises with height so each cloud narrows into a rounded dome instead
+  // of rising as a straight-sided column.
+  let top = mix(0.25, 1.0, weather * weather);
+  let profile = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(top * 0.3, top, h));
   let shape = textureSampleLevel(cloud_texture, linear_sampler, (p + cloud_wind_offset()) / 5600.0, 0.0).r;
-  return saturate(remap(shape * profile, 1.0 - weather * 0.9, 1.0, 0.0, 1.0));
+  return saturate(remap(shape * profile, 1.0 - weather * 0.9 + h * h * 0.45, 1.0, 0.0, 1.0));
 }
 
 fn cloud_density(p: vec3<f32>, weather: f32) -> f32 {
@@ -243,12 +252,123 @@ fn sun_disc(ray: vec3<f32>) -> vec3<f32> {
   return sun_transmittance(sun_dir().y) * frame.sun_direction.w * (disc * 900.0 + glow * 6.0);
 }
 
+// Distance along `ray` at which it enters the cloud slab, or a huge value
+// when it never does.
+fn cloud_entry_distance(ray: vec3<f32>) -> f32 {
+  let camera_y = frame.camera_position.y;
+  let base = frame.cloud_params.y;
+  let top = base + max(frame.cloud_params.z, 1.0);
+
+  if (camera_y >= base && camera_y <= top) {
+    return 0.0;
+  }
+
+  if (camera_y < base) {
+    return select(1.0e9, (base - camera_y) / ray.y, ray.y > 0.004);
+  }
+
+  return select(1.0e9, (top - camera_y) / ray.y, ray.y < -0.004);
+}
+
+// Full-resolution pixel covered by a fragment of the reduced cloud target.
+fn full_pixel(ndc: vec2<f32>) -> vec2<i32> {
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+  return vec2<i32>(clamp(uv * frame.viewport.xy, vec2<f32>(0.0), frame.viewport.xy - 1.0));
+}
+
+// Reduced-resolution cloud pass. Output: rgb = in-scattered light already
+// faded into the haze, a = transmittance.
+@fragment
+fn cloud_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let ray = view_ray(in.ndc);
+  let depth = textureLoad(depth_texture, full_pixel(in.ndc), 0);
+  let is_sky = depth >= 0.999999;
+  let max_distance = select(linear_distance(depth, ray), 1.0e9, is_sky);
+  let clouds = march_clouds(ray, max_distance, in.clip_position.xy);
+
+  if (clouds.transmittance >= 0.999) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+
+  // Distant clouds fade into the haze near the horizon.
+  let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
+  let sky = sky_radiance(ray);
+  let scatter = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
+  return vec4<f32>(scatter, clouds.transmittance);
+}
+
+// Rain streaks and snowflakes in a few depth layers around the camera.
+// Layers are anchored to world space (arc length around the camera and
+// height), so precipitation stays put when the camera turns and falls at
+// real speeds, slanted by the wind. Returns light (rgb) and coverage (a).
+fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
+  let rain = frame.weather.x;
+  let snow = frame.weather.y;
+
+  if (rain + snow < 0.005) {
+    return vec4<f32>(0.0);
+  }
+
+  let t = time_seconds();
+  let camera = frame.camera_position.xyz;
+  let flat_ray = normalize(vec2<f32>(ray.x, ray.z) + vec2<f32>(0.00001, 0.0));
+  let side_wind = dot(frame.weather2.zw, vec2<f32>(-flat_ray.y, flat_ray.x));
+  let angle = atan2(ray.z, ray.x);
+  var coverage = 0.0;
+
+  for (var layer = 0; layer < 4; layer = layer + 1) {
+    let distance = 3.0 * pow(2.0, f32(layer));
+
+    if (distance > max_distance) {
+      break;
+    }
+
+    let p = camera + ray * distance;
+    let arc = angle * distance;
+    let fade = 1.0 - f32(layer) * 0.18;
+
+    if (rain > 0.005) {
+      let fall = p.y + t * 9.0;
+      let x = arc - fall * side_wind / 9.0;
+      let cell = vec2<f32>(floor(x / 0.11), floor(fall / 1.7));
+      let local = vec2<f32>(fract(x / 0.11), fract(fall / 1.7));
+      let h = hash12(cell + f32(layer) * 31.7);
+      let present = step(h, rain * 0.4);
+      let offset = hash12(cell + 7.3) * 0.5;
+      let along = local.y - offset;
+      let streak = (1.0 - smoothstep(0.03, 0.09, abs(local.x - 0.5)))
+        * smoothstep(0.0, 0.15, along) * (1.0 - smoothstep(0.35, 0.5, along));
+      coverage = coverage + streak * present * 0.3 * fade;
+    }
+
+    if (snow > 0.005) {
+      let fall = p.y + t * 1.1;
+      let sway = sin(t * 0.8 + p.y * 0.7 + f32(layer)) * 0.25;
+      let x = arc - fall * side_wind / 1.1 + sway;
+      let cell = vec2<f32>(floor(x / 0.32), floor(fall / 0.32));
+      let local = vec2<f32>(fract(x / 0.32), fract(fall / 0.32));
+      let h = hash12(cell + f32(layer) * 17.3);
+      let centre = vec2<f32>(hash12(cell + 3.1), hash12(cell + 9.7)) * 0.6 + 0.2;
+      let radius = 0.05 + h * 0.07;
+      let flake = 1.0 - smoothstep(radius * 0.5, radius, length(local - centre));
+      coverage = coverage + flake * step(h, snow * 0.7) * 0.8 * fade;
+    }
+  }
+
+  let light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * 0.08;
+  let tint = select(vec3<f32>(0.75, 0.8, 0.85), vec3<f32>(1.0), snow > rain);
+  return vec4<f32>(light * tint, saturate(coverage));
+}
+
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let pixel = vec2<i32>(in.clip_position.xy);
   let depth = textureLoad(depth_texture, pixel, 0);
   let ray = view_ray(in.ndc);
+  let uv = in.clip_position.xy * frame.viewport.zw;
+  let clouds_on = frame.cloud_params.x > 0.001;
   var colour: vec3<f32>;
+  var distance = 1.0e9;
 
   if (depth >= 0.999999) {
     // Background: sky, sun, and clouds.
@@ -261,28 +381,29 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     colour = sky + sun_disc(ray) * step(0.0, ray.y);
-    let clouds = march_clouds(ray, 1.0e9, in.clip_position.xy);
 
-    if (clouds.transmittance < 0.999) {
-      // Distant clouds fade into the haze near the horizon.
-      let haze = exp(-clouds.distance / max(frame.atmosphere.z * 1.4, 1.0));
-      let cloud_colour = mix(sky * (1.0 - clouds.transmittance), clouds.scatter, haze);
-      colour = colour * clouds.transmittance + cloud_colour;
+    if (clouds_on) {
+      let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
+      colour = colour * clouds.a + clouds.rgb;
     }
 
     let mist = atmospheric_fog(ray, 12000.0, in.clip_position.xy, false);
     colour = colour * mist.transmittance + mist.inscatter;
   } else {
     let scene = textureLoad(scene_texture, pixel, 0).rgb;
-    let distance = linear_distance(depth, ray);
+    distance = linear_distance(depth, ray);
     let fog = atmospheric_fog(ray, distance, in.clip_position.xy, true);
     colour = scene * fog.transmittance + fog.inscatter;
-    let clouds = march_clouds(ray, distance, in.clip_position.xy);
 
-    if (clouds.transmittance < 0.999) {
-      colour = colour * clouds.transmittance + clouds.scatter;
+    // Only geometry that reaches into the cloud layer can have clouds in
+    // front of it; skipping the rest avoids upsampling halos on low ground.
+    if (clouds_on && cloud_entry_distance(ray) < distance) {
+      let clouds = textureSampleLevel(cloud_texture_low, clamp_sampler, uv, 0.0);
+      colour = colour * clouds.a + clouds.rgb;
     }
   }
 
+  let falling = precipitation(ray, distance);
+  colour = mix(colour, falling.rgb, falling.a);
   return vec4<f32>(finish_colour(colour), 1.0);
 }

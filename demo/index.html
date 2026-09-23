@@ -35,6 +35,11 @@
         </div>
       </section>
       <aside class="controls" aria-label="VistaWASM controls">
+        <header class="project">
+          <strong>VistaWASM</strong>
+          <a href="https://github.com/0xe25f/vistawasm" target="_blank" rel="noopener">Source code and docs on GitHub</a>
+        </header>
+
         <fieldset>
           <legend>Terrain</legend>
           <label>
@@ -374,6 +379,106 @@
             Sun glow
             <input id="mistSunScattering" type="range" min="0" max="1" step="0.05" value="0.6">
           </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Weather</legend>
+          <label class="checkbox">
+            <input id="weatherEnabled" type="checkbox">
+            Weather system (drives clouds, mist, wind, and water)
+          </label>
+          <label>
+            Weather
+            <select id="weatherState">
+              <option value="clear">Clear</option>
+              <option value="partlyCloudy" selected>Partly cloudy</option>
+              <option value="overcast">Overcast</option>
+              <option value="fog">Fog</option>
+              <option value="rain">Rain</option>
+              <option value="storm">Storm</option>
+              <option value="snow">Snow</option>
+            </select>
+          </label>
+          <label class="checkbox">
+            <input id="weatherAutoCycle" type="checkbox">
+            Change over time
+          </label>
+          <label class="checkbox">
+            <input id="weatherAllowSnow" type="checkbox">
+            Allow snow when changing
+          </label>
+          <label>
+            Transition (s)
+            <input id="weatherTransition" type="range" min="0" max="120" value="20">
+          </label>
+          <label>
+            Wind strength
+            <input id="weatherWindScale" type="range" min="0" max="3" step="0.1" value="1">
+          </label>
+          <label>
+            Rain and snow
+            <input id="weatherPrecipitation" type="range" min="0" max="2" step="0.1" value="1">
+          </label>
+          <p class="readout" id="weatherReadout" aria-live="polite">Weather: off</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Shadows</legend>
+          <label class="checkbox">
+            <input id="terrainShadows" type="checkbox" checked>
+            Hills and mountains
+          </label>
+          <label>
+            Terrain shadow softness
+            <input id="terrainShadowSoftness" type="range" min="0" max="1" step="0.05" value="0.35">
+          </label>
+          <label class="checkbox">
+            <input id="treeShadows" type="checkbox" checked>
+            Trees
+          </label>
+          <label>
+            Tree shadow distance (m)
+            <input id="treeShadowDistance" type="range" min="60" max="1200" step="20" value="260">
+          </label>
+          <label>
+            Tree shadow map
+            <select id="treeShadowResolution">
+              <option value="1024">1024</option>
+              <option value="2048" selected>2048</option>
+              <option value="4096">4096</option>
+            </select>
+          </label>
+          <label>
+            Shadow strength
+            <input id="shadowStrength" type="range" min="0" max="1" step="0.05" value="0.85">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Surface</legend>
+          <label class="checkbox">
+            <input id="surfaceTextures" type="checkbox" checked>
+            Detailed textures
+          </label>
+          <label class="checkbox">
+            <input id="surfaceNormals" type="checkbox" checked>
+            Detail normals
+          </label>
+          <label>
+            Texture scale
+            <input id="surfaceTextureScale" type="range" min="0.25" max="4" step="0.05" value="1">
+          </label>
+          <label>
+            Replace a texture with an image
+            <select id="replaceTarget">
+              <option value="terrainAlbedo:0">Terrain: lush grass</option>
+              <option value="terrainAlbedo:3">Terrain: sand</option>
+              <option value="terrainAlbedo:4">Terrain: rock</option>
+              <option value="flora:4">Trees: broad leaves</option>
+            </select>
+          </label>
+          <input id="replaceFile" type="file" accept="image/*" aria-label="Image to use as the texture">
+          <button id="resetTextures" type="button">Restore procedural textures</button>
         </fieldset>
 
         <fieldset>

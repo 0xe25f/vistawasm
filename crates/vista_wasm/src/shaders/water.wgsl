@@ -185,6 +185,25 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     detail = mix(flow_a, flow_b, flow_blend) * (0.6 + min(flow_speed, 3.0) * 0.35);
   }
 
+  // Raindrops: expanding rings in a jittered grid, each cell restarting at
+  // its own random time.
+  let rain = frame.weather.x;
+
+  if (rain > 0.01 && distance < 120.0) {
+    let cell_size = 0.9;
+    let cell = floor(in.rest_xz / cell_size);
+    let local = in.rest_xz / cell_size - cell;
+    let seed = hash12(cell);
+    let centre = vec2<f32>(hash12(cell + 17.1), hash12(cell + 3.7)) * 0.6 + 0.2;
+    let age = fract(t * (0.8 + seed * 0.6) + seed);
+    let offset = local - centre;
+    let radius = length(offset);
+    let ring = sin((radius - age * 0.5) * 48.0) * (1.0 - age) * smoothstep(0.5, 0.0, radius)
+      * step(radius, age * 0.5 + 0.05);
+    detail = detail + vec3<f32>(offset.x, 0.0, offset.y) / max(radius, 0.001) * ring * rain * 1.5
+      * (1.0 - distance / 120.0);
+  }
+
   var normal = vec3<f32>(0.0, 1.0, 0.0);
   var jacobian = 1.0;
   var crest = 0.0;
@@ -217,7 +236,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     reflection = mix(reflection, (sun_light() * 0.35 + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.3) * frame.cloud_colour.rgb, cloud * 0.8);
   }
 
-  let shadow = cloud_shadow(position);
+  let shadow = sun_visibility(position, vec3<f32>(0.0, 1.0, 0.0));
 
   // Sun glitter: GGX with roughness that grows with distance.
   let roughness = mix(0.05, 0.22, smoothstep(50.0, 3000.0, distance)) + ripple_strength * 0.02;

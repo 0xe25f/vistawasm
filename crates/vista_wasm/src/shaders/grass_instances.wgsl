@@ -70,7 +70,8 @@ fn vertex_main(in: VertexIn) -> VertexOut {
 
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
-  if (in.fade <= pixel_dither(in.clip_position.xy)) {
+  // Settled snow buries the grass rather than sitting on top of it.
+  if (in.fade * (1.0 - frame.weather.w * 0.95) <= pixel_dither(in.clip_position.xy)) {
     discard;
   }
 
@@ -100,7 +101,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let view = normalize(frame.camera_position.xyz - in.world_position);
   let back = pow(saturate(dot(-view, sun)), 3.0) * 0.5 * v;
   let occlusion = 0.35 + 0.65 * v;
-  let shadow = cloud_shadow(in.world_position);
+  let shadow = sun_visibility(in.world_position, in.normal);
   let direct = sun_light() * shadow * (saturate(dot(in.normal, sun)) * 0.8 + back);
   let colour = albedo * (direct * occlusion + sky_irradiance(in.normal) * occlusion * 0.75) / PI * 2.6;
   return vec4<f32>(colour, 1.0);

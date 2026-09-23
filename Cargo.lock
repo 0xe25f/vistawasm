@@ -850,6 +850,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "js-sys",
+ "naga",
  "serde",
  "serde-wasm-bindgen",
  "thiserror",
