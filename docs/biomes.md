@@ -17,7 +17,10 @@ For the exact field list, see
 | `outerForest` | Temperate, moist | Forest floor | Oak and pine (pine and spruce when cold) |
 | `innerForest` | Temperate, wet | Forest floor | Dense oak, pine, spruce (spruce when cold) |
 | `mountainFoothills` | 40–62% of the way from sea to peak | Grass, rock | Pine, spruce |
-| `mountainProper` | High or steep ground | Rock, scree, snow above the snow line | Sparse spruce |
+| `mountainProper` | High or steep ground below the snow | Rock and scree | Sparse spruce |
+| `alpineTransition` | The band just below the snow line | Scree, thin turf, patchy snow in hollows | Dwarf shrubs, a few stunted spruce |
+| `lowerSnowyPeaks` | From the snow line to halfway up to the highest peak | Snowfields broken by rock on steep ground | None |
+| `upperSnowyPeaks` | The upper half of the ground above the snow line | Permanent snow and ice; rock only on near-vertical faces | None |
 | `outerVolcanic` | Around volcanic peaks | Basalt and ash | Very sparse pine |
 | `calderaVolcanic` | Volcanic summits | Basalt with glowing lava cracks | None |
 | `savannahExpanse` | Hot and dry | Straw-coloured grass | Sparse acacia |
@@ -37,6 +40,11 @@ For the exact field list, see
 2. **Altitude and terrain.** Temperature falls with height (a lapse
     rate), lowlands are slightly wetter, and slope matters: steep coasts
     become rocky, and steep high ground becomes `mountainProper`.
+    Above the trees, ground rises through `alpineTransition` (15 % of the
+    relief, 60 to 400 m deep, below the snow line) into `lowerSnowyPeaks`
+    and then `upperSnowyPeaks`, which starts halfway from the snow line to
+    the highest peak. The snow line drops in cold climates, and the bands
+    drop with it.
 3. **Volcanoes.** The highest, well-separated peaks can become volcanoes;
     `volcanism` sets how many (up to three) and how large. Their summits
     become calderas with glowing lava in the basalt cracks.

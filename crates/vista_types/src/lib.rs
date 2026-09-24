@@ -1161,11 +1161,18 @@ pub enum BiomeKind {
   SwampWetlands = 13,
   /// Terrain below sea level.
   Ocean = 14,
+  /// The band just below the snow line: scree, patchy snow, and dwarf
+  /// shrubs above the trees.
+  AlpineTransition = 15,
+  /// Snowfields just above the snow line, broken by rock outcrops.
+  LowerSnowyPeaks = 16,
+  /// Permanent snow and ice on the highest ground.
+  UpperSnowyPeaks = 17,
 }
 
 impl BiomeKind {
   /// Every biome, in `repr(u8)` order.
-  pub const ALL: [BiomeKind; 15] = [
+  pub const ALL: [BiomeKind; 18] = [
     Self::GrassyMeadows,
     Self::OuterThicket,
     Self::OuterForest,
@@ -1181,6 +1188,9 @@ impl BiomeKind {
     Self::InnerJungle,
     Self::SwampWetlands,
     Self::Ocean,
+    Self::AlpineTransition,
+    Self::LowerSnowyPeaks,
+    Self::UpperSnowyPeaks,
   ];
 
   /// Convert a stored biome index back to a biome.

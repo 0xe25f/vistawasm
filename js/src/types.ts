@@ -648,7 +648,10 @@ export type BiomeKind =
   | "outerJungle"
   | "innerJungle"
   | "swampWetlands"
-  | "ocean";
+  | "ocean"
+  | "alpineTransition"
+  | "lowerSnowyPeaks"
+  | "upperSnowyPeaks";
 
 /**
  * Climate-driven biome controls. Every field is optional.

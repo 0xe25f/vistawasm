@@ -192,6 +192,9 @@ fn biome_debug_colour(biome: u32) -> vec3<f32> {
     case 11u: { return vec3<f32>(0.15, 0.7, 0.35); }
     case 12u: { return vec3<f32>(0.02, 0.45, 0.2); }
     case 13u: { return vec3<f32>(0.3, 0.38, 0.25); }
+    case 15u: { return vec3<f32>(0.6, 0.5, 0.62); }
+    case 16u: { return vec3<f32>(0.62, 0.78, 0.95); }
+    case 17u: { return vec3<f32>(0.97, 0.99, 1.0); }
     default: { return vec3<f32>(0.1, 0.25, 0.55); }
   }
 }

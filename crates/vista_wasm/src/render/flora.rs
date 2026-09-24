@@ -98,7 +98,11 @@ pub fn choose_species(biome: BiomeKind, temperature: f32, roll: f32) -> Option<T
     BiomeKind::OuterJungle => &[(Jungle, 0.5), (Palm, 0.3), (Shrub, 0.2)],
     BiomeKind::InnerJungle => &[(Jungle, 0.85), (Palm, 0.15)],
     BiomeKind::SwampWetlands => &[(Cypress, 0.8), (Shrub, 0.2)],
-    BiomeKind::CalderaVolcanic | BiomeKind::Ocean => &[],
+    BiomeKind::AlpineTransition => &[(Shrub, 0.75), (Spruce, 0.25)],
+    BiomeKind::CalderaVolcanic
+    | BiomeKind::Ocean
+    | BiomeKind::LowerSnowyPeaks
+    | BiomeKind::UpperSnowyPeaks => &[],
   };
 
   let mut remaining = roll.clamp(0.0, 0.9999);

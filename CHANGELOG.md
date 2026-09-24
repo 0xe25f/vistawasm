@@ -17,10 +17,11 @@ for changed defaults.
 
 ### Added
 
-- **Biomes.** Fifteen climate-driven biomes: grassy meadows, outer
+- **Biomes.** Eighteen climate-driven biomes: grassy meadows, outer
   thicket, outer and inner forest, mountain foothills, mountain proper,
   outer volcanic, caldera, savannah, coastal beach, coastal rocky, outer
-  and inner jungle, swamp wetlands, and ocean. New `BiomeOptions`,
+  and inner jungle, swamp wetlands, ocean, alpine transition, and lower
+  and upper snowy peaks. New `BiomeOptions`,
   `setBiomes()`, `biomeAt(x, z)`, and a `"biomes"` debug view.
 - **Procedural textures**, generated on the GPU at start-up with nothing
   to download: eight terrain materials with height, normal, occlusion, and
@@ -109,6 +110,11 @@ for changed defaults.
   panel demonstrates each hook: a custom tree model built in JavaScript, a
   species rule, a hand-placed grove, and texture replacement from an
   image file.
+- **Snow biomes.** High ground now rises through `alpineTransition`
+  (scree, patchy snow and dwarf shrubs below the snow line) into
+  `lowerSnowyPeaks` (snowfields broken by rock) and `upperSnowyPeaks`
+  (permanent snow and ice). `biomeAt()` reports them, and the `"biomes"`
+  debug view colours them.
 - **Landforms.** `FractalTerrainOptions.landform` picks the character of a
   generated map: `"continental"` (the default), `"alpine"`,
   `"rollingHills"`, `"archipelago"`, `"mesaDesert"`, `"fjords"` or

@@ -245,7 +245,8 @@ field is optional. See [`docs/biomes.md`](biomes.md).
 `"outerForest"`, `"innerForest"`, `"mountainFoothills"`, `"mountainProper"`,
 `"outerVolcanic"`, `"calderaVolcanic"`, `"savannahExpanse"`,
 `"coastalBeach"`, `"coastalRocky"`, `"outerJungle"`, `"innerJungle"`,
-`"swampWetlands"`, or `"ocean"`.
+`"swampWetlands"`, `"ocean"`, `"alpineTransition"`, `"lowerSnowyPeaks"`, or
+`"upperSnowyPeaks"`.
 
 ## `WeatherOptions`
 

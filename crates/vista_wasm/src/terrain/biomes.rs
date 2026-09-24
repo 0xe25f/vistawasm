@@ -291,6 +291,14 @@ pub fn find_volcanoes(map: &HeightMap, options: &BiomeOptions) -> Vec<Volcano> {
 /// low hills do not whiten just for being the highest ground on the map.
 pub const MIN_AUTOMATIC_SNOW_LINE_METRES: f32 = 400.0;
 
+/// Depth of the alpine transition band below the snow line, as a fraction
+/// of the relief (clamped to 60 to 400 m).
+const TRANSITION_BAND_FRACTION: f32 = 0.15;
+
+/// The upper snowy peaks start this fraction of the way from the snow
+/// line to the highest peak.
+const UPPER_SNOW_FRACTION: f32 = 0.5;
+
 /// Resolve the automatic snow line for a heightmap: 80 % of the way from
 /// sea level to the highest peak, and at least
 /// [`MIN_AUTOMATIC_SNOW_LINE_METRES`] above sea level.
@@ -326,6 +334,10 @@ pub fn classify_surface(
   let climate = ClimateGrid::new(map, options);
   let volcanoes = find_volcanoes(map, options);
   let snow_line = snow_line_metres(map, options);
+  let peak = map.metadata.max_height_metres;
+  // The transition band scales with the relief: tens of metres on low
+  // ranges, a few hundred on high ones.
+  let transition_band = (range * TRANSITION_BAND_FRACTION).clamp(60.0, 400.0);
   let beach = options.beach_height_metres.max(0.5);
   let metres_per_sample = map.metadata.metres_per_sample.max(0.001);
   let detail_seed = options.seed_offset ^ 0x0f0f_1234;
@@ -375,6 +387,15 @@ pub fn classify_surface(
       volcano_factor *= smoothstep((rel - 0.08) / 0.2);
       caldera_factor *= smoothstep((rel - 0.35) / 0.2);
 
+      // The snow line is lower where it is cold, and tropical peaks carry
+      // no snow at all.
+      let snow_line_here = snow_line - (0.35 - temperature).max(0.0) * range * 0.5;
+      let snowy = temperature <= 0.75;
+      // The top part of the ground above the snow line is permanent snow
+      // and ice; the band below it is snowfield broken by rock.
+      let upper_snow_line =
+        snow_line_here + ((peak - snow_line_here) * UPPER_SNOW_FRACTION).max(transition_band);
+
       // Biome decision.
       let biome = if h < sea - 0.3 {
         BiomeKind::Ocean
@@ -389,6 +410,12 @@ pub fn classify_surface(
         BiomeKind::CoastalBeach
       } else if above_sea < beach * 5.0 && steep > 0.38 {
         BiomeKind::CoastalRocky
+      } else if snowy && h >= upper_snow_line {
+        BiomeKind::UpperSnowyPeaks
+      } else if snowy && h >= snow_line_here {
+        BiomeKind::LowerSnowyPeaks
+      } else if snowy && h >= snow_line_here - transition_band {
+        BiomeKind::AlpineTransition
       } else if rel > 0.62 || (rel > 0.46 && steep > 0.34) {
         BiomeKind::MountainProper
       } else if rel > 0.4 {
@@ -414,16 +441,34 @@ pub fn classify_surface(
       };
 
       // Continuous material fields, so textures blend smoothly across
-      // biome borders instead of switching abruptly.
-      let snow_line_here = snow_line - (0.35 - temperature).max(0.0) * range * 0.5;
-      let snow = smoothstep((h - snow_line_here) / 60.0 + 0.5)
-        * (1.0 - smoothstep((steep - 0.3) / 0.25))
-        * if temperature > 0.75 { 0.0 } else { 1.0 };
+      // biome borders instead of switching abruptly. Snow lies in patches
+      // through the transition band (in hollows first, where drifts
+      // collect), covers the lower peaks except on steep rock, and on the
+      // upper peaks clings to all but near-vertical faces.
+      let into_band = ((h - (snow_line_here - transition_band)) / transition_band).clamp(0.0, 1.0);
+      let patches =
+        smoothstep((into_band * 1.3 - 0.35 + (1.0 - occlusion) * 0.8 + jitter * 3.0) / 0.35);
+      let upper = smoothstep((h - upper_snow_line) / transition_band.max(1.0) + 0.5);
+      let steep_limit = 0.3 + upper * 0.25;
+      let snow = if snowy {
+        let settled = smoothstep((h - snow_line_here) / 60.0 + 0.5);
+        (settled.max(patches * 0.6 * into_band) * (1.0 - smoothstep((steep - steep_limit) / 0.25)))
+          .max(upper * 0.9)
+          .min(1.0)
+      } else {
+        0.0
+      };
       let mountain = smoothstep((rel - 0.5) / 0.25);
       let mut rock = smoothstep((steep - 0.16) / 0.26) * 0.95 + mountain * 0.35 * (1.0 - snow);
 
       if biome == BiomeKind::CoastalRocky {
         rock = rock.max(0.75);
+      }
+
+      // Above the trees the ground is scree and thin turf, stonier the
+      // closer it is to the snow.
+      if biome == BiomeKind::AlpineTransition {
+        rock = rock.max(0.3 + 0.35 * into_band);
       }
 
       let sand_band = 1.0 - smoothstep((above_sea - beach * 0.7) / (beach * 0.9).max(0.5));
@@ -517,6 +562,9 @@ pub fn forest_density(biome: BiomeKind, moisture: f32) -> f32 {
     BiomeKind::InnerJungle => 1.0,
     BiomeKind::SwampWetlands => 0.55,
     BiomeKind::Ocean => 0.0,
+    BiomeKind::AlpineTransition => 0.06,
+    BiomeKind::LowerSnowyPeaks => 0.0,
+    BiomeKind::UpperSnowyPeaks => 0.0,
   };
 
   (base * (0.75 + moisture * 0.5)).clamp(0.0, 1.0)
@@ -545,6 +593,9 @@ pub fn biome_debug_colour(biome: BiomeKind) -> [f32; 3] {
     BiomeKind::InnerJungle => [0.02, 0.45, 0.2],
     BiomeKind::SwampWetlands => [0.3, 0.38, 0.25],
     BiomeKind::Ocean => [0.1, 0.25, 0.55],
+    BiomeKind::AlpineTransition => [0.6, 0.5, 0.62],
+    BiomeKind::LowerSnowyPeaks => [0.62, 0.78, 0.95],
+    BiomeKind::UpperSnowyPeaks => [0.97, 0.99, 1.0],
   }
 }
 
@@ -606,7 +657,67 @@ mod tests {
     let samples = classify(&map, &options);
 
     assert_eq!(samples[0].biome_kind(), BiomeKind::Ocean);
-    assert_eq!(samples[63].biome_kind(), BiomeKind::MountainProper);
+    assert_eq!(samples[63].biome_kind(), BiomeKind::UpperSnowyPeaks);
+    assert!((0..64).any(|x| samples[x].biome_kind() == BiomeKind::MountainProper));
+  }
+
+  #[test]
+  fn snowy_peaks_rise_through_transition_lower_and_upper_bands() {
+    let map = ramp_map(256, 2_000.0);
+    let options = BiomeOptions {
+      volcanism: 0.0,
+      ..BiomeOptions::default()
+    };
+    let samples = classify(&map, &options);
+    let row = 128 * 256;
+    let first = |kind: BiomeKind| (0..256).find(|x| samples[row + x].biome_kind() == kind);
+    let transition = first(BiomeKind::AlpineTransition).unwrap();
+    let lower = first(BiomeKind::LowerSnowyPeaks).unwrap();
+    let upper = first(BiomeKind::UpperSnowyPeaks).unwrap();
+
+    assert!(
+      transition < lower && lower < upper,
+      "{transition} {lower} {upper}"
+    );
+
+    // Snow thickens from patches below the snow line to full cover on top.
+    let snow = |x: usize| samples[row + x].materials[MAT_SNOW] as f32 / 255.0;
+    assert!(
+      snow(transition) < 0.6,
+      "transition snow {}",
+      snow(transition)
+    );
+    assert!(snow(255) > 0.85, "summit snow {}", snow(255));
+    assert!(snow(upper) >= snow(lower));
+
+    // Nothing grows on the snow, and little in the transition band.
+    let forest = |x: usize| samples[row + x].forest;
+    assert_eq!(forest(upper), 0);
+    assert_eq!(forest(lower), 0);
+  }
+
+  #[test]
+  fn cold_climates_bring_the_snow_biomes_lower() {
+    let map = ramp_map(128, 2_000.0);
+    let snowy = |temperature_bias: f32| {
+      let options = BiomeOptions {
+        volcanism: 0.0,
+        temperature_bias,
+        ..BiomeOptions::default()
+      };
+      classify(&map, &options)
+        .iter()
+        .filter(|sample| {
+          matches!(
+            sample.biome_kind(),
+            BiomeKind::AlpineTransition | BiomeKind::LowerSnowyPeaks | BiomeKind::UpperSnowyPeaks
+          )
+        })
+        .count()
+    };
+
+    assert!(snowy(-1.0) > snowy(0.0));
+    assert!(snowy(0.0) >= snowy(1.0));
   }
 
   #[test]

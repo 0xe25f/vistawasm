@@ -29,7 +29,7 @@ and drawn with WebGPU. One package gives you:
   ranges carved into valleys, and seven landform presets from alpine to
   volcanic island) with GPU erosion, or real elevation from GeoTIFF files
   and raw heightmaps.
-- **Living landscapes:** fifteen climate-driven biomes, eight modelled tree
+- **Living landscapes:** eighteen climate-driven biomes, eight modelled tree
   species that sway in the wind, grass, and procedural textures generated
   on the GPU, with nothing to download.
 - **Water:** an ocean to the horizon with simulated waves and currents,

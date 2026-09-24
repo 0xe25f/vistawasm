@@ -21,7 +21,7 @@ Then pick the guides for the features you use.
 | --- | --- |
 | [World design guide](world-design-guide.md) | What each terrain, erosion, and sky control does, with recipes |
 | [Terrain data](terrain-data.md) | Fractal generation, GeoTIFF elevation files, and raw heightmaps |
-| [Biomes](biomes.md) | The fifteen biomes and how to shape the climate |
+| [Biomes](biomes.md) | The eighteen biomes and how to shape the climate |
 | [Vegetation](vegetation.md) | Tree species, grass, quality tiers, and performance |
 | [Water](water.md) | Ocean waves, currents, rivers, and lakes |
 
