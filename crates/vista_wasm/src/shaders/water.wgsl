@@ -218,8 +218,15 @@ fn vertex_main(in: VertexIn) -> VertexOut {
   if (kind == 0) {
     let depth = position.y - terrain_height_at(position.xz);
     let waves = sample_waves(position.xz, depth, in.params.z);
-    // Pack ice damps the swell.
-    position = position + waves.displacement * (1.0 - sea_ice_concentration(position.xz));
+    var displacement = waves.displacement;
+
+    // Pack ice damps the swell. `sea_ice.x` is uniform, so seas that never
+    // freeze skip this.
+    if (frame.sea_ice.x > 0.5) {
+      displacement = displacement * (1.0 - sea_ice_concentration(position.xz));
+    }
+
+    position = position + displacement;
   }
 
   out.clip_position = frame.view_proj * vec4<f32>(position, 1.0);
@@ -299,13 +306,19 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var ice = 0.0;
 
   if (in.kind == 0) {
-    ice = sea_ice_concentration(in.rest_xz);
     let waves = sample_waves(in.rest_xz, depth, max(in.spacing, pixel_footprint * 2.0));
-    // Waves die down in the water between floes.
-    normal = normalize(mix(waves.normal, vec3<f32>(0.0, 1.0, 0.0), ice));
-    jacobian = mix(waves.jacobian, 1.0, ice);
-    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01) * (1.0 - ice);
-    detail = detail * (1.0 - ice * 0.8);
+    normal = waves.normal;
+    jacobian = waves.jacobian;
+    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01);
+
+    if (frame.sea_ice.x > 0.5) {
+      // Waves die down in the water between floes.
+      ice = sea_ice_concentration(in.rest_xz);
+      normal = normalize(mix(normal, vec3<f32>(0.0, 1.0, 0.0), ice));
+      jacobian = mix(jacobian, 1.0, ice);
+      crest = crest * (1.0 - ice);
+      detail = detail * (1.0 - ice * 0.8);
+    }
   }
 
   // Ripples fade with distance so far water turns into a calm mirror
@@ -388,7 +401,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // Fade out the thinnest film of water at the waterline.
   alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
 
-  if (ice > 0.001) {
+  if (frame.sea_ice.x > 0.5 && ice > 0.001) {
     // Small floes near the camera, large ones in the distance, where small
     // ones would shimmer.
     let near_weight = 1.0 - smoothstep(300.0, 1500.0, distance);
