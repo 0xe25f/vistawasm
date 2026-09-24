@@ -37,24 +37,42 @@ JavaScript never receives raw GPU objects or memory offsets.
 
 ## Terrain generation
 
-Fractal terrain generation is deterministic CPU Rust (`terrain/fractal.rs`)
-for a given seed and option set: layered value noise, then shape masks
-(island/terrace/basin/canyon/crater), then vertical scaling. Heights are
-stored in metres; metadata records scale, sea level, source, and warnings.
-No-data samples are kept in a mask.
+Fractal generation is deterministic Rust for a given seed and option set.
+It runs in four stages; the landform preset (`terrain/landforms.rs`) sets
+the numbers each stage uses.
 
-Erosion (`terrain/erosion.rs` for the CPU reference implementation) runs
-last, directly on height-in-metres data. On browser (`wasm32`) builds,
-erosion instead runs as GPU compute passes
-(`render/erosion_compute.rs` + `shaders/hydraulic_erosion.wgsl` /
-`thermal_erosion.wgsl`) for performance on large terrain — a "gather"
-reformulation of the same hydraulic/thermal model (each cell only writes
-its own output, reading neighbours, so it is race-free across GPU
-invocations), not a bit-identical port of the CPU scatter-based algorithm.
-If the GPU pass fails for any reason, `EngineCore::generate_fractal_map`
-transparently falls back to the CPU implementation, so terrain generation
-always produces a result either way. Native (non-wasm32) builds and tests
-always use the CPU path.
+- **Stage A, tectonics** (`terrain/tectonics.rs`). On a coarse grid (at
+  most 256 samples per side, never finer than 40 m), warped gradient noise
+  (`terrain/noise.rs`) lays out continents, thresholded by sorting so the
+  land fraction is exact. Warped ridged noise, masked to part of the land
+  and faded in from the coast, gives the uplift of the mountain ranges.
+- **Stage B, drainage** (`terrain/stream_power.rs`). An implicit
+  stream-power solver (Braun and Willett, 2013) carves the coarse grid:
+  stochastic D8 routing, a stack order from the outlets, drainage-area
+  accumulation (`terrain/drainage.rs`, shared with river extraction) and an
+  implicit update towards each receiver. Lowlands erode for 10 iterations;
+  ranges run 40 iterations to the steady state between uplift and erosion,
+  with threshold hillslopes and glacial `n = 2` carving under ice. Valleys
+  then get flat floors, glacial troughs are over-deepened (the sea floods
+  them as fjords), and the drainage area is kept in `HeightMap::aux`.
+- **Stage C, detail** (`terrain/fractal.rs`). Bicubic upsampling to full
+  resolution, derivative-damped fBm limited by slope and ruggedness, then
+  the shape masks and vertical scaling.
+- **Stage D, erosion**. Virtual-pipe hydraulic erosion and talus-angle
+  thermal erosion, 60 % of iterations at half resolution and 40 % at full
+  resolution. Browser builds run it as GPU compute passes
+  (`render/erosion_compute.rs`, `shaders/hydraulic_erosion.wgsl`,
+  `shaders/thermal_erosion.wgsl`), submitted in chunks so progress is
+  reported at least every 10 %. The CPU reference (`terrain/erosion.rs`)
+  runs the same passes with the same constants for native builds, tests,
+  and as a fallback if the GPU pass fails. Every pass is a gather: each
+  cell writes only its own output.
+
+Finally, minor summits are levelled, specks of land drowned and small pits
+filled, so the map drains. Heights are stored in metres; metadata records
+scale, sea level, source, and warnings. No-data samples are kept in a mask.
+Stages report `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"` and
+`"finishing"` progress to the JavaScript `"progress"` event.
 
 ## DEM Loading
 

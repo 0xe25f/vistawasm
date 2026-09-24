@@ -109,8 +109,42 @@ for changed defaults.
   panel demonstrates each hook: a custom tree model built in JavaScript, a
   species rule, a hand-placed grove, and texture replacement from an
   image file.
+- **Landforms.** `FractalTerrainOptions.landform` picks the character of a
+  generated map: `"continental"` (the default), `"alpine"`,
+  `"rollingHills"`, `"archipelago"`, `"mesaDesert"`, `"fjords"` or
+  `"volcanicIsland"`. See `docs/terrain-data.md`.
+- Terrain generation progress: `generateFractal()` now emits `"progress"`
+  events for its `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"` and
+  `"finishing"` phases, with erosion reported at least every 10 %.
+- **Demo.** A Landform select, an Advanced terrain sub-section for the
+  detail noise, an erosion quality select (default `"high"`), and the time
+  of each generation phase in the status line.
 
 ### Changed
+
+- **Fractal terrain is geology-led.** Continents with an exact land
+  fraction and uplifted ranges are carved by a stream-power model into
+  dendritic valleys and ridge spurs, with flat valley floors and glacial
+  troughs, then detailed and eroded. Noise is seeded gradient noise instead
+  of value noise, and features have real sizes in metres. Maps have
+  plains, coastlines and ranges instead of a field of spikes. The same seed
+  gives a different map from earlier builds; `generatorVersion` is now
+  `vistawasm-fractal-0.2.0`.
+- `NoiseOptions` now controls the detail layer on top of the landform, and
+  `TerrainShapeOptions` applies in units of the landform's relief.
+- The coast is generated at `seaLevelMetres`, and `verticalScale`
+  stretches heights about sea level.
+- **Erosion** is a virtual-pipe shallow-water model that cuts gullies,
+  aggrades valley floors and builds alluvial fans, plus talus-angle
+  thermal erosion with soil creep. It runs at half and then full
+  resolution, on the GPU in browsers with the CPU as a fallback. Unset
+  `ErosionOptions` fields take the landform's defaults, unset iteration
+  counts follow `quality`, and the quality caps are now 120, 240, 400 and
+  5000 iterations.
+- Fractal and erosion options are validated with messages that name the
+  field and its valid range.
+- The automatic snow line (`BiomeOptions.snowLineMetres` unset) is now at
+  least 400 m above sea level, so low hills no longer turn white.
 
 - The default `"balanced"` render preset now draws terrain beyond 2 km with
   one texture sample per material, and marches clouds to 60 km (from 90
@@ -209,6 +243,7 @@ for changed defaults.
 ### Removed
 
 - `shaders/flora_instances.wgsl`, replaced by `shaders/trees.wgsl`.
+- `shaders/terrain_noise.wgsl`, which nothing used.
 
 ### Upgrading from 1.0.0
 
@@ -226,6 +261,9 @@ changed, so scenes look (and cost) different:
   for the 1.0.0 look, or lower `trees.resolution` on weak GPUs.
 - The weather system is off by default, so existing cloud, mist, and water
   settings behave as before until you enable it.
+- Fractal terrain comes from the new generator, so saved seeds give new
+  maps. Erosion iteration counts from 1.0.0 still work but do much less at
+  the old values; leave them unset and pick a `quality` instead.
 
 ## [1.0.0] — 2026-07-10
 

@@ -18,23 +18,29 @@ system-specific detail beyond what this guide covers, see
 Understanding the order VistaWASM applies controls in makes it much easier
 to predict what a parameter change will do:
 
-1. **Noise** (`noise.kind`, `octaves`, `gain`, `lacunarity`, `warp`) produces
-    a base height field in the range `[-1, 1]` per sample, built from layered
-    value noise.
-2. **Shape** (`shape.island`, `shape.terrace`, `shape.basin`, `shape.canyon`,
-    `shape.crater`) is applied on top of the noise field, still in `[-1, 1]`,
-    before it is scaled to metres.
-3. **Scaling** — the shaped `[-1, 1]` field is multiplied by
-    `verticalScale` and by an internal metres-per-unit factor, then offset by
-    `baseHeightMetres`, to produce real height-in-metres values.
-4. **Erosion** (`erosion.hydraulicIterations`, `erosion.thermalIterations`,
-    ...), if requested, runs last, directly on the height-in-metres data. On
-    browser builds it runs as GPU compute passes; if that fails for any
-    reason it automatically falls back to an equivalent CPU pass, so it
-    always produces a result.
-5. **Materials and normals** are derived from the *final*, eroded heights
-    (slope and height-above-sea-level), so erosion should always be tuned
-    before you judge how grass/rock/snow/mud placement looks.
+1. **Landform** (`landform`) sets the big picture: how much of the map is
+    land, how large continents and ranges are, how high the ranges stand,
+    how hard rain and ice carve them, and the talus angle. Continents and
+    ranges are laid out first, then carved by a stream-power model into
+    valleys and ridge spurs. See
+    [`docs/terrain-data.md`](terrain-data.md#landforms).
+2. **Detail** (`noise.kind`, `octaves`, `gain`, `lacunarity`, `warp`) adds
+    small-scale relief to the carved land, in metres. It is strongest on
+    steep ground in the ranges and fades out on level ground, so plains and
+    valley floors stay smooth.
+3. **Shape** (`shape.island`, `shape.terrace`, `shape.basin`,
+    `shape.canyon`, `shape.crater`) is applied on top, in units of the
+    landform's relief.
+4. **Scaling**: heights are stretched about sea level by `verticalScale`,
+    then offset by `baseHeightMetres`.
+5. **Erosion** (`erosion.quality`, `erosion.hydraulicIterations`, ...), if
+    requested, runs last at full resolution: rain cuts gullies and builds
+    fans, and thermal erosion leaves scree below cliffs. On browser builds
+    it runs as GPU compute passes; if that fails for any reason it falls
+    back to the CPU reference, so it always produces a result.
+6. **Materials and normals** are derived from the *final*, eroded heights
+    (slope and height above sea level), so erosion should always be tuned
+    before you judge how grass, rock, snow and mud placement looks.
 
 Because shape is applied before erosion, a `shape.canyon` gash will still
 get carved further by hydraulic erosion; a `shape.crater` rim will still
@@ -42,17 +48,23 @@ accumulate thermal scree at its edges. This is usually what you want (it's
 why erosion exists), but it means erosion parameters interact with shape
 parameters — always look at the eroded result, not the pre-erosion preview.
 
+Start with a landform. Reach for the noise and shape controls to adjust
+its surface, not to build a whole world from noise.
+
 ## 2. Noise kinds
+
+`noise.kind` picks the flavour of the detail layer. It no longer decides
+where mountains are; the landform does.
 
 | `noise.kind` | What it produces | Good for |
 | --- | --- | --- |
-| `simplex` | Smooth, rolling, un-shaped noise. | Gentle hills, farmland, base layer for heavy custom shaping. |
-| `ridged` | Inverted-absolute-value noise; sharp connected ridgelines. | Mountain ranges, alpine terrain. |
-| `hybrid` | A 45/55 blend of `simplex` and `ridged`. | Foothills — mountains fading into rolling terrain. |
+| `simplex` | Smooth, rolling detail. | Soft, weathered slopes. |
+| `ridged` | Crisp ridged detail on the ranges, smooth detail elsewhere. | Mountain ranges, alpine terrain. |
+| `hybrid` | Half-ridged detail on the ranges. | Foothills — mountains fading into rolling terrain. |
 | `island` | Like `simplex`, plus an automatic radial falloff toward the terrain edge (even without setting `shape.island`). | Quick islands/atolls without hand-tuning falloff. |
 | `canyon` | Like `simplex`, plus an automatic canyon gash mask. | Quick canyon terrain; combine with `ridged`-like erosion for realism. |
 | `cratered` | Like `simplex`, plus one deterministic (seeded) crater mask. | Volcanic calderas, impact sites, quarry pits. |
-| `classic` | A gentler, more compressed remap of the base noise. | Subtle, low-contrast terrain — good "default" for UI seed-scrubbing previews. |
+| `classic` | Billowy detail with a slight step, like the first releases. | A softer, older look. |
 
 `shape.island` / `shape.canyon` / `shape.crater` (below) apply the *same*
 masks as the `island`/`canyon`/`cratered` noise kinds, but as an independent,
@@ -87,38 +99,31 @@ on the terrain's own centre:
 
 ## 4. Erosion tuning
 
-Erosion is the single highest-impact control for making noise look like
-real terrain rather than a height field. Two independent passes:
+The landform already carves valleys and ridge spurs before erosion runs.
+Erosion adds what only full-resolution water and gravity make: gullies,
+alluvial fans where valleys open out, aggraded valley floors, and scree
+below cliffs.
 
-- **Hydraulic** (`hydraulicIterations`) simulates rain, transport, and
-  deposition — it carves valleys and river channels and softens ridgelines.
-  Start around `10`–`20` for a quick pass, `40`–`80` for pronounced valley
-  carving. Diminishing returns set in past roughly `100` iterations for most
-  terrain sizes.
-- **Thermal** (`thermalIterations`) simulates scree/talus slumping — it
-  softens slopes steeper than `talusAngleDegrees` by moving material
-  downhill until slopes settle. Use it *after* hydraulic erosion has carved
-  the major features, to naturalise the resulting cliffs. `8`–`15`
-  iterations is usually enough; more just keeps flattening slopes.
-- `rainAmount` / `evaporation` / `sedimentCapacity` control how aggressively
-  hydraulic erosion moves material; the defaults are reasonable starting
-  points, tune `rainAmount` up first if valleys aren't carving deep enough.
-- `talusAngleDegrees` is the slope angle (from horizontal) above which
-  thermal erosion considers a slope "too steep" and moves material — lower
-  it (e.g. `28`) for softer, more rounded terrain; raise it (e.g. `45`+) to
-  preserve sharp cliffs and rock faces.
-- `quality` (`"preview" | "balanced" | "high" | "offline"`) caps the total
-  iteration budget regardless of what you request, so a "preview" quality
-  UI stays responsive while a user drags sliders, while switching to
-  `"high"`/`"offline"` before a final export gives the full, requested
-  iteration count.
+- **`quality`** is the main dial. Unset iteration counts follow it:
+  `"preview"` 60 hydraulic and 30 thermal iterations, `"balanced"` 120 and
+  60, `"high"` 200 and 100, `"offline"` 400 and 200. Requested counts are
+  capped at 120, 240, 400 and 5000. Use `"preview"` while scrubbing and
+  `"high"` for the final map.
+- **Hydraulic** (`hydraulicIterations`) simulates rain flowing over the
+  terrain, cutting into slopes and depositing where water slows.
+- **Thermal** (`thermalIterations`) moves material downhill wherever the
+  slope exceeds `talusAngleDegrees`, and adds a slow soil creep.
+- `rainAmount`, `evaporation` and `sedimentCapacity` control how hard
+  hydraulic erosion works. Unset, rain follows the landform (dry for
+  `mesaDesert`, wet for `fjords`). Raise `sedimentCapacity` first if
+  gullies are too faint.
+- `talusAngleDegrees` defaults to the landform's value. Lower it (e.g.
+  `28`) for softer, rounder terrain; raise it (e.g. `45`) to keep sharp
+  cliffs.
 
 Erosion always runs on the *whole* heightmap, so cost scales with
-`size` × iteration counts. If you're iterating on shape/noise parameters in
-an editor UI, prefer a small `size` (e.g. `512`) with erosion disabled while
-scrubbing, then switch to the real size with erosion enabled for the final
-generation — exactly what the demo's control panel encourages by keeping
-regeneration on every input change cheap.
+`size` × iteration counts. It runs on the GPU in browsers, where even
+`"high"` is a small part of generation on a mid-range GPU.
 
 ## 5. Sea level, atmosphere, and mood
 
@@ -219,14 +224,14 @@ Concrete starting points — copy, then adjust to taste. Each is a complete
 `WaterOptions.seaLevelMetres` from the returned metadata (see
 [section 5](#5-sea-level-atmosphere-and-mood)).
 
-**Alpine valley**
+**Alpine valleys**
 
 ```ts
 await engine.generateFractal({
-  seed: 1, size: 1024, horizontalScaleMetres: 10, verticalScale: 1.4,
-  noise: { kind: "ridged", octaves: 8, gain: 0.5, lacunarity: 2.1 },
-  shape: { terrace: 0.05 },
-  erosion: { hydraulicIterations: 40, thermalIterations: 15, talusAngleDegrees: 35, quality: "balanced" }
+  seed: 1, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "alpine",
+  erosion: { quality: "high" }
 });
 ```
 
@@ -234,42 +239,54 @@ await engine.generateFractal({
 
 ```ts
 const archipelago = await engine.generateFractal({
-  seed: 2, size: 1024, horizontalScaleMetres: 10, verticalScale: 0.8,
-  noise: { kind: "island", octaves: 7, gain: 0.5, lacunarity: 2 },
-  shape: { island: 0.75 },
-  erosion: { hydraulicIterations: 15, thermalIterations: 8 }
+  seed: 2, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
+  noise: { kind: "simplex", octaves: 6, gain: 0.5, lacunarity: 2 },
+  landform: "archipelago",
+  erosion: { quality: "high" }
 });
-// Put the sea just above the lowest ground.
+// The coast is generated at seaLevelMetres, so the water plane matches it.
 engine.setWater({
   enabled: true,
-  seaLevelMetres: archipelago.metadata.minHeightMetres + 20,
+  seaLevelMetres: archipelago.metadata.seaLevelMetres,
   waveScale: 0.8,
   reflectivity: 0.35,
   shorelineSoftnessMetres: 6
 });
 ```
 
-**Desert canyon**
+**Desert mesas and canyons**
 
 ```ts
 await engine.generateFractal({
   seed: 3, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
-  noise: { kind: "canyon", octaves: 6, gain: 0.55, lacunarity: 2 },
-  shape: { canyon: 0.7, terrace: 0.12 },
-  erosion: { hydraulicIterations: 60, thermalIterations: 10, talusAngleDegrees: 45, quality: "balanced" }
+  noise: { kind: "ridged", octaves: 6, gain: 0.5, lacunarity: 2 },
+  landform: "mesaDesert",
+  shape: { canyon: 0.4 },
+  erosion: { quality: "high" }
 });
 // Deserts have sparse vegetation: also push the climate hot and dry.
 engine.setBiomes({ temperatureBias: 0.8, moistureBias: -0.8 });
 ```
 
-**Volcanic crater island**
+**Volcanic island**
 
 ```ts
 await engine.generateFractal({
-  seed: 4, size: 1024, horizontalScaleMetres: 10, verticalScale: 1.6,
-  noise: { kind: "cratered", octaves: 7, gain: 0.5, lacunarity: 2 },
-  shape: { island: 0.6, crater: 0.5, basin: 0.2 },
-  erosion: { hydraulicIterations: 25, thermalIterations: 20, talusAngleDegrees: 40, quality: "balanced" }
+  seed: 4, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
+  noise: { kind: "hybrid", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "volcanicIsland",
+  erosion: { quality: "high", talusAngleDegrees: 40 }
+});
+```
+
+**Fjord coast**
+
+```ts
+await engine.generateFractal({
+  seed: 5, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "fjords",
+  erosion: { quality: "high" }
 });
 ```
 
@@ -277,15 +294,15 @@ await engine.generateFractal({
 
 ```ts
 await engine.generateFractal({
-  seed: 5, size: 1024, horizontalScaleMetres: 10, verticalScale: 0.35,
+  seed: 6, size: 1024, horizontalScaleMetres: 10, verticalScale: 1,
   noise: { kind: "simplex", octaves: 5, gain: 0.5, lacunarity: 2 },
-  erosion: { hydraulicIterations: 10, thermalIterations: 5 }
+  landform: "rollingHills",
+  erosion: { quality: "balanced" }
 });
 ```
 
-`ErosionOptions.quality` defaults to `"preview"`, which caps each erosion
-pass at 16 iterations; the recipes that ask for more set `"balanced"`
-(64). See [`docs/terrain-data.md`](terrain-data.md#erosion).
+See [`docs/terrain-data.md`](terrain-data.md#erosion) for the erosion
+model and its budgets.
 
 ## 8. Real-world terrain (DEM import)
 

@@ -49,59 +49,170 @@ for how to work within this for large worlds).
 
 ## Fractal generation
 
-`engine.generateFractal(options: FractalTerrainOptions)` — deterministic CPU
-Rust (`terrain/fractal.rs`) for a given `seed` and option set. The pipeline,
-in order:
+`engine.generateFractal(options: FractalTerrainOptions)` is deterministic
+Rust for a given `seed` and option set. It shapes land the way geology and
+water do: continents first, then uplifted ranges carved by rivers, then
+detail, then erosion. It runs in four stages:
 
-1. **Noise** (`NoiseOptions`) produces a base `[-1, 1]` height field.
-2. **Shape** (`TerrainShapeOptions`) reshapes that field, still in `[-1, 1]`.
-3. **Scaling** — multiplied by `verticalScale`, offset by
-    `baseHeightMetres`, to produce real height-in-metres.
-4. **Erosion** (`ErosionOptions`, optional) runs last, directly on the
-    height-in-metres data.
+1. **Tectonics** (`terrain/tectonics.rs`, coarse grid). Continents come
+    from warped low-frequency gradient noise, thresholded so exactly
+    `landform.landFraction` of the map is land. Mountain ranges are an
+    uplift field of warped ridged noise, confined to part of the land and
+    faded in from the coast.
+2. **Drainage** (`terrain/stream_power.rs`, coarse grid). An implicit
+    stream-power solver (Braun and Willett, 2013) carves the ranges until
+    erosion balances uplift, which leaves a dendritic valley network with
+    ridge spurs. Lowlands erode for a shorter time, so they keep their
+    gentle relief. Valleys then get flat floors; under ice they become
+    U-shaped troughs, and the deepest reach below sea level as fjords.
+3. **Detail** (`terrain/fractal.rs`, full resolution). The coarse grid is
+    upsampled bicubically and derivative-damped fBm adds detail. Detail is
+    strongest on steep ground in the ranges and fades out on level ground.
+    `NoiseOptions` controls this layer, and `TerrainShapeOptions` applies
+    after it.
+4. **Erosion** (`ErosionOptions`, optional, full resolution). Virtual-pipe
+    hydraulic erosion cuts gullies and builds alluvial fans; thermal
+    erosion leaves scree below cliffs. See [Erosion](#erosion).
+
+Finally, summits less than 0.3 samples' spacing above their col are
+levelled, specks of land under 6 samples are drowned, and closed pits
+under 24 samples are filled, so the map drains to the sea or to lakes.
+
+The coarse grid is at most 256 samples per side and never finer than 40 m
+per sample. Its upstream drainage area is kept with the terrain for rivers
+and later stages.
+
+Heights are in metres. The coast sits at `seaLevelMetres`; `verticalScale`
+stretches heights about sea level, and `baseHeightMetres` then raises or
+sinks the whole map.
+
+`generateFractal()` reports each stage through the `"progress"` event:
+
+```ts
+engine.on("progress", ({ phase, progress }) => {
+  status.textContent = `${phase}: ${Math.round(progress * 100)} %`;
+});
+
+await engine.generateFractal({
+  seed: 7,
+  size: 512,
+  horizontalScaleMetres: 12,
+  verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "alpine",
+  erosion: { quality: "high" }
+});
+```
+
+The phases are `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"` (at
+least every 10 %) and `"finishing"` (conditioning the map, then building
+rivers, flora and the terrain mesh), between `"fractal"` events at 0 and 1.
 
 See [`docs/world-design-guide.md`](world-design-guide.md#1-the-generation-pipeline-in-order)
-for the full creative walkthrough of what each stage does, and
+for the creative walkthrough, and
 [`docs/options-reference.md`](options-reference.md#fractalterrainoptions)
 for every field.
 
+### Landforms
+
+`FractalTerrainOptions.landform` picks the character of the map. It
+defaults to `"continental"`. Every preset sets the land fraction, the size
+of continents and ranges, relief, erodibility, rain, talus angle, and
+whether ice carves the valleys.
+
+| Landform | Character |
+| --- | --- |
+| `"continental"` | Mixed plains, hills and one or two ranges. 70 % land, ranges up to 1400 m. |
+| `"alpine"` | High, heavily eroded ranges with deep valleys and glacial lakes. 95 % land, up to 2600 m. |
+| `"rollingHills"` | Gentle downs and broad vales with no ranges, and nothing steeper than 30 degrees. |
+| `"archipelago"` | Many islands of varied size. 35 % land. |
+| `"mesaDesert"` | Terraced plateaus, buttes and canyons under a dry climate. |
+| `"fjords"` | Steep ranges cut by U-shaped glacial valleys that the sea floods. |
+| `"volcanicIsland"` | A central cone with a crater lake, radial gullies and a reef shelf. |
+
+Features have a real size in metres, so a larger map holds more of them.
+On a small map, continents shrink to at most 1.5 times the map's width and
+ranges to at most 0.6 times, and relief shrinks with them, so a small map
+still holds a coherent coast and range.
+
+![Continental landform](images/landform-continental.jpg)
+
+![Alpine landform](images/landform-alpine.jpg)
+
+![Rolling hills landform](images/landform-rolling-hills.jpg)
+
+![Archipelago landform](images/landform-archipelago.jpg)
+
+![Mesa desert landform](images/landform-mesa-desert.jpg)
+
+![Fjords landform](images/landform-fjords.jpg)
+
+![Volcanic island landform](images/landform-volcanic-island.jpg)
+
+Each image is seed 1 at 512 x 512 and 12 m per sample, with `"high"`
+erosion.
+
 ### Determinism
 
-The same `seed` and options **always** produce the same heights, on both
-native and `wasm32` builds — this is verified by the engine's own test
-suite (`crates/vista_wasm/tests/deterministic_terrain.rs`). `seed` shapes
-the terrain only. Flora, grass, clouds, mist, biomes, and weather each have
-their own `seedOffset`; save those as well to reproduce a whole scene.
+The same `seed` and options **always** produce the same heights on the
+same build: the engine's test suite checks this bit for bit
+(`crates/vista_wasm/tests/deterministic_terrain.rs` and
+`terrain/realism_tests.rs`). Native and browser builds can differ in the
+last bits, since maths functions such as `pow` and `ln` round differently
+across platforms, and GPU erosion orders its arithmetic differently from
+the CPU reference. `seed` shapes the terrain only. Flora, grass,
+clouds, mist, biomes, and weather each have their own `seedOffset`; save
+those as well to reproduce a whole scene.
+
+The same seed produced a different map before 1.1.0: the generator was
+rebuilt around landforms. `TerrainMetadata.generatorVersion` records
+`vistawasm-fractal-0.2.0` for the new generator.
 
 ### Erosion
 
-Erosion (`ErosionOptions`) runs as GPU compute passes on browser builds
-(`render/erosion_compute.rs` + `shaders/hydraulic_erosion.wgsl`/
-`thermal_erosion.wgsl`) for performance on large terrain, falling back
-automatically to the CPU reference implementation
-(`terrain/erosion.rs`) if the GPU pass fails for any reason — terrain
-generation always produces a result either way. Native/test builds always
-use the CPU path. The GPU version is a "gather" reformulation of the same
-hydraulic/thermal model (each cell writes only its own output, reading
-neighbours, so it is race-free across GPU invocations) — it is not a
-bit-identical port of the CPU scatter-based algorithm, so do not expect
-pixel-identical output between a browser run and a native/test run when
-erosion is enabled (undisturbed noise-only generation *is* bit-identical
-across both).
+Pass `erosion` to erode the map; omit it to skip erosion. Unset fields take
+the landform's defaults (rain and talus angle), and unset iteration counts
+follow `quality`.
 
-`ErosionOptions.quality` caps `hydraulicIterations` and
-`thermalIterations`, each on its own, whatever you request:
+Erosion runs as GPU compute passes on browser builds
+(`render/erosion_compute.rs`, `shaders/hydraulic_erosion.wgsl` and
+`shaders/thermal_erosion.wgsl`). If the GPU pass fails, generation falls
+back to the CPU reference in `terrain/erosion.rs`, so it always produces a
+result. Native and test builds use the CPU path. Both run the same passes
+with the same constants. They can differ in the last bits, because
+floating-point operations run in a different order.
 
-| `quality` | Cap per pass |
-| --- | --- |
-| `"preview"` (default) | 16 |
-| `"balanced"` | 64 |
-| `"high"` | 160 |
-| `"offline"` | 320 |
+Each hydraulic iteration runs six passes of the virtual-pipe shallow-water
+model (Mei, Decaudin and Hu, 2007):
 
-Use `"preview"` to keep a UI responsive while sliders move, and a higher
-tier for the final terrain. `RenderQualityOptions.preset` does not affect
-erosion.
+1. Rain, weighted towards valleys with a large drainage area.
+2. Outflow through four virtual pipes to each neighbour.
+3. Water depth and velocity.
+4. Erosion and deposition towards the sediment capacity
+    `C = Kc * sin(slope) * |v| * limit(depth)`. Water on level ground only
+    deposits, so valley floors aggrade and fans form where valleys open out.
+5. Sediment advection, which conserves sediment.
+6. Evaporation.
+
+Thermal iterations move material downhill wherever the slope between two
+neighbours exceeds the talus angle, which leaves scree below cliffs, plus a
+slow soil creep. 60 % of the iterations run at half resolution, where large
+features settle cheaply, and the rest at full resolution, where fine
+gullies form. The sea and the map edge carry water and sediment away.
+
+`quality` sets default iteration counts and caps requested ones:
+
+| `quality` | Default hydraulic, thermal | Cap per pass |
+| --- | --- | --- |
+| `"preview"` (default) | 60, 30 | 120 |
+| `"balanced"` | 120, 60 | 240 |
+| `"high"` | 200, 100 | 400 |
+| `"offline"` | 400, 200 | 5000 |
+
+Use `"preview"` to keep a UI responsive while sliders move, and `"high"`
+for the final terrain (the demo's default). On a mid-range GPU, the
+erosion stage is a small part of a generation, even at `"high"`.
+`RenderQualityOptions.preset` does not affect erosion.
 
 ## DEM import (GeoTIFF)
 

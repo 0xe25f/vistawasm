@@ -25,9 +25,10 @@ simplest way to help, and it helps other developers find the project.
 VistaWASM is a terrain engine written in Rust, compiled to WebAssembly,
 and drawn with WebGPU. One package gives you:
 
-- **Terrain from anywhere:** seeded fractal worlds with island, canyon,
-  crater, and terrace shaping and GPU erosion, or real elevation from
-  GeoTIFF files and raw heightmaps.
+- **Terrain from anywhere:** seeded, geology-led worlds (continents,
+  ranges carved into valleys, and seven landform presets from alpine to
+  volcanic island) with GPU erosion, or real elevation from GeoTIFF files
+  and raw heightmaps.
 - **Living landscapes:** fifteen climate-driven biomes, eight modelled tree
   species that sway in the wind, grass, and procedural textures generated
   on the GPU, with nothing to download.
@@ -76,7 +77,9 @@ const terrain = await engine.generateFractal({
   size: 2048,
   horizontalScaleMetres: 10,
   verticalScale: 1,
-  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "continental",
+  erosion: { quality: "high" }
 });
 
 // Look across the terrain from above its highest peak, near one edge.
