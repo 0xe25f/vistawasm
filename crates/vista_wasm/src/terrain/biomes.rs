@@ -46,7 +46,7 @@ pub const MAT_ICE: usize = 8;
 pub const MAT_TUNDRA: usize = 9;
 
 /// Number of surface materials.
-pub const MATERIAL_COUNT: usize = 10;
+pub const MATERIAL_COUNT: usize = vista_types::MATERIAL_COUNT;
 
 /// Temperature unit (0 to 1) to °C, and back. The same mapping is used by
 /// the surface texture the shaders read.

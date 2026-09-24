@@ -80,10 +80,10 @@ struct WorldInfo {
   species_tint: [[f32; 4]; 8],
   terrain: [f32; 4],
   terrain2: [f32; 4],
-  material_tints: [[f32; 4]; 8],
+  material_tints: [[f32; 4]; vista_types::MATERIAL_COUNT],
 }
 
-const _: () = assert!(std::mem::size_of::<WorldInfo>() == 416);
+const _: () = assert!(std::mem::size_of::<WorldInfo>() == 448);
 
 /// Tree culling parameters. Mirrors `CullParams` in `tree_cull.wgsl`.
 #[repr(C)]
@@ -1074,13 +1074,12 @@ fn create_pipeline(
   })
 }
 
-const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
   0 => Float32x3,
-  1 => Float32x3,
-  2 => Unorm8x4,
+  1 => Snorm16x2,
+  2 => Uint32x3,
   3 => Unorm8x4,
-  4 => Unorm8x4,
-  5 => Uint8x4,
+  4 => Uint8x4,
 ];
 
 const TREE_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
@@ -1545,7 +1544,10 @@ impl GpuContext {
     for (slot, (height, radius)) in library.bounds.iter().enumerate() {
       world_info.species[slot] = [*height, *radius, 0.0, 0.0];
       world_info.species_tint[slot] = SPECIES_TINTS[slot];
-      world_info.material_tints[slot] = [1.0, 1.0, 1.0, 0.0];
+    }
+
+    for tint in &mut world_info.material_tints {
+      *tint = [1.0, 1.0, 1.0, 0.0];
     }
 
     let world_buffer = buffer_with_data(
@@ -2144,7 +2146,7 @@ impl GpuContext {
   }
 
   /// Update the terrain material colour multipliers.
-  pub fn set_material_tints(&mut self, tints: &[[f32; 3]; 8]) {
+  pub fn set_material_tints(&mut self, tints: &[[f32; 3]; vista_types::MATERIAL_COUNT]) {
     for (slot, tint) in tints.iter().enumerate() {
       self.world_info.material_tints[slot] = [tint[0], tint[1], tint[2], 0.0];
     }

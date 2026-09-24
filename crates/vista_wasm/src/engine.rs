@@ -28,7 +28,7 @@ use crate::weather::WeatherSystem;
 /// Edge length, in texels, of every replaceable texture layer.
 pub const TEXTURE_LAYER_SIZE: u32 = 512;
 /// Number of terrain material texture layers.
-pub const TERRAIN_TEXTURE_LAYERS: u32 = 8;
+pub const TERRAIN_TEXTURE_LAYERS: u32 = 10;
 /// Largest custom tree instance list accepted by `set_tree_instances`.
 pub const MAX_CUSTOM_TREES: usize = 1_000_000;
 
@@ -1442,7 +1442,10 @@ mod tests {
       .replace_texture(TextureTarget::Flora, 9, &texels)
       .is_ok());
     assert!(engine
-      .replace_texture(TextureTarget::TerrainAlbedo, 8, &texels)
+      .replace_texture(TextureTarget::TerrainAlbedo, 9, &texels)
+      .is_ok());
+    assert!(engine
+      .replace_texture(TextureTarget::TerrainAlbedo, 10, &texels)
       .is_err());
     assert!(engine
       .replace_texture(TextureTarget::TerrainNormal, 0, &texels[4..])

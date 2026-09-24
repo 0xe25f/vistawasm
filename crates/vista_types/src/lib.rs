@@ -1515,8 +1515,31 @@ pub struct ShadowOptions {
   pub clouds: CloudShadowOptions,
 }
 
-fn default_material_tints() -> [Rgb; 8] {
-  [[1.0, 1.0, 1.0]; 8]
+/// Number of terrain surface materials.
+pub const MATERIAL_COUNT: usize = 10;
+
+fn default_material_tints() -> [Rgb; MATERIAL_COUNT] {
+  [[1.0, 1.0, 1.0]; MATERIAL_COUNT]
+}
+
+/// Accept 8 tints, as before ice and tundra were added, or all 10. Missing
+/// tints stay white.
+fn deserialize_material_tints<'de, D>(deserializer: D) -> Result<[Rgb; MATERIAL_COUNT], D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  let tints = Vec::<Rgb>::deserialize(deserializer)?;
+
+  if tints.len() != 8 && tints.len() != MATERIAL_COUNT {
+    return Err(serde::de::Error::custom(format!(
+      "materialTints must list 8 or {MATERIAL_COUNT} colours, but {} were given.",
+      tints.len()
+    )));
+  }
+
+  let mut out = default_material_tints();
+  out[..tints.len()].copy_from_slice(&tints);
+  Ok(out)
 }
 
 /// A baked texture array that host textures can replace, one layer at a
@@ -1547,9 +1570,13 @@ pub struct SurfaceOptions {
   /// textures over more ground).
   pub texture_scale: f32,
   /// Colour multiplier per material, in the order lush grass, dry grass,
-  /// forest floor, sand, rock, snow, mud, volcanic.
-  #[serde(default = "default_material_tints")]
-  pub material_tints: [Rgb; 8],
+  /// forest floor, sand, rock, snow, mud, volcanic, ice, tundra. A list of
+  /// the first 8 is also accepted; ice and tundra then stay untinted.
+  #[serde(
+    default = "default_material_tints",
+    deserialize_with = "deserialize_material_tints"
+  )]
+  pub material_tints: [Rgb; MATERIAL_COUNT],
 }
 
 impl Default for SurfaceOptions {
@@ -1934,4 +1961,27 @@ pub struct SnapshotOptions {
   pub mime_type: Option<String>,
   /// Optional quality for lossy formats.
   pub quality: Option<f32>,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde::de::value::{Error, SeqDeserializer};
+
+  fn tints(count: usize) -> Result<[Rgb; MATERIAL_COUNT], Error> {
+    let colours = vec![vec![0.5f32, 0.25, 2.0]; count];
+    deserialize_material_tints(SeqDeserializer::<_, Error>::new(colours.into_iter()))
+  }
+
+  #[test]
+  fn material_tints_accept_eight_or_ten_colours() {
+    let eight = tints(8).unwrap();
+    assert_eq!(eight[7], [0.5, 0.25, 2.0]);
+    assert_eq!(eight[8], [1.0, 1.0, 1.0]);
+    assert_eq!(eight[9], [1.0, 1.0, 1.0]);
+
+    assert_eq!(tints(10).unwrap()[9], [0.5, 0.25, 2.0]);
+    assert!(tints(9).is_err());
+    assert!(tints(11).is_err());
+  }
 }

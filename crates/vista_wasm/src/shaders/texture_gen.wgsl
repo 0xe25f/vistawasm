@@ -7,7 +7,7 @@
 // eight-bit channels.
 //
 // Entry points:
-// - `gen_terrain`: eight ground materials, albedo + height and
+// - `gen_terrain`: ten ground materials, albedo + height and
 //   normal + occlusion + roughness.
 // - `gen_flora`: bark, leaf clusters, conifer needles, palm fronds, fine
 //   leaflets, and hanging moss, with alpha.
@@ -356,6 +356,45 @@ fn volcanic(uv: vec2<f32>) -> vec4<f32> {
   return vec4<f32>(colour, height);
 }
 
+fn ice(uv: vec2<f32>) -> vec4<f32> {
+  // Wind-scoured undulation: long, gentle waves crossed by broad swells.
+  let broad = fbm2(uv, 3, 4, 91u);
+  let warp = fbm2(uv, 2, 3, 92u);
+  let scour = sin((uv.x * 4.0 + uv.y * 1.0 + warp * 1.6) * TAU) * 0.5 + 0.5;
+  let height = saturate(broad * 0.6 + scour * 0.3 + fbm2(uv, 16, 3, 93u) * 0.1);
+  // Low, scoured hollows show the deep blue of dense glacier ice.
+  var colour = mix(vec3<f32>(0.35, 0.6, 0.8), vec3<f32>(0.8, 0.9, 0.97), smoothstep(0.2, 0.75, height));
+  // Trapped air bubbles: fine, pale specks.
+  let bubbles = worley2(uv * 48.0, 48, 94u);
+  let bubble = smoothstep(0.16, 0.06, bubbles.x) * step(0.72, bubbles.z);
+  colour = mix(colour, vec3<f32>(0.93, 0.96, 0.99), bubble * 0.6);
+  // Thin hairline fractures through the surface.
+  let fracture = 1.0 - smoothstep(0.0, 0.03, abs(perlin2((uv + warp * 0.2) * 5.0, 5, 95u)));
+  colour = colour * (1.0 - fracture * 0.18);
+  return vec4<f32>(colour, height);
+}
+
+fn tundra(uv: vec2<f32>) -> vec4<f32> {
+  let broad = fbm2(uv, 4, 5, 101u);
+  let hummocks = fbm2(uv, 12, 3, 102u);
+  // A mosaic of olive and khaki moss.
+  var colour = mix(vec3<f32>(0.33, 0.36, 0.22), vec3<f32>(0.46, 0.43, 0.29), smoothstep(0.35, 0.7, broad));
+  colour = colour * (0.8 + hummocks * 0.35);
+  // Pale lichen rosettes.
+  let lichen_cells = worley2(uv * 10.0 + vec2<f32>(broad * 0.4), 10, 103u);
+  let lichen = smoothstep(0.42, 0.3, lichen_cells.x) * step(0.55, lichen_cells.z);
+  colour = mix(colour, vec3<f32>(0.62, 0.6, 0.45) * (0.9 + fbm2(uv, 40, 2, 104u) * 0.2), lichen * 0.85);
+  // Russet dwarf shrub leaves among the moss.
+  let shrubs = smoothstep(0.66, 0.74, fbm2(uv, 8, 3, 105u));
+  colour = mix(colour, vec3<f32>(0.4, 0.24, 0.14), shrubs * 0.5);
+  // Small grey stones pushed up by frost.
+  let stones = worley2(uv * 24.0, 24, 106u);
+  let stone = smoothstep(0.3, 0.2, stones.x) * step(0.82, stones.z);
+  colour = mix(colour, vec3<f32>(0.47, 0.47, 0.45) * (0.8 + stones.z * 0.3), stone);
+  let height = saturate(hummocks * 0.5 + broad * 0.25 + lichen * 0.1 + stone * 0.45);
+  return vec4<f32>(colour, height);
+}
+
 fn material(layer: i32, uv: vec2<f32>) -> vec4<f32> {
   switch layer {
     case 0: { return lush_grass(uv); }
@@ -365,6 +404,8 @@ fn material(layer: i32, uv: vec2<f32>) -> vec4<f32> {
     case 4: { return rock(uv); }
     case 5: { return snow(uv); }
     case 6: { return mud(uv); }
+    case 8: { return ice(uv); }
+    case 9: { return tundra(uv); }
     default: { return volcanic(uv); }
   }
 }
@@ -376,6 +417,9 @@ fn material_roughness(layer: i32, height: f32) -> f32 {
     case 5: { return 0.45; }
     case 6: { return mix(0.2, 0.7, saturate(height * 2.0)); }
     case 7: { return 0.6; }
+    // Scoured hollows are polished bare ice; raised ice is weathered.
+    case 8: { return mix(0.15, 0.35, smoothstep(0.35, 0.75, height)); }
+    case 9: { return 0.85; }
     default: { return 0.9; }
   }
 }
@@ -387,6 +431,7 @@ fn material_bump(layer: i32) -> f32 {
     case 2: { return 3.5; }
     case 5: { return 1.5; }
     case 3: { return 1.6; }
+    case 8: { return 1.2; }
     default: { return 3.0; }
   }
 }

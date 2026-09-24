@@ -1,8 +1,10 @@
 // Renders terrain with procedurally generated, texture-splatted surface
 // materials. `common.wgsl` is prepended to this file.
 //
-// Each vertex carries eight biome-driven material weights (lush grass, dry
-// grass, forest floor, sand, rock, snow, mud, volcanic) plus climate data.
+// Each vertex carries ten biome-driven material weights (lush grass, dry
+// grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra),
+// packed as twelve bytes in three u32s, plus climate data. Its normal is
+// octahedron-encoded in two snorm16 values.
 // The fragment shader keeps the three strongest materials, samples their
 // baked albedo/height and normal/AO/roughness textures (see
 // `texture_gen.wgsl`) at a near and a far scale to hide tiling, and blends
@@ -13,11 +15,10 @@
 
 struct VertexIn {
   @location(0) position: vec3<f32>,
-  @location(1) normal: vec3<f32>,
-  @location(2) materials_a: vec4<f32>,
-  @location(3) materials_b: vec4<f32>,
-  @location(4) climate: vec4<f32>,
-  @location(5) biome: vec4<u32>,
+  @location(1) normal: vec2<f32>,
+  @location(2) materials: vec3<u32>,
+  @location(3) climate: vec4<f32>,
+  @location(4) biome: vec4<u32>,
 };
 
 struct VertexOut {
@@ -26,18 +27,34 @@ struct VertexOut {
   @location(1) normal: vec3<f32>,
   @location(2) materials_a: vec4<f32>,
   @location(3) materials_b: vec4<f32>,
-  @location(4) climate: vec4<f32>,
-  @location(5) @interpolate(flat) biome: u32,
+  // xy: ice and tundra weights, z: permanent snow, w: unused.
+  @location(4) materials_c: vec4<f32>,
+  @location(5) climate: vec4<f32>,
+  @location(6) @interpolate(flat) biome: u32,
 };
+
+// Inverse of `encode_normal` in `render/terrain_mesh.rs`.
+fn decode_normal(encoded: vec2<f32>) -> vec3<f32> {
+  var n = vec3<f32>(encoded.x, 1.0 - abs(encoded.x) - abs(encoded.y), encoded.y);
+
+  if (n.y < 0.0) {
+    let signs = select(vec2<f32>(-1.0), vec2<f32>(1.0), n.xz >= vec2<f32>(0.0));
+    n = vec3<f32>((1.0 - abs(n.z)) * signs.x, n.y, (1.0 - abs(n.x)) * signs.y);
+  }
+
+  return normalize(n);
+}
 
 @vertex
 fn vertex_main(in: VertexIn) -> VertexOut {
   var out: VertexOut;
   out.clip_position = frame.view_proj * vec4<f32>(in.position, 1.0);
   out.world_position = in.position;
-  out.normal = in.normal;
-  out.materials_a = in.materials_a;
-  out.materials_b = in.materials_b;
+  out.normal = decode_normal(in.normal);
+  out.materials_a = unpack4x8unorm(in.materials.x);
+  out.materials_b = unpack4x8unorm(in.materials.y);
+  // Slots 10 and 11 are reserved.
+  out.materials_c = vec4<f32>(unpack4x8unorm(in.materials.z).xy, f32(in.biome.w) / 255.0, 0.0);
   out.climate = in.climate;
   out.biome = in.biome.x;
   return out;
@@ -51,6 +68,9 @@ const MAT_ROCK: i32 = 4;
 const MAT_SNOW: i32 = 5;
 const MAT_MUD: i32 = 6;
 const MAT_VOLCANIC: i32 = 7;
+const MAT_ICE: i32 = 8;
+const MAT_TUNDRA: i32 = 9;
+const MATERIAL_COUNT: i32 = 10;
 
 // Metres covered by one repeat of each material texture (near scale).
 fn material_scale(material: i32) -> f32 {
@@ -62,6 +82,8 @@ fn material_scale(material: i32) -> f32 {
     case 4: { return 12.0; }
     case 5: { return 9.0; }
     case 6: { return 5.5; }
+    case 8: { return 14.0; }
+    case 9: { return 5.0; }
     default: { return 10.0; }
   }
 }
@@ -84,6 +106,8 @@ fn flat_colour(material: i32) -> vec3<f32> {
     case 4: { return vec3<f32>(0.14, 0.13, 0.12); }
     case 5: { return vec3<f32>(0.78, 0.82, 0.88); }
     case 6: { return vec3<f32>(0.045, 0.03, 0.02); }
+    case 8: { return vec3<f32>(0.5, 0.7, 0.86); }
+    case 9: { return vec3<f32>(0.1, 0.1, 0.05); }
     default: { return vec3<f32>(0.015, 0.013, 0.012); }
   }
 }
@@ -195,6 +219,7 @@ fn biome_debug_colour(biome: u32) -> vec3<f32> {
     case 15u: { return vec3<f32>(0.6, 0.5, 0.62); }
     case 16u: { return vec3<f32>(0.62, 0.78, 0.95); }
     case 17u: { return vec3<f32>(0.97, 0.99, 1.0); }
+    case 18u: { return vec3<f32>(0.75, 0.92, 1.0); }
     default: { return vec3<f32>(0.1, 0.25, 0.55); }
   }
 }
@@ -208,6 +233,8 @@ fn material_debug_colour(material: i32) -> vec3<f32> {
     case 4: { return vec3<f32>(0.5, 0.5, 0.5); }
     case 5: { return vec3<f32>(1.0, 1.0, 1.0); }
     case 6: { return vec3<f32>(0.3, 0.2, 0.15); }
+    case 8: { return vec3<f32>(0.45, 0.75, 1.0); }
+    case 9: { return vec3<f32>(0.55, 0.55, 0.3); }
     default: { return vec3<f32>(0.6, 0.1, 0.05); }
   }
 }
@@ -233,9 +260,10 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // look the same.
   let low_detail = distance > frame.distances.y;
 
-  var weights = array<f32, 8>(
+  var weights = array<f32, 10>(
     in.materials_a.x, in.materials_a.y, in.materials_a.z, in.materials_a.w,
-    in.materials_b.x, in.materials_b.y, in.materials_b.z, in.materials_b.w
+    in.materials_b.x, in.materials_b.y, in.materials_b.z, in.materials_b.w,
+    in.materials_c.x, in.materials_c.y
   );
 
   let debug_view = i32(frame.sky_tint.w + 0.5);
@@ -253,7 +281,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       debug_colour = geometric_normal * 0.5 + 0.5;
     } else if (debug_view == 4) {
       var best = 0;
-      for (var i = 1; i < 8; i = i + 1) {
+      for (var i = 1; i < MATERIAL_COUNT; i = i + 1) {
         if (weights[i] > weights[best]) {
           best = i;
         }
@@ -271,7 +299,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var top = array<i32, 3>(0, 0, 0);
   var top_weight = array<f32, 3>(-1.0, -1.0, -1.0);
 
-  for (var i = 0; i < 8; i = i + 1) {
+  for (var i = 0; i < MATERIAL_COUNT; i = i + 1) {
     let w = weights[i];
 
     if (w > top_weight[0]) {

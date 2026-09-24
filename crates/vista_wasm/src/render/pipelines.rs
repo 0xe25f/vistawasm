@@ -7,7 +7,6 @@ pub const SHADER_MODULES: &[&str] = &[
   "hydraulic_erosion.wgsl",
   "thermal_erosion.wgsl",
   "normals.wgsl",
-  "material_masks.wgsl",
   "texture_gen.wgsl",
   "mipgen.wgsl",
   "clipmap_render.wgsl",

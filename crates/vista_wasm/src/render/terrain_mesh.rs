@@ -14,52 +14,142 @@
 //! detail near the camera and reaching far beyond what a uniform mesh of
 //! the same vertex count could cover.
 
-use crate::terrain::biomes::{classify_surface, SurfaceSample};
+use crate::terrain::biomes::{classify_surface, SurfaceSample, MATERIAL_COUNT};
 use crate::terrain::heightmap::HeightMap;
 use crate::terrain::normals::generate_normals;
 use vista_types::{BiomeOptions, Vec3};
 
-/// One GPU-ready terrain vertex (40 bytes).
+/// One GPU-ready terrain vertex (36 bytes).
 ///
 /// The layout is tightly packed and matches the vertex buffer layout used by
-/// `clipmap_render.wgsl`. Position and normal are stored in terrain metres.
-/// The eight surface material weights follow the `MAT_*` order in
-/// [`crate::terrain::biomes`] and are normalised `u8`s so the whole vertex
-/// stays the same size as the previous four-float material layout.
+/// `clipmap_render.wgsl`. Position is stored in terrain metres. The normal
+/// is octahedron-encoded into two signed 16-bit values, which is far below
+/// the precision lighting can show, and the surface material weights are
+/// twelve normalised `u8` slots in three `u32`s, unpacked in the shader with
+/// `unpack4x8unorm`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainVertex {
   /// World position in terrain metres, centred on the terrain origin.
   pub position: [f32; 3],
-  /// Unit surface normal.
-  pub normal: [f32; 3],
-  /// Lush grass, dry grass, forest floor, and sand weights.
-  pub materials_a: [u8; 4],
-  /// Rock, snow, mud, and volcanic weights.
-  pub materials_b: [u8; 4],
+  /// Octahedron-encoded unit surface normal.
+  pub normal: [i16; 2],
+  /// Twelve material weights in `MAT_*` order, four per `u32`, lowest
+  /// byte first. Slots 10 and 11 are reserved and always 0.
+  pub materials: [u32; 3],
   /// Moisture, temperature, volcanic heat, and ambient occlusion.
   pub climate: [u8; 4],
-  /// Biome index, tree cover, river flag, and a reserved byte.
+  /// Biome index, tree cover, river flag, and permanent snow.
   pub biome: [u8; 4],
 }
 
+/// Number of material slots in a [`TerrainVertex`].
+pub const MATERIAL_SLOTS: usize = 12;
+
 impl TerrainVertex {
   fn new(position: [f32; 3], normal: Vec3, surface: &SurfaceSample) -> Self {
-    let m = surface.materials;
+    let mut slots = [0u8; MATERIAL_SLOTS];
+    slots[..MATERIAL_COUNT].copy_from_slice(&surface.materials);
 
     Self {
       position,
-      normal,
-      materials_a: [m[0], m[1], m[2], m[3]],
-      materials_b: [m[4], m[5], m[6], m[7]],
+      normal: encode_normal(normal),
+      materials: pack_material_bytes(&slots),
       climate: [
         surface.moisture,
         surface.temperature,
         surface.heat,
         surface.occlusion,
       ],
-      biome: [surface.biome, surface.forest, surface.river, 0],
+      biome: [
+        surface.biome,
+        surface.forest,
+        surface.river,
+        surface.permanent_snow,
+      ],
     }
+  }
+}
+
+/// Pack twelve byte weights like WGSL's `pack4x8unorm`: the first of each
+/// group of four in the lowest byte.
+pub fn pack_material_bytes(bytes: &[u8; MATERIAL_SLOTS]) -> [u32; 3] {
+  let word = |start: usize| {
+    u32::from_le_bytes([
+      bytes[start],
+      bytes[start + 1],
+      bytes[start + 2],
+      bytes[start + 3],
+    ])
+  };
+
+  [word(0), word(4), word(8)]
+}
+
+/// Pack twelve 0 to 1 weights, rounding as `pack4x8unorm` does.
+pub fn pack_materials(weights: &[f32; MATERIAL_SLOTS]) -> [u32; 3] {
+  let mut bytes = [0u8; MATERIAL_SLOTS];
+
+  for (byte, weight) in bytes.iter_mut().zip(weights) {
+    *byte = (weight.clamp(0.0, 1.0) * 255.0).round() as u8;
+  }
+
+  pack_material_bytes(&bytes)
+}
+
+/// Unpack twelve weights, as `unpack4x8unorm` does in the shader.
+pub fn unpack_materials(words: [u32; 3]) -> [f32; MATERIAL_SLOTS] {
+  let mut weights = [0.0; MATERIAL_SLOTS];
+
+  for (index, weight) in weights.iter_mut().enumerate() {
+    let byte = (words[index / 4] >> ((index % 4) * 8)) & 0xff;
+    *weight = byte as f32 / 255.0;
+  }
+
+  weights
+}
+
+/// Octahedron-encode a unit normal into two snorm16 values. Decoded by
+/// `decode_normal` in `clipmap_render.wgsl`.
+pub fn encode_normal(normal: Vec3) -> [i16; 2] {
+  let length = normal[0].abs() + normal[1].abs() + normal[2].abs();
+
+  if length <= f32::EPSILON {
+    return [0, 0];
+  }
+
+  let (mut u, mut v) = (normal[0] / length, normal[2] / length);
+
+  // The lower hemisphere folds over the diagonals.
+  if normal[1] < 0.0 {
+    let (fold_u, fold_v) = ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v));
+    u = fold_u;
+    v = fold_v;
+  }
+
+  let quantise = |value: f32| (value.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
+  [quantise(u), quantise(v)]
+}
+
+/// Decode a normal written by [`encode_normal`].
+pub fn decode_normal(encoded: [i16; 2]) -> Vec3 {
+  let u = (encoded[0] as f32 / 32_767.0).max(-1.0);
+  let v = (encoded[1] as f32 / 32_767.0).max(-1.0);
+  let y = 1.0 - u.abs() - v.abs();
+  let (x, z) = if y < 0.0 {
+    ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v))
+  } else {
+    (u, v)
+  };
+
+  crate::maths::normalise([x, y, z])
+}
+
+fn sign(value: f32) -> f32 {
+  if value >= 0.0 {
+    1.0
+  } else {
+    -1.0
   }
 }
 
@@ -375,12 +465,68 @@ pub fn next_mesh_centre(
   Some((camera.0 + lead.0, camera.1 + lead.1))
 }
 
-const _: () = assert!(std::mem::size_of::<TerrainVertex>() == 40);
+const _: () = assert!(std::mem::size_of::<TerrainVertex>() == 36);
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use vista_types::TerrainMetadata;
+
+  #[test]
+  fn twelve_material_weights_round_trip_within_one_step() {
+    let mut weights = [0.0; MATERIAL_SLOTS];
+
+    for (index, weight) in weights.iter_mut().enumerate() {
+      *weight = (index as f32 * 0.137 + 0.01).fract();
+    }
+
+    let unpacked = unpack_materials(pack_materials(&weights));
+
+    for (before, after) in weights.iter().zip(unpacked) {
+      assert!((before - after).abs() <= 1.0 / 255.0, "{before} -> {after}");
+    }
+
+    let bytes: [u8; MATERIAL_SLOTS] = std::array::from_fn(|index| (index * 20) as u8);
+    let words = pack_material_bytes(&bytes);
+    assert_eq!(words[0] & 0xff, 0);
+    assert_eq!(words[2] >> 24, 220);
+    assert_eq!(bytemuck::cast_slice::<u32, u8>(&words), &bytes);
+  }
+
+  #[test]
+  fn octahedral_normals_round_trip_closely() {
+    let normals = [
+      [0.0, 1.0, 0.0],
+      [0.0, -1.0, 0.0],
+      [1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0],
+      [0.3, 0.9, -0.2],
+      [-0.7, -0.1, 0.6],
+      [0.577, -0.577, -0.577],
+    ];
+
+    for normal in normals {
+      let normal = crate::maths::normalise(normal);
+      let decoded = decode_normal(encode_normal(normal));
+      let dot = normal[0] * decoded[0] + normal[1] * decoded[1] + normal[2] * decoded[2];
+      assert!(dot > 0.999_99, "{normal:?} -> {decoded:?}");
+    }
+  }
+
+  #[test]
+  fn vertices_carry_ice_tundra_and_permanent_snow() {
+    let sample = SurfaceSample {
+      materials: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      permanent_snow: 200,
+      ..SurfaceSample::default()
+    };
+    let vertex = TerrainVertex::new([0.0; 3], [0.0, 1.0, 0.0], &sample);
+    let bytes: &[u8] = bytemuck::cast_slice(&vertex.materials);
+
+    assert_eq!(&bytes[..10], &sample.materials);
+    assert_eq!(&bytes[10..], &[0, 0]);
+    assert_eq!(vertex.biome[3], 200);
+  }
 
   #[test]
   fn builds_a_grid_with_expected_triangle_count() {
