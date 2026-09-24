@@ -183,6 +183,22 @@ resolved, and `CHROMIUM_PATH` to a Chromium binary. Software rendering
 takes seconds per frame, so compare relative pass times, not absolute
 ones.
 
+### Performance gate
+
+`scripts/visual-check/fixed-scene.mjs` renders one fixed scene, clear and
+then in rain with lens drops, and prints the GPU time of every pass,
+averaged over 6 frames after 3 warm-up frames:
+
+```bash
+node scripts/visual-check/fixed-scene.mjs          # add out.png to save the frames
+```
+
+The terrain is a committed heightmap (`fixed-512.f32.gz`), loaded with
+`loadRawHeightmap`, so generator changes leave the scene alone. Dynamic
+resolution is off. Run it before and after a rendering change, on the
+same machine, and compare pass by pass: a pass more than 5 % slower needs
+a reason and a budget.
+
 ## Project structure
 
 ```text

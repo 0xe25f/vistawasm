@@ -68,15 +68,24 @@
           }
         });
         const started = performance.now();
-        const handle = await engine.generateFractal(Object.assign({
-          seed: 12345,
-          size: 512,
-          horizontalScaleMetres: 12,
-          verticalScale: 1,
-          seaLevelMetres: 0,
-          noise: { kind: "ridged", octaves: 7, gain: 0.52, lacunarity: 2.05, warp: 0.15 },
-          shape: { island: 0.35 }
-        }, config.terrain || {}));
+        // A fixed heightmap (a gzipped raw file) instead of a generated one,
+        // so a scene stays identical while the generator changes.
+        const handle = config.heightmap
+          ? await engine.loadRawHeightmap(
+            await new Response(
+              (await fetch(config.heightmap.url)).body.pipeThrough(new DecompressionStream("gzip"))
+            ).arrayBuffer(),
+            config.heightmap.options
+          )
+          : await engine.generateFractal(Object.assign({
+            seed: 12345,
+            size: 512,
+            horizontalScaleMetres: 12,
+            verticalScale: 1,
+            seaLevelMetres: 0,
+            noise: { kind: "ridged", octaves: 7, gain: 0.52, lacunarity: 2.05, warp: 0.15 },
+            shape: { island: 0.35 }
+          }, config.terrain || {}));
         window.log.push(`generation ms ${Math.round(performance.now() - started)}`);
         window.log.push(
           `phases ${phases
@@ -177,6 +186,24 @@
         image.height = h;
         image.getContext("2d").putImageData(new ImageData(pixels, w, h), 0, 0);
         return { stats, gpuMs, url: image.toDataURL("image/png") };
+      };
+
+      // Render `warm` frames, then `frames` more, waiting for the GPU after
+      // each, and return the stats of the measured frames.
+      window.measure = async (warm, frames) => {
+        const device = window.gpuDevice;
+        const stats = [];
+
+        for (let frame = 0; frame < warm + frames; frame += 1) {
+          const result = window.engine.renderOnce();
+          await device.queue.onSubmittedWorkDone();
+
+          if (frame >= warm) {
+            stats.push(result);
+          }
+        }
+
+        return stats;
       };
 
       window.ready = true;
