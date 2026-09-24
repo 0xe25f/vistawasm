@@ -1,7 +1,8 @@
 use vista_types::{
-  AtmosphereOptions, BiomeOptions, CameraOptions, CloudStyle, CloudsOptions, FloraOptions,
-  GrassOptions, MistOptions, RenderQualityOptions, RenderSizeOptions, ShadowOptions, SunOptions,
-  SurfaceOptions, VistaEngineOptions, WaterOptions, WeatherOptions,
+  AtmosphereOptions, BiomeOptions, CameraOptions, CloudStyle, CloudsOptions, ErosionOptions,
+  FloraOptions, FractalTerrainOptions, GrassOptions, MistOptions, RenderQualityOptions,
+  RenderSizeOptions, ShadowOptions, SunOptions, SurfaceOptions, VistaEngineOptions, WaterOptions,
+  WeatherOptions,
 };
 
 use crate::errors::{VistaError, VistaResult};
@@ -535,9 +536,152 @@ pub fn validate_surface(surface: &SurfaceOptions) -> VistaResult<()> {
   Ok(())
 }
 
+/// The most erosion iterations one generation may request, so untrusted
+/// input cannot queue unbounded GPU work.
+pub const EROSION_ITERATIONS_MAX: u32 = 5000;
+
+/// Validate fractal terrain options.
+///
+/// `landform` needs no check here: serde rejects unknown names with a
+/// message listing the valid ones.
+pub fn validate_fractal(options: &FractalTerrainOptions) -> VistaResult<()> {
+  if options.size < 16 || options.size > 8192 || !options.size.is_power_of_two() {
+    return Err(VistaError::options(
+      "fractal size must be a power of two between 16 and 8192.",
+    ));
+  }
+
+  validate_positive("horizontalScaleMetres", options.horizontal_scale_metres)?;
+  validate_positive("verticalScale", options.vertical_scale)?;
+
+  if let Some(base) = options.base_height_metres {
+    validate_finite("baseHeightMetres", base)?;
+  }
+
+  if let Some(sea) = options.sea_level_metres {
+    validate_finite("seaLevelMetres", sea)?;
+  }
+
+  validate_range("noise.octaves", options.noise.octaves, 1, 16)?;
+  validate_unit_range("noise.gain", options.noise.gain, 0.0, 1.0)?;
+
+  if !options.noise.lacunarity.is_finite() || options.noise.lacunarity <= 1.0 {
+    return Err(VistaError::options(
+      "noise.lacunarity must be a finite value greater than 1.",
+    ));
+  }
+
+  if let Some(warp) = options.noise.warp {
+    validate_unit_range("noise.warp", warp, 0.0, 4.0)?;
+  }
+
+  if let Some(erosion) = &options.erosion {
+    validate_erosion(erosion)?;
+  }
+
+  Ok(())
+}
+
+/// Validate erosion controls. Unset fields take the landform's defaults.
+pub fn validate_erosion(erosion: &ErosionOptions) -> VistaResult<()> {
+  for (name, value) in [
+    ("erosion.hydraulicIterations", erosion.hydraulic_iterations),
+    ("erosion.thermalIterations", erosion.thermal_iterations),
+  ] {
+    if let Some(value) = value {
+      validate_range(name, value, 0, EROSION_ITERATIONS_MAX)?;
+    }
+  }
+
+  for (name, value) in [
+    ("erosion.rainAmount", erosion.rain_amount),
+    ("erosion.evaporation", erosion.evaporation),
+    ("erosion.sedimentCapacity", erosion.sediment_capacity),
+  ] {
+    if let Some(value) = value {
+      validate_unit_range(name, value, 0.0, 1.0)?;
+    }
+  }
+
+  if let Some(talus) = erosion.talus_angle_degrees {
+    validate_unit_range("erosion.talusAngleDegrees", talus, 1.0, 89.0)?;
+  }
+
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn rejects_unknown_landforms_with_the_valid_names() {
+    use serde::de::value::{Error, StrDeserializer};
+    use serde::de::IntoDeserializer;
+    use serde::Deserialize;
+    use vista_types::LandformKind;
+
+    let parse = |name: &'static str| {
+      let deserializer: StrDeserializer<'_, Error> = name.into_deserializer();
+      LandformKind::deserialize(deserializer)
+    };
+
+    assert_eq!(parse("rollingHills").unwrap(), LandformKind::RollingHills);
+    assert_eq!(
+      parse("volcanicIsland").unwrap(),
+      LandformKind::VolcanicIsland
+    );
+
+    let message = parse("glacier").unwrap_err().to_string();
+    assert!(message.contains("glacier"), "{message}");
+
+    for name in [
+      "continental",
+      "alpine",
+      "rollingHills",
+      "archipelago",
+      "mesaDesert",
+      "fjords",
+      "volcanicIsland",
+    ] {
+      assert!(message.contains(name), "{message}");
+    }
+  }
+
+  #[test]
+  fn rejects_out_of_range_fractal_and_erosion_options() {
+    let valid = FractalTerrainOptions::default();
+    assert!(validate_fractal(&valid).is_ok());
+
+    let odd_size = FractalTerrainOptions {
+      size: 300,
+      ..FractalTerrainOptions::default()
+    };
+    assert!(validate_fractal(&odd_size).is_err());
+
+    let heavy = FractalTerrainOptions {
+      erosion: Some(ErosionOptions {
+        hydraulic_iterations: Some(EROSION_ITERATIONS_MAX + 1),
+        ..ErosionOptions::default()
+      }),
+      ..FractalTerrainOptions::default()
+    };
+    let message = validate_fractal(&heavy).unwrap_err().to_string();
+    assert!(message.contains("hydraulicIterations"), "{message}");
+    assert!(message.contains("5000"), "{message}");
+
+    let talus = ErosionOptions {
+      talus_angle_degrees: Some(95.0),
+      ..ErosionOptions::default()
+    };
+    assert!(validate_erosion(&talus).is_err());
+
+    let rain = ErosionOptions {
+      rain_amount: Some(f32::NAN),
+      ..ErosionOptions::default()
+    };
+    assert!(validate_erosion(&rain).is_err());
+  }
 
   #[test]
   fn rejects_invalid_weather_shadow_and_surface_options() {

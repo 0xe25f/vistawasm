@@ -177,6 +177,31 @@ pub struct FractalTerrainOptions {
   pub shape: Option<TerrainShapeOptions>,
   /// Optional erosion controls.
   pub erosion: Option<ErosionOptions>,
+  /// Character of the land. Defaults to [`LandformKind::Continental`].
+  #[serde(default)]
+  pub landform: LandformKind,
+}
+
+/// The character of a generated map: how much of it is land, how the
+/// land is raised into ranges, and how water and ice carve it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LandformKind {
+  /// Mixed plains, hills and one or two eroded mountain ranges.
+  #[default]
+  Continental,
+  /// High, heavily eroded ranges with deep valleys and glacial troughs.
+  Alpine,
+  /// Gentle downs and broad vales with no mountain ranges.
+  RollingHills,
+  /// Many islands of varied size in a shallow sea.
+  Archipelago,
+  /// Terraced plateaus, buttes and canyons under a dry climate.
+  MesaDesert,
+  /// Steep coastal ranges cut by flooded, U-shaped glacial valleys.
+  Fjords,
+  /// A central cone with a caldera, radial gullies and a reef shelf.
+  VolcanicIsland,
 }
 
 impl Default for FractalTerrainOptions {
@@ -191,6 +216,7 @@ impl Default for FractalTerrainOptions {
       noise: NoiseOptions::default(),
       shape: None,
       erosion: None,
+      landform: LandformKind::Continental,
     }
   }
 }
@@ -273,8 +299,9 @@ pub enum ErosionQuality {
   Offline,
 }
 
-/// Erosion controls.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Erosion controls. Unset fields take the landform's defaults, and unset
+/// iteration counts follow the quality preset.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErosionOptions {
   /// Number of hydraulic erosion iterations.
@@ -291,20 +318,6 @@ pub struct ErosionOptions {
   pub talus_angle_degrees: Option<f32>,
   /// Quality preset used to clamp work.
   pub quality: Option<ErosionQuality>,
-}
-
-impl Default for ErosionOptions {
-  fn default() -> Self {
-    Self {
-      hydraulic_iterations: Some(0),
-      thermal_iterations: Some(0),
-      rain_amount: Some(0.02),
-      evaporation: Some(0.5),
-      sediment_capacity: Some(0.04),
-      talus_angle_degrees: Some(35.0),
-      quality: Some(ErosionQuality::Preview),
-    }
-  }
 }
 
 /// Supported raw heightmap sample formats.

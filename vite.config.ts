@@ -12,6 +12,14 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // build` once before `npm run dev`.
 export default defineConfig({
   plugins: [react(), vue(), svelte()],
+  // Type tests (`*.test-d.ts`) run with `vitest run`, so public
+  // declarations are checked alongside the runtime tests.
+  test: {
+    typecheck: {
+      enabled: true,
+      tsconfig: "./js/tests/tsconfig.json"
+    }
+  },
   resolve: {
     alias: {
       "@vista-wasm/vista-wasm": fileURLToPath(new URL("./dist/index.js", import.meta.url))

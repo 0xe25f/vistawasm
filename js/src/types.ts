@@ -172,8 +172,31 @@ export interface FractalTerrainOptions {
   seaLevelMetres?: number;
   noise: NoiseOptions;
   shape?: TerrainShapeOptions;
+  /** Erosion. Unset fields take the landform's defaults. */
   erosion?: ErosionOptions;
+  /** Character of the land. Defaults to "continental". */
+  landform?: LandformKind;
 }
+
+/**
+ * The character of a generated map.
+ *
+ * - `continental`: mixed plains, hills and one or two eroded ranges.
+ * - `alpine`: high, heavily eroded ranges with deep glacial valleys.
+ * - `rollingHills`: gentle downs and broad vales, no ranges.
+ * - `archipelago`: many islands of varied size.
+ * - `mesaDesert`: terraced plateaus, buttes and canyons.
+ * - `fjords`: steep coastal ranges cut by flooded U-shaped valleys.
+ * - `volcanicIsland`: a central cone with a caldera and a reef shelf.
+ */
+export type LandformKind =
+  | "continental"
+  | "alpine"
+  | "rollingHills"
+  | "archipelago"
+  | "mesaDesert"
+  | "fjords"
+  | "volcanicIsland";
 
 /**
  * Supported procedural noise names.

@@ -1,6 +1,6 @@
 use vista_types::{FractalTerrainOptions, NoiseKind, TerrainMetadata};
 
-use crate::errors::{VistaError, VistaResult};
+use crate::errors::VistaResult;
 use crate::maths::{clamp_f32, hash_u64, lerp};
 use crate::terrain::erosion::apply_erosion;
 use crate::terrain::heightmap::HeightMap;
@@ -29,7 +29,7 @@ pub fn generate_fractal_heightmap(options: &FractalTerrainOptions) -> VistaResul
 /// erosion, so a caller can apply erosion separately (for example, on the
 /// GPU).
 pub fn generate_fractal_heightmap_base(options: &FractalTerrainOptions) -> VistaResult<HeightMap> {
-  validate_fractal_options(options)?;
+  crate::config::validate_fractal(options)?;
 
   let size = options.size;
   let len = size as usize * size as usize;
@@ -63,44 +63,6 @@ pub fn generate_fractal_heightmap_base(options: &FractalTerrainOptions) -> Vista
   };
 
   HeightMap::from_values(size, size, heights, no_data, metadata)
-}
-
-fn validate_fractal_options(options: &FractalTerrainOptions) -> VistaResult<()> {
-  if options.size < 16 || options.size > 8192 || !options.size.is_power_of_two() {
-    return Err(VistaError::options(
-      "fractal size must be a power of two between 16 and 8192.",
-    ));
-  }
-
-  if !options.horizontal_scale_metres.is_finite() || options.horizontal_scale_metres <= 0.0 {
-    return Err(VistaError::options(
-      "horizontalScaleMetres must be a finite value greater than 0.",
-    ));
-  }
-
-  if !options.vertical_scale.is_finite() || options.vertical_scale <= 0.0 {
-    return Err(VistaError::options(
-      "verticalScale must be a finite value greater than 0.",
-    ));
-  }
-
-  if options.noise.octaves == 0 || options.noise.octaves > 16 {
-    return Err(VistaError::options(
-      "noise.octaves must be between 1 and 16.",
-    ));
-  }
-
-  if !options.noise.gain.is_finite() || !(0.0..=1.0).contains(&options.noise.gain) {
-    return Err(VistaError::options("noise.gain must be between 0 and 1."));
-  }
-
-  if !options.noise.lacunarity.is_finite() || options.noise.lacunarity <= 1.0 {
-    return Err(VistaError::options(
-      "noise.lacunarity must be a finite value greater than 1.",
-    ));
-  }
-
-  Ok(())
 }
 
 fn warp_domain(seed: u64, x: f32, y: f32, warp: f32) -> (f32, f32) {

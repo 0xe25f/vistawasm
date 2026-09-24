@@ -278,7 +278,7 @@ mod tests {
     let mut receiver = flood.receiver.clone();
     steepest_receivers(4, 4, &flood.filled, &mut receiver);
     let order = stack_order(&receiver);
-    let mut position = vec![0; 16];
+    let mut position = [0; 16];
 
     for (at, cell) in order.iter().enumerate() {
       position[*cell as usize] = at;

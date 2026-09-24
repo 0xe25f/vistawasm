@@ -6,6 +6,7 @@ pub mod drainage;
 pub mod erosion;
 pub mod fractal;
 pub mod heightmap;
+pub mod landforms;
 pub mod materials;
 pub mod noise;
 pub mod normals;
