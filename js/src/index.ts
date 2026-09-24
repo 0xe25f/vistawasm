@@ -170,7 +170,9 @@ class VistaEngineWrapper implements VistaEngine {
       progress: 0
     });
     const handle = await this.callAsync<TerrainHandle>(() =>
-      this.raw.generateFractal(normaliseFractalOptions(options))
+      this.raw.generateFractal(normaliseFractalOptions(options), (phase, progress) => {
+        this.emit("progress", { phase, progress });
+      })
     );
     this.emitWarnings(handle);
     this.emit("terrainLoaded", handle);

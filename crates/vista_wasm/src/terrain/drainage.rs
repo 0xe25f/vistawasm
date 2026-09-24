@@ -179,52 +179,72 @@ pub fn steepest_receivers(width: u32, height: u32, surface: &[f64], receiver: &m
 }
 
 /// Order cells so every cell comes after its receiver (the "stack" of
-/// Braun and Willett, 2013), walking up the receiver tree from each
-/// outlet. Cells whose receiver chain never reaches an outlet are left
+/// Braun and Willett, 2013), walking up the receiver trees from the
+/// outlets. Cells whose receiver chain never reaches an outlet are left
 /// out, which cannot happen for receivers from [`priority_flood`].
 pub fn stack_order(receiver: &[u32]) -> Vec<u32> {
-  let count = receiver.len();
-  // Donor lists as a compact adjacency (counting sort by receiver).
-  let mut start = vec![0u32; count + 1];
-
-  for r in receiver {
-    if *r != NO_RECEIVER {
-      start[*r as usize + 1] += 1;
-    }
-  }
-
-  for i in 0..count {
-    start[i + 1] += start[i];
-  }
-
-  let mut fill = start.clone();
-  let mut donors = vec![0u32; start[count] as usize];
-
-  for (index, r) in receiver.iter().enumerate() {
-    if *r != NO_RECEIVER {
-      donors[fill[*r as usize] as usize] = index as u32;
-      fill[*r as usize] += 1;
-    }
-  }
-
-  let mut order = Vec::with_capacity(count);
-  let mut pending = Vec::new();
-
-  for (index, r) in receiver.iter().enumerate() {
-    if *r != NO_RECEIVER {
-      continue;
-    }
-
-    pending.push(index as u32);
-
-    while let Some(cell) = pending.pop() {
-      order.push(cell);
-      let c = cell as usize;
-      pending.extend_from_slice(&donors[start[c] as usize..start[c + 1] as usize]);
-    }
-  }
-
+  let mut order = Vec::with_capacity(receiver.len());
+  StackOrder::default().order(receiver, &mut order);
   order
+}
+
+/// Reusable buffers for [`stack_order`], for callers that order the same
+/// grid many times.
+#[derive(Default)]
+pub struct StackOrder {
+  start: Vec<u32>,
+  fill: Vec<u32>,
+  donors: Vec<u32>,
+}
+
+impl StackOrder {
+  /// Write the stack order of `receiver` into `order`.
+  pub fn order(&mut self, receiver: &[u32], order: &mut Vec<u32>) {
+    let count = receiver.len();
+    // Donor lists as a compact adjacency (counting sort by receiver).
+    self.start.clear();
+    self.start.resize(count + 1, 0);
+
+    for r in receiver {
+      if *r != NO_RECEIVER {
+        self.start[*r as usize + 1] += 1;
+      }
+    }
+
+    for i in 0..count {
+      self.start[i + 1] += self.start[i];
+    }
+
+    self.fill.clear();
+    self.fill.extend_from_slice(&self.start);
+    self.donors.clear();
+    self.donors.resize(self.start[count] as usize, 0);
+
+    for (index, r) in receiver.iter().enumerate() {
+      if *r != NO_RECEIVER {
+        self.donors[self.fill[*r as usize] as usize] = index as u32;
+        self.fill[*r as usize] += 1;
+      }
+    }
+
+    // Breadth-first from the outlets, using `order` itself as the queue.
+    order.clear();
+    order.extend(
+      receiver
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| **r == NO_RECEIVER)
+        .map(|(index, _)| index as u32),
+    );
+    let mut head = 0;
+
+    while head < order.len() {
+      let c = order[head] as usize;
+      head += 1;
+      let (first, last) = (self.start[c] as usize, self.start[c + 1] as usize);
+      order.extend_from_slice(&self.donors[first..last]);
+    }
+  }
 }
 
 /// Accumulate `weights` downstream: each cell's result is its own weight
@@ -232,7 +252,12 @@ pub fn stack_order(receiver: &[u32]) -> Vec<u32> {
 /// every cell after its receiver.
 pub fn accumulate(order: &[u32], receiver: &[u32], weights: Vec<f32>) -> Vec<f32> {
   let mut accumulation = weights;
+  accumulate_into(order, receiver, &mut accumulation);
+  accumulation
+}
 
+/// [`accumulate`] in place: `accumulation` holds the weights on entry.
+pub fn accumulate_into(order: &[u32], receiver: &[u32], accumulation: &mut [f32]) {
   for index in order.iter().rev() {
     let i = *index as usize;
     let r = receiver[i];
@@ -241,8 +266,6 @@ pub fn accumulate(order: &[u32], receiver: &[u32], weights: Vec<f32>) -> Vec<f32
       accumulation[r as usize] += accumulation[i];
     }
   }
-
-  accumulation
 }
 
 #[cfg(test)]

@@ -1778,27 +1778,18 @@ impl GpuContext {
     self.queue.submit(Some(encoder.finish()));
   }
 
-  /// Run budgeted hydraulic and thermal erosion on the GPU and return the
-  /// eroded heights. See [`ErosionCompute::run`] for details.
+  /// Erode `map` on the GPU and return the eroded heights. See
+  /// [`ErosionCompute::run`] for details.
   pub async fn run_erosion(
     &self,
-    heights: &[f32],
-    width: u32,
-    height: u32,
-    metres_per_sample: f32,
+    map: &crate::terrain::HeightMap,
     options: &ErosionOptions,
+    landform: &crate::terrain::landforms::Landform,
+    progress: crate::terrain::fractal::Progress<'_>,
   ) -> VistaResult<Vec<f32>> {
     self
       .erosion
-      .run(
-        &self.device,
-        &self.queue,
-        heights,
-        width,
-        height,
-        metres_per_sample,
-        options,
-      )
+      .run(&self.device, &self.queue, map, options, landform, progress)
       .await
   }
 

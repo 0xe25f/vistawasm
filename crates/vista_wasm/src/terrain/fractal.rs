@@ -30,8 +30,12 @@ const GLACIAL_DEEPENING: f64 = 0.18;
 /// Degrees by which threshold hillslopes stand below the talus angle.
 const HILLSLOPE_BELOW_TALUS: f32 = 6.0;
 
+/// Stream-power iterations for the lowlands, which erode for a limited
+/// time rather than to a steady state.
+const LOWLAND_ITERATIONS: u32 = 10;
+
 /// Lowland erosion rate per iteration for a cell draining only itself.
-const LOWLAND_RATE: f64 = 0.005;
+const LOWLAND_RATE: f64 = 0.01;
 
 /// Lakes and closed basins smaller than this many samples are filled, so
 /// that the finished map drains (see [`remove_small_pits`]).
@@ -113,7 +117,7 @@ pub fn generate_fractal_heightmap_base_with_progress(
     &mut coarse,
     &no_uplift,
     &StreamPowerOptions {
-      iterations: STREAM_POWER_ITERATIONS / 2,
+      iterations: LOWLAND_ITERATIONS,
       seed: options.seed,
       rate: Some(LOWLAND_RATE * landform.erodibility as f64),
       erodibility: 1.0,
@@ -143,8 +147,15 @@ pub fn generate_fractal_heightmap_base_with_progress(
   let uplift: Vec<f64> = mountains.iter().map(|m| m * 0.1).collect();
   let target_relief = {
     let mut raised: Vec<f64> = mountains.iter().copied().filter(|m| *m > 0.0).collect();
-    raised.sort_by(|a, b| a.total_cmp(b));
-    raised.get(raised.len() * 99 / 100).copied().unwrap_or(0.0)
+    let index = raised.len() * 99 / 100;
+
+    if index < raised.len() {
+      *raised
+        .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
+        .1
+    } else {
+      0.0
+    }
   };
 
   if target_relief > 0.0 {
@@ -305,14 +316,15 @@ pub fn remove_islets(map: &mut HeightMap, min_samples: usize) {
 /// down level with its col. Real summits are far more prominent and are
 /// untouched.
 pub fn remove_minor_summits(map: &mut HeightMap, max_prominence: f32) {
-  use std::collections::{BinaryHeap, HashMap};
+  use std::collections::BinaryHeap;
 
   // Summits not resolved within this many samples are major peaks.
   const SEARCH_LIMIT: usize = 4096;
   let width = map.metadata.width;
   let height = map.metadata.height;
   let heights = &mut map.heights;
-  let mut visited: HashMap<u32, u32> = HashMap::new();
+  // The search that last visited each sample, so no per-search clearing.
+  let mut visited = vec![u32::MAX; heights.len()];
   let mut region: Vec<u32> = Vec::new();
 
   for start in 0..heights.len() as u32 {
@@ -327,9 +339,8 @@ pub fn remove_minor_summits(map: &mut HeightMap, max_prominence: f32) {
     // Best-first search that always steps to the highest unvisited cell,
     // so it descends no further than it must to reach higher ground.
     let mut frontier = BinaryHeap::new();
-    visited.clear();
     region.clear();
-    visited.insert(start, start);
+    visited[start as usize] = start;
     frontier.push((OrderedHeight(peak), start));
     let mut col = peak;
     let mut escape: Option<u32> = None;
@@ -348,8 +359,8 @@ pub fn remove_minor_summits(map: &mut HeightMap, max_prominence: f32) {
       region.push(cell);
 
       for neighbour in neighbours(width, height, cell) {
-        if let std::collections::hash_map::Entry::Vacant(entry) = visited.entry(neighbour) {
-          entry.insert(cell);
+        if visited[neighbour as usize] != start {
+          visited[neighbour as usize] = start;
           frontier.push((OrderedHeight(heights[neighbour as usize]), neighbour));
         }
       }
@@ -531,9 +542,10 @@ fn relevel_sea(heights: &mut [f64], land_fraction: f32) {
   }
 
   let mut sorted = heights.to_vec();
-  sorted.sort_by(|a, b| a.total_cmp(b));
   let index = ((sorted.len() as f32 * (1.0 - land_fraction)) as usize).min(sorted.len() - 1);
-  let shift = sorted[index];
+  let shift = *sorted
+    .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
+    .1;
 
   for height in heights.iter_mut() {
     *height -= shift;

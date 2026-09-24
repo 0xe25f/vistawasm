@@ -40,12 +40,28 @@ impl VistaEngine {
   }
 
   /// Generate a deterministic fractal terrain from a seed and options.
+  /// `on_progress`, when given, is called as `(phase, progress)` while
+  /// generation runs.
   #[wasm_bindgen(js_name = generateFractal)]
-  pub async fn generate_fractal(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
+  pub async fn generate_fractal(
+    &mut self,
+    options: JsValue,
+    on_progress: Option<js_sys::Function>,
+  ) -> Result<JsValue, JsValue> {
     let options = from_js::<FractalTerrainOptions>(options)?;
+    let mut progress = |phase: &str, value: f32| {
+      if let Some(callback) = &on_progress {
+        // A throwing listener must not abort generation.
+        let _ = callback.call2(
+          &JsValue::NULL,
+          &JsValue::from_str(phase),
+          &JsValue::from_f64(value as f64),
+        );
+      }
+    };
     let handle = self
       .core_mut()?
-      .generate_fractal(options)
+      .generate_fractal_with_progress(options, &mut progress)
       .await
       .map_err(|error| error.to_js_value())?;
 

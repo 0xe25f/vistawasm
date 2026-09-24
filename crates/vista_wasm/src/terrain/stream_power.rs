@@ -22,7 +22,8 @@
 //! floors and over-deepens the largest glacial troughs.
 
 use crate::terrain::drainage::{
-  accumulate, edge_or_sea_outlet, neighbours, priority_flood, stack_order, NO_RECEIVER,
+  accumulate, accumulate_into, edge_or_sea_outlet, neighbours, priority_flood, stack_order,
+  StackOrder, NO_RECEIVER,
 };
 
 /// Drainage-area exponent `m` of the stream-power law.
@@ -85,6 +86,7 @@ pub fn stream_power(
   options: &StreamPowerOptions,
 ) -> Vec<f32> {
   let count = heights.len();
+  // Every edge cell is an outlet; routing relies on it.
   let outlet: Vec<bool> = {
     let is_outlet = edge_or_sea_outlet(size, size, heights, 0.0);
     (0..count as u32).map(is_outlet).collect()
@@ -98,18 +100,26 @@ pub fn stream_power(
 
   let mut receiver = flood.receiver;
   let mut area = vec![cell_area; count];
-  let mut order: Vec<u32>;
+  let mut order: Vec<u32> = Vec::with_capacity(count);
+  let mut stacker = StackOrder::default();
   let mut scratch = vec![0.0f64; count];
   let strongest = uplift.iter().cloned().fold(1e-6, f64::max);
   let base_rate = options
     .rate
     .unwrap_or(strongest / (HILLTOP_SLOPE_FRACTION * options.threshold_slope * spacing));
 
+  // `(area / cell area)^m` for every possible cell count, since areas are
+  // whole numbers of cells and `powf` dominates the solve otherwise.
+  let area_power: Vec<f64> = (0..=count)
+    .map(|cells| (cells as f64).powf(AREA_EXPONENT))
+    .collect();
+
   for iteration in 0..options.iterations.max(1) {
-    let routing_seed = crate::maths::hash_u64(options.seed ^ (iteration as u64) << 32);
+    let routing_seed = crate::maths::hash_u64(options.seed ^ ((iteration as u64) << 32));
     stochastic_descent(size, heights, &outlet, &mut receiver, routing_seed);
-    order = stack_order(&receiver);
-    area = accumulate(&order, &receiver, vec![cell_area; count]);
+    stacker.order(&receiver, &mut order);
+    area.fill(cell_area);
+    accumulate_into(&order, &receiver, &mut area);
 
     for index in &order {
       let i = *index as usize;
@@ -123,7 +133,7 @@ pub fn stream_power(
       let distance = cell_distance(size, i, r) * spacing;
       let rate = options.erodibility
         * base_rate
-        * ((area[i] / cell_area) as f64).powf(AREA_EXPONENT)
+        * area_power[((area[i] / cell_area).round() as usize).min(count)]
         * spacing
         / distance;
       let raised = heights[i] + uplift[i];
@@ -156,8 +166,8 @@ pub fn stream_power(
       .collect();
 
     if !land.is_empty() {
-      land.sort_by(|a, b| a.total_cmp(b));
-      let high = land[(land.len() * 99 / 100).min(land.len() - 1)];
+      let index = (land.len() * 99 / 100).min(land.len() - 1);
+      let high = *land.select_nth_unstable_by(index, |a, b| a.total_cmp(b)).1;
 
       if high > 1.0 {
         let scale = options.target_relief / high;
@@ -184,23 +194,33 @@ pub fn stream_power(
   // Round off the crests the threshold slopes meet at, which would
   // otherwise stand as knife-edges and single-cell summits.
   let area = accumulate(&order, &receiver, vec![cell_area; count]);
-  let crest: Vec<bool> = area
-    .iter()
-    .zip(&outlet)
-    .map(|(a, o)| !o && *a <= cell_area * CREST_CELLS)
+  let n = size as usize;
+  let crest: Vec<usize> = (0..count)
+    .filter(|i| !outlet[*i] && area[*i] <= cell_area * CREST_CELLS)
     .collect();
+  let mut update = vec![0.0f64; crest.len()];
 
   for _ in 0..FINAL_SMOOTHING {
-    diffuse(size, heights, &crest_or_outlet(&crest), 0.25, &mut scratch);
-    enforce_drops(
-      heights,
-      &receiver,
-      &order,
-      size,
-      spacing,
-      options.threshold_slope,
-    );
+    for (slot, i) in update.iter_mut().zip(&crest) {
+      let i = *i;
+      let laplacian =
+        heights[i - 1] + heights[i + 1] + heights[i - n] + heights[i + n] - 4.0 * heights[i];
+      *slot = heights[i] + 0.25 * laplacian;
+    }
+
+    for (value, i) in update.iter().zip(&crest) {
+      heights[*i] = *value;
+    }
   }
+
+  enforce_drops(
+    heights,
+    &receiver,
+    &order,
+    size,
+    spacing,
+    options.threshold_slope,
+  );
 
   area
 }
@@ -227,16 +247,16 @@ fn enforce_drops(
   }
 }
 
-/// Invert a crest mask into the "fixed" mask [`diffuse`] takes.
-fn crest_or_outlet(crest: &[bool]) -> Vec<bool> {
-  crest.iter().map(|c| !c).collect()
-}
-
+/// Distance in cells between two eight-way neighbours: 1 along an axis,
+/// the square root of 2 along a diagonal.
 fn cell_distance(size: u32, a: usize, b: usize) -> f64 {
-  let n = size as usize;
-  let dx = (a % n) as f64 - (b % n) as f64;
-  let dy = (a / n) as f64 - (b / n) as f64;
-  (dx * dx + dy * dy).sqrt()
+  let step = a.abs_diff(b);
+
+  if step == 1 || step == size as usize {
+    1.0
+  } else {
+    std::f64::consts::SQRT_2
+  }
 }
 
 /// D8 steepest descent, used by the tests to measure channel lengths.
@@ -281,9 +301,22 @@ fn stochastic_descent(
   receiver: &mut [u32],
   seed: u64,
 ) {
-  for index in 0..heights.len() as u32 {
-    let i = index as usize;
+  let n = size as isize;
+  let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+  // Index steps with the reciprocal of their length. Every edge cell is
+  // an outlet, so interior cells never step off the grid.
+  let offsets: [(isize, f64); 8] = [
+    (-1, 1.0),
+    (1, 1.0),
+    (-n, 1.0),
+    (n, 1.0),
+    (-n - 1, diagonal),
+    (-n + 1, diagonal),
+    (n - 1, diagonal),
+    (n + 1, diagonal),
+  ];
 
+  for i in 0..heights.len() {
     if outlet[i] {
       receiver[i] = NO_RECEIVER;
       continue;
@@ -292,14 +325,15 @@ fn stochastic_descent(
     let mut candidates = [(0u32, 0.0f64); 8];
     let mut found = 0;
     let mut total = 0.0;
+    let here = heights[i];
 
-    for neighbour in neighbours(size, size, index) {
-      let n = neighbour as usize;
-      let drop = (heights[i] - heights[n]) / cell_distance(size, i, n);
+    for (step, inverse) in offsets {
+      let j = (i as isize + step) as usize;
+      let drop = (here - heights[j]) * inverse;
 
       if drop > 0.0 {
         let weight = drop * drop;
-        candidates[found] = (neighbour, weight);
+        candidates[found] = (j as u32, weight);
         found += 1;
         total += weight;
       }
@@ -309,8 +343,12 @@ fn stochastic_descent(
       continue;
     }
 
-    let hash = crate::maths::hash_u64(seed ^ index as u64);
-    let mut pick = (hash >> 11) as f64 / (1u64 << 53) as f64 * total;
+    // A cheap 32-bit mix is plenty to pick between eight neighbours.
+    let mut hash = (seed as u32) ^ (i as u32).wrapping_mul(0x9e37_79b9);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x85eb_ca6b);
+    hash ^= hash >> 13;
+    let mut pick = hash as f64 * (total / u32::MAX as f64);
     receiver[i] = candidates[found - 1].0;
 
     for (neighbour, weight) in &candidates[..found] {
@@ -463,7 +501,7 @@ pub fn plane_valley_floors(
 
       // The wall steepens from the floor gradient over a couple of cells
       // beyond the floor edge, rather than breaking from it.
-      let ramp = spacing * 2.0;
+      let ramp = spacing * 3.0;
       let beyond = (travelled - cell.width).max(0.0);
       let t = (beyond / ramp).clamp(0.0, 1.0);
       let gradient = FLOODPLAIN_GRADIENT + (wall_slope - FLOODPLAIN_GRADIENT) * t * t;

@@ -18,8 +18,9 @@ use crate::render::water::{build_river_network, restore_carving, RiverNetwork};
 use crate::terrain::biomes::SurfaceSample;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::clipmap::build_clipmap_levels;
+use crate::terrain::fractal::Progress;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::terrain::generate_fractal_heightmap;
+use crate::terrain::generate_fractal_heightmap_with_progress;
 use crate::terrain::HeightMap;
 use crate::weather::WeatherSystem;
 
@@ -250,17 +251,29 @@ impl EngineCore {
 
   /// Generate deterministic fractal terrain.
   ///
-  /// Browser builds run hydraulic and thermal erosion as GPU compute
-  /// passes for performance; native builds (and any error recovering from
-  /// a GPU erosion pass) use the CPU reference erosion in
-  /// `terrain::erosion`.
+  /// Browser builds run erosion as GPU compute passes for performance;
+  /// native builds (and any error recovering from a GPU erosion pass) use
+  /// the CPU reference erosion in `terrain::erosion`.
   pub async fn generate_fractal(
     &mut self,
     options: FractalTerrainOptions,
   ) -> VistaResult<TerrainHandle> {
+    self
+      .generate_fractal_with_progress(options, &mut |_, _| {})
+      .await
+  }
+
+  /// [`Self::generate_fractal`], reporting `(phase, progress)` as each
+  /// generation stage advances. Phases are `"tectonics"`, `"drainage"`,
+  /// `"detail"` and, when erosion is requested, `"erosion"`.
+  pub async fn generate_fractal_with_progress(
+    &mut self,
+    options: FractalTerrainOptions,
+    progress: Progress<'_>,
+  ) -> VistaResult<TerrainHandle> {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
-    let map = self.generate_fractal_map(&options).await?;
+    let map = self.generate_fractal_map(&options, progress).await?;
     let handle = self.install_terrain(map);
     self.state = EngineState::Ready;
     Ok(handle)
@@ -270,27 +283,23 @@ impl EngineCore {
   async fn generate_fractal_map(
     &mut self,
     options: &FractalTerrainOptions,
+    progress: Progress<'_>,
   ) -> VistaResult<HeightMap> {
-    let mut map = crate::terrain::generate_fractal_heightmap_base(options)?;
+    let mut map = crate::terrain::generate_fractal_heightmap_base_with_progress(options, progress)?;
 
     if let Some(erosion) = &options.erosion {
+      let landform = crate::terrain::fractal::fractal_landform(options);
+
       match self
         .gpu
-        .run_erosion(
-          &map.heights,
-          map.metadata.width,
-          map.metadata.height,
-          map.metadata.metres_per_sample,
-          erosion,
-        )
+        .run_erosion(&map, erosion, &landform, progress)
         .await
       {
         Ok(eroded) => {
           map.heights = eroded;
         }
         Err(error) => {
-          let landform = crate::terrain::fractal::fractal_landform(options);
-          crate::terrain::erosion::apply_erosion(&mut map, erosion, &landform, &mut |_, _| {})?;
+          crate::terrain::erosion::apply_erosion(&mut map, erosion, &landform, progress)?;
           map.metadata.warnings.push(format!(
             "GPU erosion failed, so erosion ran on the CPU instead: {error}"
           ));
@@ -306,8 +315,9 @@ impl EngineCore {
   async fn generate_fractal_map(
     &mut self,
     options: &FractalTerrainOptions,
+    progress: Progress<'_>,
   ) -> VistaResult<HeightMap> {
-    generate_fractal_heightmap(options)
+    generate_fractal_heightmap_with_progress(options, progress)
   }
 
   /// Decode an uncompressed GeoTIFF from bytes.

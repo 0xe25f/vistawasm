@@ -53,6 +53,20 @@
           Object.assign({ render: { width, height, devicePixelRatio: 1 } }, config.engine || {})
         );
         window.engine = engine;
+        // Log how long each generation phase took, from its first progress
+        // event to the next phase's.
+        const phases = [];
+        engine.on("progress", ({ phase, progress }) => {
+          const now = performance.now();
+          const last = phases[phases.length - 1];
+
+          if (!last || last.phase !== phase) {
+            phases.push({ phase, started: now, ended: now, progress });
+          } else {
+            last.ended = now;
+            last.progress = progress;
+          }
+        });
         const started = performance.now();
         const handle = await engine.generateFractal(Object.assign({
           seed: 12345,
@@ -64,6 +78,15 @@
           shape: { island: 0.35 }
         }, config.terrain || {}));
         window.log.push(`generation ms ${Math.round(performance.now() - started)}`);
+        window.log.push(
+          `phases ${phases
+            .map((entry, index) => {
+              const next = phases[index + 1];
+              const ended = next ? next.started : entry.ended;
+              return `${entry.phase} ${Math.round(ended - entry.started)} ms`;
+            })
+            .join(", ")}`
+        );
         window.metadata = handle.metadata;
 
         for (const [method, value] of Object.entries(config.set || {})) {

@@ -28,7 +28,8 @@
 //! between them exceeds the talus angle, in proportion to the excess. The
 //! exchange between two cells is computed the same way from either side,
 //! so it is race-free and conserves material. It leaves scree slopes at
-//! the talus angle below cliffs.
+//! the talus angle below cliffs. A slow linear soil creep between edge
+//! neighbours rounds off roughness a sample or two across.
 //!
 //! Work is split across two scales: 60 % of the iterations run at half
 //! resolution, where large features settle cheaply, and the change is
@@ -52,21 +53,27 @@ pub const PIPE_GAIN: f32 = 0.25;
 pub const MIN_TILT: f32 = 0.02;
 /// Water depth in metres at which capacity reaches its full value;
 /// shallower films carry proportionally less.
-pub const FULL_DEPTH_METRES: f32 = 0.25;
+pub const FULL_DEPTH_METRES: f32 = 1.0;
+/// Below this slope (as a sine, about 3 degrees) water no longer cuts
+/// into the ground; erosion ramps in up to twice this slope.
+pub const LEVEL_SINE: f32 = 0.05;
 /// Dissolving rate: the fraction of the capacity shortfall eroded per
 /// iteration.
-pub const DISSOLVE_RATE: f32 = 0.3;
+pub const DISSOLVE_RATE: f32 = 0.1;
 /// Deposition rate: the fraction of the excess load dropped per iteration.
-pub const DEPOSIT_RATE: f32 = 0.3;
+pub const DEPOSIT_RATE: f32 = 0.1;
 /// Thermal exchange rate per neighbour. At most 1/16 keeps the eight-way
 /// exchange stable.
 pub const THERMAL_RATE: f32 = 0.06;
+/// Soil creep per edge neighbour and thermal iteration: a slow, linear
+/// downhill exchange that rounds off roughness a sample or two across.
+pub const CREEP_RATE: f32 = 0.02;
 /// Converts `ErosionOptions.rainAmount` to metres of rain per iteration.
-pub const RAIN_METRES_PER_UNIT: f32 = 0.1;
+pub const RAIN_METRES_PER_UNIT: f32 = 0.2;
 /// Converts `ErosionOptions.evaporation` to a fraction lost per iteration.
 pub const EVAPORATION_PER_UNIT: f32 = 0.04;
 /// Converts `ErosionOptions.sedimentCapacity` to the capacity constant.
-pub const CAPACITY_PER_UNIT: f32 = 1.5;
+pub const CAPACITY_PER_UNIT: f32 = 6.0;
 /// Fraction of the iterations run at half resolution.
 pub const HALF_RESOLUTION_SHARE: f32 = 0.6;
 
@@ -468,7 +475,10 @@ impl ErosionField {
       let load = self.sediment[i];
 
       if capacity > load {
-        let amount = DISSOLVE_RATE * (capacity - load);
+        // Water on level ground drops its load but barely cuts: valley
+        // floors aggrade into smooth floodplains instead of being trenched.
+        let cutting = ((sine - LEVEL_SINE) / LEVEL_SINE).clamp(0.0, 1.0);
+        let amount = DISSOLVE_RATE * (capacity - load) * cutting;
         self.terrain[i] -= amount;
         self.sediment[i] += amount;
         self.totals.eroded += amount as f64;
@@ -547,6 +557,10 @@ impl ErosionField {
           let difference = self.terrain[j] - self.terrain[i];
           change +=
             THERMAL_RATE * ((difference - critical).max(0.0) - (-difference - critical).max(0.0));
+
+          if ox == 0 || oy == 0 {
+            change += CREEP_RATE * difference;
+          }
         }
 
         self.scratch[i] = change;

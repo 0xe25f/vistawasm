@@ -57,9 +57,10 @@ fn quantile(values: &[f32], fraction: f32) -> f32 {
   }
 
   let mut sorted = values.to_vec();
-  sorted.sort_by(|a, b| a.total_cmp(b));
   let index = ((sorted.len() as f32 * fraction) as usize).min(sorted.len() - 1);
-  sorted[index]
+  *sorted
+    .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
+    .1
 }
 
 /// Distance in metres from each sample to the nearest sample of the other

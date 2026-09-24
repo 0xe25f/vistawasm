@@ -55,7 +55,10 @@ export interface VistaWasmRawEngineConstructor {
  * Generated Rust engine instance.
  */
 export interface VistaWasmRawEngine {
-  generateFractal(options: unknown): Promise<unknown>;
+  generateFractal(
+    options: unknown,
+    onProgress?: (phase: string, progress: number) => void
+  ): Promise<unknown>;
   loadDemFromArrayBuffer(buffer: ArrayBuffer, options?: unknown): Promise<unknown>;
   loadRawHeightmap(buffer: ArrayBuffer, options: unknown): Promise<unknown>;
   setCamera(camera: unknown): void;
@@ -949,6 +952,12 @@ export interface SnapshotOptions {
  */
 export interface VistaEventMap {
   ready: undefined;
+  /**
+   * Terrain generation progress from 0 to 1 within each phase.
+   * `generateFractal()` reports `"fractal"` at 0 and 1 around the whole
+   * call, and in between `"tectonics"`, `"drainage"`, `"detail"` and,
+   * when erosion is requested, `"erosion"` (at least every 10 %).
+   */
   progress: { phase: string; progress: number };
   warning: { message: string; details?: unknown };
   terrainLoaded: TerrainHandle;

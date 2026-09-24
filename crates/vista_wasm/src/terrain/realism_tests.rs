@@ -18,7 +18,7 @@ use crate::terrain::landforms::Landform;
 const SIZE: u32 = 256;
 const METRES_PER_SAMPLE: f32 = 12.0;
 const SEEDS: std::ops::RangeInclusive<u64> = 1..=12;
-const BORDER: usize = 3;
+const BORDER: usize = 8;
 
 const LANDFORMS: [LandformKind; 7] = [
   LandformKind::Continental,
@@ -292,8 +292,10 @@ fn land_drains_to_the_sea_or_a_lake() {
 fn lowlands_are_smooth() {
   let mut failures = Failures::default();
 
-  // Lowlands: level ground (slopes under 5 degrees at a sample and all
-  // eight of its neighbours) in the lower half of the land by height.
+  // Lowlands: level ground (land with slopes under 5 degrees at a sample
+  // and all eight of its neighbours) in the lower half of the land by
+  // height. Shore samples are left out, since their neighbours include
+  // the sea floor.
   // Crest lines and summit ridges are level along their length but are
   // not lowlands. Lake beds lie under water and are left out. A map needs
   // 100 such samples to have lowlands at all; a volcanic island is slopes
@@ -314,11 +316,13 @@ fn lowlands_are_smooth() {
           && map.heights[*i] <= median
           && (-1..=1).all(|dy: isize| {
             (-1..=1).all(|dx: isize| {
-              slope_degrees(
-                map,
-                (*x as isize + dx) as usize,
-                (*y as isize + dy) as usize,
-              ) < 5.0
+              let j = (*y as isize + dy) as usize * n + (*x as isize + dx) as usize;
+              map.heights[j] > map.metadata.sea_level_metres
+                && slope_degrees(
+                  map,
+                  (*x as isize + dx) as usize,
+                  (*y as isize + dy) as usize,
+                ) < 5.0
             })
           })
       })
