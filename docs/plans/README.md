@@ -13,7 +13,7 @@ check it is there.
 | --- | --- | --- |
 | 1 | [Realistic terrain generation](01-realistic-terrain-generation.md) | Geology-led landforms, multi-scale GPU erosion, landform presets. |
 | 2 | [Ice and arctic biome](02-ice-arctic-biome.md) | `iceArctic`: glaciers, tundra fringe, sea ice and permanent snow, driven by climate temperature. |
-| 2b | [Course correction](02b-course-correction.md) | Sea-ringed map edges and a skirt beyond them, real alpine relief, realistic pack ice, stretched-snow fix, and a like-for-like performance gate. |
+| 2b | [Course correction](02b-course-correction.md) | Sea-ringed map edges and a skirt beyond them, real alpine relief, realistic pack ice, stretched-snow fix, configurable lens drops that are never cut off, and a like-for-like performance gate. |
 | 3 | [Rivers, lakes and waterfalls](03-rivers-lakes-and-waterfalls.md) | Erosion-coupled drainage from rain, snowmelt, springs and overflowing lakes; flowing water, real waterfalls, wet banks and audio queries. |
 | 4 | [Tree placement](04-tree-placement.md) | Trees on the rendered ground at every distance, and ecological placement rules. |
 | 5 | [Vegetation density](05-vegetation-density.md) | Closed-canopy forests and full grass cover at 60 FPS: streamed placement, a far canopy layer and a forest floor. |

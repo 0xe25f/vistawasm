@@ -13,6 +13,9 @@ vegetation build on top of it:
 3. **Sea ice looks like floor tiles:** a uniform honeycomb of same-sized
     polygons to the horizon.
 4. **Stretched snow on steep slopes,** in the foreground of cold scenes.
+5. **Raindrops on the lens are cut off** with straight, flat edges, and
+    developers can't control how many there are or how big they are.
+    Reported by the owner with a screenshot.
 
 Plus a like-for-like performance gate, so no fix costs frame rate.
 
@@ -258,6 +261,13 @@ The owner has approved these:
 - Hyper-realistic visuals and a solid 60 FPS remain the targets.
 - The approved plan 2 deviation (snowy-peak biomes instead of summit ice
     on mild maps) stays.
+- **Lens drops** (item 5) are configurable by the developer and exposed
+    in the demo:
+    - how many drops are on the lens at any one time;
+    - the minimum and maximum drop size.
+    - They must never be cut off. This is existing-feature work, not plan
+        1 or 2 work, so it has its own budget of at most 3,000 bytes
+        gzipped, outside the 44 KB cap above.
 
 ## Prerequisites
 
@@ -398,7 +408,115 @@ extra noise lookups per ice pixel.
 4. Keep the fix to one triplanar path, rather than adding one per
     material, to keep the shader and its cost small.
 
-### 5. Like-for-like performance gate
+### 5. Lens drops: configurable, and never cut off
+
+**Why they are cut off today.** `present_main` in
+`crates/vista_wasm/src/shaders/atmosphere.wgsl` splits the screen into
+square cells (16 per screen height for beads, 7 for running drops), and
+each pixel only tests the drop of its own cell.
+
+- A drop's centre can sit 0.2 of a cell from an edge, while its radius
+    reaches `(0.12 + 0.2) x 1.3 ≈ 0.42` of a cell. Running drops are also
+    squashed to 0.8 vertically, so they reach about 0.52 of a cell.
+- Any drop that overhangs its cell is sliced off along the cell's
+    straight edge.
+- Running drops slide down independent columns, so a neighbouring
+    column's drop can't be found by a fixed neighbour lookup.
+- The owner's screenshot shows exactly this: flat tops and vertical cuts.
+- The hashed grid also cannot hold an exact number of drops, or honour a
+    size range.
+
+**Design: a small drop simulation, binned into screen tiles.**
+
+- **The CPU owns the drops.** Add `crates/vista_wasm/src/lens_drops.rs`
+    with `LensDrops`, which holds up to `MAX_LENS_DROPS = 512` drops.
+    - Each drop has a centre (in screen-height units, so it stays round
+        on any aspect ratio), a radius, a velocity, an age and a lifetime.
+    - It advances with the engine's smoothed time step from `pacing.rs`
+        (`FrameClock`), and is deterministic from the weather seed.
+    - **Target count** = `lensDropCount x rain intensity at the camera`,
+        where rain intensity is 0 to 1 (the existing
+        `weather.x x weather3.w x weather3.z` product, computed on the
+        CPU). Light rain has fewer drops; the option is the count at full
+        rain.
+    - New drops spawn at a rate that keeps the live count at the target,
+        at uniformly random positions. The spawn rate is spread over time,
+        so it never pops.
+    - Diameter is drawn between `lensDropMinSize` and `lensDropMaxSize`,
+        skewed towards small (the square of a uniform random), as real
+        drop populations are.
+    - **Behaviour follows size**, as it does on glass:
+        - drops in the smaller 60 % of the range are beads: they stay
+            still, and evaporate by shrinking over 4 to 9 s;
+        - larger drops run: they slide down at a speed that rises with
+            size (0.15 to 0.6 screen heights per second), with a small
+            sideways wander;
+        - a running drop absorbs beads it touches, growing by area
+            conservation up to `lensDropMaxSize`;
+        - a running drop leaves a trail of tiny beads (one every 0.6
+            diameters, at 0.3x its diameter). These count towards the
+            total, and the spawner makes room for them.
+        - A drop is removed when it leaves the screen, or when it has
+            evaporated.
+    - When the rain stops, no new drops spawn. The existing ones run off
+        or evaporate naturally.
+- **Upload and binning, every frame:**
+    - Drops go into a storage buffer as `vec4<f32>`: centre x, centre y,
+        radius, and w, which packs kind and fade.
+    - Bin them into a screen tile grid with 32 columns and 18 rows,
+        rescaled to the aspect ratio so tiles are roughly square.
+    - Every drop is added to every tile its bounding circle, plus the
+        refraction margin, touches. That is what guarantees a drop is never
+        clipped.
+    - Store a `u32` offset and count per tile, and a flat index list.
+    - Each tile holds at most 24 drops. If more overlap, keep the 24
+        largest, since tiny beads hidden under big drops don't show.
+    - The CPU cost stays under 0.1 ms per frame at 512 drops.
+- **Shader:** in `present_main`, replace the two hashed-cell loops.
+    - Each pixel finds its tile, loops over that tile's drops, and
+        accumulates the same bend, rim and glint as today. Keep today's
+        look: a flipped, magnified refraction, a darker rim and a
+        highlight.
+    - Keep the running drops' slightly taller shape, from the velocity
+        direction.
+    - The loop count comes from a storage buffer, which is uniform-safe,
+        because the only sampling is the existing `textureSampleLevel`
+        after the loop.
+    - With lens drops off or no rain, the existing uniform branch skips
+        everything, and no buffers are touched.
+- **Bindings:** add the drop and tile buffers to the present pass's bind
+    group only. No other pipeline changes.
+- **Options,** added to `WeatherOptions` next to `lensDrops`, flat like
+    the other weather fields:
+
+    | Option | Type | Default | Range | Meaning |
+    | --- | --- | --- | --- | --- |
+    | `lensDropCount` | `number` | 60 | 0 to 512, integer | Drops on the lens at once in full rain. It scales with the rain's intensity. |
+    | `lensDropMinSize` | `number` | 0.008 | 0.002 to 0.2 | Smallest drop diameter, as a fraction of the canvas height (0.008 is about 9 px at 1080p). |
+    | `lensDropMaxSize` | `number` | 0.05 | 0.002 to 0.2 | Largest drop diameter, as a fraction of the canvas height. It must be at least `lensDropMinSize`. |
+
+    - Sizes are fractions of the canvas height, so drops look the same
+        at 1080p, 4K and on phones, whatever the device pixel ratio.
+    - Validate them in `config.rs`. `lensDropMinSize > lensDropMaxSize`
+        is rejected with a message naming both values.
+    - The defaults give a look close to today's, for users who never set
+        them.
+- **Demo,** in the weather section under the existing "Lens drops"
+    checkbox:
+    - a "Drops on the lens" slider (0 to 300, step 1, readout);
+    - "Smallest drop" and "Largest drop" sliders (0.2 % to 10 % of screen
+        height, readouts in %);
+    - they are enabled only while "Lens drops" is checked;
+    - if the minimum is dragged above the maximum, the maximum follows,
+        and vice versa.
+- **Docs:**
+    - `docs/weather.md`: a lens drops section with the options, the
+        size-follows-behaviour rule, and an example;
+    - `docs/options-reference.md`;
+    - `CHANGELOG.md` (Added: lens drop count and sizes; Fixed: drops cut
+        off at straight edges).
+
+### 6. Like-for-like performance gate
 
 - Add `scripts/visual-check/fixed-scene.mjs`. It loads a fixed heightmap,
     generated once and committed as `scripts/visual-check/fixed-512.f32.gz`
@@ -424,6 +542,16 @@ export interface FractalTerrainOptions {
    */
   edges?: "coast" | "open";
 }
+
+export interface WeatherOptions {
+  // ...existing...
+  /** Drops on the lens at once in full rain, 0 to 512. Scales with rain intensity. Defaults to 60. */
+  lensDropCount?: number;
+  /** Smallest lens drop diameter as a fraction of the canvas height, 0.002 to 0.2. Defaults to 0.008. */
+  lensDropMinSize?: number;
+  /** Largest lens drop diameter as a fraction of the canvas height, 0.002 to 0.2. Defaults to 0.05. */
+  lensDropMaxSize?: number;
+}
 ```
 
 - Rust: `TerrainEdges`, with serde camelCase and a `Coast` default.
@@ -444,7 +572,9 @@ export interface FractalTerrainOptions {
     new realism assertions.
 5. Rewrite the pack ice.
 6. Diagnose and fix the snow stretching.
-7. Record the "after" numbers, check the size, capture the verification
+7. Add lens drops: the options and validation, `lens_drops.rs`, binning,
+    buffers, the shader rewrite, demo controls and docs.
+8. Record the "after" numbers, check the size, capture the verification
     shots, then commit and push.
 
 ## Tests
@@ -469,6 +599,22 @@ export interface FractalTerrainOptions {
     - a floe-area distribution (connected components) spanning at least
         two orders of magnitude;
     - at least one lead longer than 400 m.
+- **Lens drops** (`lens_drops.rs`, native tests):
+    - After 20 s of full rain at `lensDropCount: 120`, the live count is
+        within ±5 % of 120. At half intensity it is within ±5 % of 60.
+        With no rain, it is 0 within 10 s.
+    - Every spawned drop's diameter is within the minimum and maximum
+        sizes, and so is every merged drop.
+    - Only drops in the upper 40 % of the size range move.
+    - **Never clipped:** for random drop sets (1,000 cases, including
+        drops overlapping tile edges and screen corners), a CPU port of
+        the shader's per-tile evaluation gives exactly the same coverage
+        mask as brute force over all drops, on a 640 x 360 pixel grid. This
+        test is the proof that no drop is cut off.
+    - The per-tile cap keeps the largest drops.
+    - Deterministic for the same seed and time steps.
+- **Validation:** out-of-range count and sizes, and min above max, are
+    rejected. TypeScript type tests cover the three new options.
 
 ## Verification
 
@@ -485,6 +631,12 @@ Open every capture:
     Irregular floes of many sizes, leads, ridges, brash, and no visible
     tiling.
 - **The snow-streak shot:** no stretching.
+- **Lens drops:** rain with lens drops at 1280 x 720, with
+    `lensDropCount` 40 and 250, and sizes 0.01 to 0.08. Drops are fully
+    round with no flat edges (look closely at tile and cell boundaries,
+    and at the top of the screen). The count visibly follows the setting.
+    Then capture a 390 x 844 portrait: drops stay round, and are sized
+    relative to the screen height.
 - **Reference shots** (default, rain, forest close-up): unchanged apart
     from the edge coastline.
 - **Performance gate:** within 5 % per pass.
@@ -497,6 +649,11 @@ Open every capture:
 - GPU: no pass more than 5 % slower on the fixed scene; sea ice at most
     +0.15 ms.
 - Generation time: at most +20 ms at 512 x 512.
+- Lens drops: WASM at most +3,000 bytes gzipped, separate from the plan
+    1 and 2 cap. The present pass costs at most 0.25 ms at 1080p on a
+    mid-range GPU with 120 drops (report the software-renderer ratio
+    against the terrain pass, before and after). CPU time at most 0.1 ms
+    per frame.
 
 ## Out of scope
 

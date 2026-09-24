@@ -308,6 +308,11 @@ GPU-time deltas, and any risks. Keep the report short.
     - Precipitation particles, lens drops, lightning, sounds and
         `getWeather()` use the camera's local values, computed on the CPU
         from the same field.
+    - Lens drops keep plan 2b's simulation and its options
+        (`lensDropCount`, `lensDropMinSize`, `lensDropMaxSize`). Only the
+        rain intensity feeding its target count changes, to the camera's
+        local precipitation. Snow and sleet phases add no lens drops.
+        Keep the "never clipped" test passing.
 - **Light at the camera:** direct sun is dimmed by the cloud transmittance
     towards the sun above the camera. Evaluate this on the CPU from the
     field along the sun direction at cloud height (4 samples), so a cloud
