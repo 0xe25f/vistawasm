@@ -94,6 +94,11 @@ struct FrameUniforms {
   // xy: canvas size in pixels, z: render scale (the scene is rendered at
   // `viewport` = canvas x scale), w: unused.
   output: vec4<f32>,
+  // x: blowing snow (0 to 1), yzw: unused.
+  cold: vec4<f32>,
+  // x: 1 when any sea may freeze, y: temperature unit of the open sea
+  // beyond the terrain, zw: wind drift of the floes in metres.
+  sea_ice: vec4<f32>,
 };
 
 struct WorldInfo {
@@ -608,8 +613,9 @@ fn shade_surface(
 fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
   let rain = frame.weather.x;
   let snow = frame.weather.y;
+  let blowing = frame.cold.x;
 
-  if (rain + snow < 0.005) {
+  if (rain + snow + blowing < 0.005) {
     return vec4<f32>(0.0);
   }
 
@@ -626,6 +632,9 @@ fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
   let heading = normalize(frame.camera_forward.xz + vec2<f32>(0.00001, 0.0));
   let side_wind = dot(frame.weather2.zw, vec2<f32>(-heading.y, heading.x));
   let angle = atan2(ray.z, ray.x);
+  // Blowing snow skims the ground under the camera, which is close enough
+  // to the ground under every layer.
+  let ground = terrain_height_at(camera.xz);
   var coverage = 0.0;
 
   for (var layer = 0; layer < 6; layer = layer + 1) {
@@ -676,6 +685,27 @@ fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
       let present = step(h, saturate(snow * (0.35 + 0.2 * heavy)));
       coverage = coverage + flake * present * 0.95 * fade;
     }
+
+    if (blowing > 0.005) {
+      // Snow lifted by a gale: flat, fast streaks from the ground up to
+      // about 2 m, racing along with the wind and thickest lowest down.
+      let above = p.y - ground;
+      let band = smoothstep(-0.4, 0.1, above) * (1.0 - smoothstep(0.6, 2.2, above));
+
+      if (band > 0.001) {
+        let x = arc - t * side_wind * 1.2;
+        let y = p.y + sin(t * 1.3 + f32(layer) * 2.1) * 0.06;
+        let size = vec2<f32>(0.7, 0.07);
+        let cell = floor(vec2<f32>(x, y) / size);
+        let local = fract(vec2<f32>(x, y) / size);
+        let h = hash12(cell + f32(layer) * 13.7);
+        let reach = 0.45 + 0.4 * hash12(cell + 4.1);
+        let streak = (1.0 - smoothstep(0.15, 0.45, abs(local.y - 0.5)))
+          * smoothstep(0.0, 0.15, local.x) * (1.0 - smoothstep(reach * 0.6, reach, local.x));
+        let present = step(h, blowing * (0.3 + 0.35 * band));
+        coverage = coverage + streak * present * band * 0.55 * fade;
+      }
+    }
   }
 
   // Looking steeply up or down, the layers pinch to a point and would
@@ -687,7 +717,7 @@ fn precipitation(ray: vec3<f32>, max_distance: f32) -> vec4<f32> {
   let veil_density = rain * max(heavy - 0.8, 0.0) * 0.00045 + snow * heavy * 0.00025;
   let veil = 1.0 - exp(-min(max_distance, 20000.0) * veil_density);
   let light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * 0.08;
-  let tint = select(vec3<f32>(0.75, 0.8, 0.85), vec3<f32>(1.0), snow > rain);
+  let tint = select(vec3<f32>(0.75, 0.8, 0.85), vec3<f32>(1.0), snow + blowing > rain);
   // The veil takes the colour of the air near the horizon, not of the
   // brighter sky overhead, so the distance darkens rather than glows.
   let veil_light = sky_radiance(normalize(vec3<f32>(flat_ray.x, 0.15, flat_ray.y)));

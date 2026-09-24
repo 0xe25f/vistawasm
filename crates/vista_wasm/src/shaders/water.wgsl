@@ -9,6 +9,13 @@
 // water visibly runs downstream, faster on steep reaches. Lakes: flat
 // surfaces rippled by the wind-driven current.
 //
+// Cold seas freeze. Ice concentration comes from the surface texture's
+// temperature over the terrain and from the open-sea temperature beyond
+// it: open water above -1.5 °C, full pack ice below -7.5 °C, and fast ice
+// frozen to the shore where the climate is colder than -10 °C. Floes are
+// Worley cells, 40 m across near the camera and 300 m in the distance,
+// drifting with the wind; waves and foam die down between them.
+//
 // Shading uses real water depth from the terrain height texture for
 // absorption (turquoise shallows, dark deep water, visible sea bed), a
 // Schlick Fresnel reflection of the same analytic sky as the sky pass, a
@@ -116,6 +123,86 @@ fn sample_waves(xz: vec2<f32>, depth: f32, spacing: f32) -> WaveSample {
   return result;
 }
 
+// Sea ice concentration on the ocean, 0 (open water) to 1 (full pack).
+fn sea_ice_concentration(xz: vec2<f32>) -> f32 {
+  if (frame.sea_ice.x < 0.5) {
+    return 0.0;
+  }
+
+  var unit = frame.sea_ice.y;
+  var fast = 0.0;
+
+  if (over_terrain(xz)) {
+    // Fade into the open-sea temperature over the last 300 m of terrain,
+    // so there is no seam at its edge.
+    let margin = world.terrain.xy - abs(xz);
+    let inside = saturate(min(margin.x, margin.y) / 300.0);
+    let surface = surface_at(xz);
+    unit = mix(unit, surface.r, inside);
+    fast = surface.b * inside;
+  }
+
+  let celsius = unit * 65.0 - 30.0;
+  return max(saturate((-1.5 - celsius) / 6.0), fast);
+}
+
+struct FloeCell {
+  // Distance to the nearest and second-nearest cell centres, in cells.
+  f1: f32,
+  f2: f32,
+  // Random value of the nearest cell.
+  id: f32,
+  // Unit direction from the nearest cell centre to the point.
+  outward: vec2<f32>,
+};
+
+fn floe_cell(p: vec2<f32>) -> FloeCell {
+  let base = floor(p);
+  var result = FloeCell(8.0, 8.0, 0.0, vec2<f32>(0.0, 1.0));
+
+  for (var y = -1; y <= 1; y = y + 1) {
+    for (var x = -1; x <= 1; x = x + 1) {
+      let cell = base + vec2<f32>(f32(x), f32(y));
+      let centre = cell + vec2<f32>(hash12(cell), hash12(cell + 19.19)) * 0.8 + 0.1;
+      let offset = p - centre;
+      let d = length(offset);
+
+      if (d < result.f1) {
+        result.f2 = result.f1;
+        result.f1 = d;
+        result.id = hash12(cell + 7.31);
+        result.outward = offset / max(d, 0.0001);
+      } else if (d < result.f2) {
+        result.f2 = d;
+      }
+    }
+  }
+
+  return result;
+}
+
+struct Floes {
+  // How much of the pixel is ice, 0 to 1.
+  cover: f32,
+  // Bevelled rim, 0 to 1, and the direction it slopes down.
+  rim: f32,
+  outward: vec2<f32>,
+  // Per-floe colour variation.
+  shade: f32,
+};
+
+// Floes of `size` metres at a position: a cell is ice when its random
+// value is below the concentration.
+fn floes_at(xz: vec2<f32>, size: f32, concentration: f32, footprint: f32) -> Floes {
+  let cell = floe_cell((xz + frame.sea_ice.zw) / size);
+  let edge = cell.f2 - cell.f1;
+  let blur = footprint / size;
+  let ice = select(0.0, 1.0, cell.id < concentration);
+  let cover = ice * smoothstep(0.02 - blur, 0.06 + blur, edge);
+  let rim = 1.0 - smoothstep(0.04, 0.16 + blur, edge);
+  return Floes(cover, rim, cell.outward, fract(cell.id * 7.7));
+}
+
 @vertex
 fn vertex_main(in: VertexIn) -> VertexOut {
   let kind = i32(in.params.x + 0.5);
@@ -131,7 +218,8 @@ fn vertex_main(in: VertexIn) -> VertexOut {
   if (kind == 0) {
     let depth = position.y - terrain_height_at(position.xz);
     let waves = sample_waves(position.xz, depth, in.params.z);
-    position = position + waves.displacement;
+    // Pack ice damps the swell.
+    position = position + waves.displacement * (1.0 - sea_ice_concentration(position.xz));
   }
 
   out.clip_position = frame.view_proj * vec4<f32>(position, 1.0);
@@ -207,13 +295,17 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var normal = vec3<f32>(0.0, 1.0, 0.0);
   var jacobian = 1.0;
   var crest = 0.0;
+  let pixel_footprint = distance * frame.camera_forward.w * 2.0 * frame.viewport.w;
+  var ice = 0.0;
 
   if (in.kind == 0) {
-    let pixel_footprint = distance * frame.camera_forward.w * 2.0 * frame.viewport.w;
+    ice = sea_ice_concentration(in.rest_xz);
     let waves = sample_waves(in.rest_xz, depth, max(in.spacing, pixel_footprint * 2.0));
-    normal = waves.normal;
-    jacobian = waves.jacobian;
-    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01);
+    // Waves die down in the water between floes.
+    normal = normalize(mix(waves.normal, vec3<f32>(0.0, 1.0, 0.0), ice));
+    jacobian = mix(waves.jacobian, 1.0, ice);
+    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01) * (1.0 - ice);
+    detail = detail * (1.0 - ice * 0.8);
   }
 
   // Ripples fade with distance so far water turns into a calm mirror
@@ -254,7 +346,8 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let absorption = 1.0 - exp(-depth / clarity);
   let body_colour = mix(srgb_to_linear(frame.water_shallow.rgb), srgb_to_linear(frame.water_deep.rgb), absorption);
   let body_light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * shadow * (0.35 + 0.65 * saturate(sun.y));
-  var body = body_colour * body_light * 0.55;
+  // Leads between floes are dark: the ice shades the water beneath.
+  var body = body_colour * body_light * 0.55 * (1.0 - ice * 0.5);
 
   // Light shining through the thin tops of waves.
   let subsurface = pow(saturate(dot(view, -sun) * 0.5 + 0.5), 3.0) * saturate(crest) * 0.9;
@@ -282,7 +375,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     foam = max(edge * shore_foam_texel * 0.8, smoothstep(1.6, 3.5, flow_speed) * foam_texel);
   }
 
-  foam = saturate(foam * foam_strength * (1.0 - smoothstep(400.0, 2500.0, distance) * 0.7));
+  foam = saturate(foam * foam_strength * (1.0 - smoothstep(400.0, 2500.0, distance) * 0.7)) * (1.0 - ice);
   let foam_colour = vec3<f32>(0.9) * (sun_light() * shadow * saturate(sun.y + 0.2) + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.4) / PI * 2.2;
   colour = mix(colour, foam_colour, foam);
   alpha_out = max(alpha_out, foam);
@@ -294,6 +387,38 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
   // Fade out the thinnest film of water at the waterline.
   alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
+
+  if (ice > 0.001) {
+    // Small floes near the camera, large ones in the distance, where small
+    // ones would shimmer.
+    let near_weight = 1.0 - smoothstep(300.0, 1500.0, distance);
+    var floes = Floes(0.0, 0.0, vec2<f32>(0.0, 1.0), 0.0);
+
+    if (near_weight > 0.01) {
+      floes = floes_at(in.rest_xz, 40.0, ice, pixel_footprint);
+    }
+
+    if (near_weight < 0.99) {
+      let far = floes_at(in.rest_xz, 300.0, ice, pixel_footprint);
+      floes = Floes(
+        mix(far.cover, floes.cover, near_weight),
+        mix(far.rim, floes.rim, near_weight),
+        select(far.outward, floes.outward, near_weight > 0.5),
+        mix(far.shade, floes.shade, near_weight)
+      );
+    }
+
+    if (floes.cover > 0.001) {
+      // Snow-covered floes, some bare and blue-grey, lit like snow on the
+      // ground, with rounded, bevelled rims.
+      let tilt = floes.outward * floes.rim * 0.55;
+      let ice_normal = normalize(vec3<f32>(tilt.x, 1.0, tilt.y));
+      let albedo = mix(vec3<f32>(0.8, 0.84, 0.9), vec3<f32>(0.5, 0.58, 0.66), floes.shade * 0.55 + floes.rim * 0.2);
+      let ice_colour = shade_surface(albedo, ice_normal, position, 1.0 - floes.rim * 0.25, 0.35 * 0.55 + 0.25, 0.45);
+      colour = mix(colour, ice_colour, floes.cover);
+      alpha_out = mix(alpha_out, 1.0, floes.cover);
+    }
+  }
 
   colour = apply_fog(colour, position, in.clip_position.xy);
   // Rain and snow fall in front of the water too.

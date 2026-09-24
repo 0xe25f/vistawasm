@@ -68,9 +68,11 @@ struct FrameUniforms {
   distances: [f32; 4],
   fades: [f32; 4],
   output: [f32; 4],
+  cold: [f32; 4],
+  sea_ice: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 752);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 784);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -132,6 +134,18 @@ pub struct FrameWeather {
   pub heaviness: f32,
   /// Whether raindrops land on the lens.
   pub lens_drops: bool,
+  /// Low drifting snow, 0 to 1.
+  pub blowing_snow: f32,
+}
+
+/// Where the sea may freeze.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SeaIce {
+  /// Whether any sea, on the terrain or beyond it, is cold enough to
+  /// freeze. When `false` the water shader skips sea ice entirely.
+  pub possible: bool,
+  /// Temperature unit ((°C + 30) / 65) of the open sea beyond the terrain.
+  pub open_sea_unit: f32,
 }
 
 /// Everything the renderer needs to shade one frame. The engine resolves
@@ -192,6 +206,8 @@ pub struct FrameParams {
   pub surface: SurfaceOptions,
   /// Resolved weather.
   pub weather: FrameWeather,
+  /// Sea ice conditions.
+  pub sea_ice: SeaIce,
   /// Lowest and highest terrain heights, for fitting the shadow map.
   pub height_range: (f32, f32),
   /// Render, detail, and cloud distances.
@@ -542,6 +558,8 @@ pub struct GpuContext {
   cirrus_offset: [f32; 2],
   mist_offset: [f32; 2],
   current_offset: [f32; 2],
+  /// Sea ice floes drift with the wind.
+  sea_ice_offset: [f32; 2],
   cloud_evolution: f32,
   /// Frames submitted to the GPU and not yet finished. Browsers keep firing
   /// animation frames on schedule even when the GPU falls behind, so without
@@ -1697,6 +1715,7 @@ impl GpuContext {
       cirrus_offset: [0.0; 2],
       mist_offset: [0.0; 2],
       current_offset: [0.0; 2],
+      sea_ice_offset: [0.0; 2],
       frames_in_flight: Arc::new(AtomicU32::new(0)),
       timer,
       device_lost,
@@ -2260,6 +2279,9 @@ impl GpuContext {
     let current_speed = water.current_speed.max(0.0) * dt;
     self.current_offset[0] -= current[0] * current_speed;
     self.current_offset[1] -= current[1] * current_speed;
+    // Pack ice drifts at about 2 % of the wind speed.
+    self.sea_ice_offset[0] -= params.weather.wind[0] * 0.02 * dt;
+    self.sea_ice_offset[1] -= params.weather.wind[1] * 0.02 * dt;
 
     let u = &mut self.uniforms;
     let apply_gamma = u.camera_up[3];
@@ -2485,6 +2507,13 @@ impl GpuContext {
       self.cirrus_offset[1],
       flag(weather.lens_drops),
       weather.heaviness.max(1.0),
+    ];
+    u.cold = [weather.blowing_snow.clamp(0.0, 1.0), 0.0, 0.0, 0.0];
+    u.sea_ice = [
+      flag(params.sea_ice.possible),
+      params.sea_ice.open_sea_unit.clamp(0.0, 1.0),
+      self.sea_ice_offset[0],
+      self.sea_ice_offset[1],
     ];
     let surface = &params.surface;
     u.surface = [

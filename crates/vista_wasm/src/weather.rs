@@ -162,13 +162,33 @@ fn unit(value: u64) -> f32 {
   (value >> 40) as f32 / (1u64 << 24) as f32
 }
 
+/// Share of precipitation that falls as snow at a mean temperature in °C:
+/// all of it below 0.5 °C, none above 2.5 °C, and sleet (a mix of rain and
+/// snow) in between.
+pub fn snow_fraction(celsius: f32) -> f32 {
+  1.0 - smoothstep((celsius - 0.5) / 2.0)
+}
+
 /// The next state in an auto-cycling sequence: a small Markov chain that
 /// favours plausible progressions (clear skies cloud over, overcast turns
 /// to rain, storms ease back to rain).
 pub fn next_kind(current: WeatherKind, roll: f32, allow_snow: bool) -> WeatherKind {
+  next_kind_in_climate(current, roll, allow_snow, false)
+}
+
+/// [`next_kind`], for a climate that may be below freezing. In the cold,
+/// rain and storms come as snow, clear spells are half as likely again,
+/// and snow is always allowed.
+pub fn next_kind_in_climate(
+  current: WeatherKind,
+  roll: f32,
+  allow_snow: bool,
+  freezing: bool,
+) -> WeatherKind {
   use WeatherKind::*;
 
-  let table: &[(WeatherKind, f32)] = match current {
+  let allow_snow = allow_snow || freezing;
+  let base: &[(WeatherKind, f32)] = match current {
     Clear => &[(PartlyCloudy, 0.75), (Fog, 0.15), (Overcast, 0.1)],
     PartlyCloudy => &[(Clear, 0.35), (Overcast, 0.45), (Fog, 0.1), (Rain, 0.1)],
     Overcast => &[(Rain, 0.45), (PartlyCloudy, 0.3), (Snow, 0.15), (Fog, 0.1)],
@@ -177,6 +197,21 @@ pub fn next_kind(current: WeatherKind, roll: f32, allow_snow: bool) -> WeatherKi
     Storm => &[(Rain, 0.7), (Overcast, 0.3)],
     Snow => &[(Overcast, 0.6), (PartlyCloudy, 0.4)],
   };
+  let mut table: Vec<(WeatherKind, f32)> = Vec::with_capacity(base.len());
+
+  for (kind, weight) in base {
+    let (kind, weight) = match kind {
+      Rain | Storm if freezing => (Snow, *weight),
+      Clear if freezing => (Clear, *weight * 1.5),
+      _ => (*kind, *weight),
+    };
+
+    match table.iter_mut().find(|(existing, _)| *existing == kind) {
+      Some(entry) => entry.1 += weight,
+      None => table.push((kind, weight)),
+    }
+  }
+
   let total: f32 = table
     .iter()
     .filter(|(kind, _)| allow_snow || *kind != Snow)
@@ -184,7 +219,7 @@ pub fn next_kind(current: WeatherKind, roll: f32, allow_snow: bool) -> WeatherKi
     .sum();
   let mut remaining = roll.clamp(0.0, 0.9999) * total;
 
-  for (kind, weight) in table {
+  for (kind, weight) in &table {
     if !allow_snow && *kind == Snow {
       continue;
     }
@@ -221,6 +256,8 @@ pub struct WeatherSystem {
   next_lightning: f64,
   lightning_started: f64,
   lightning_offset: [f32; 2],
+  /// Mean temperature in °C where the weather is seen, when known.
+  celsius: Option<f32>,
   state: WeatherState,
 }
 
@@ -241,6 +278,7 @@ impl WeatherSystem {
       next_lightning: 4.0,
       lightning_started: -100.0,
       lightning_offset: [0.0, 4_000.0],
+      celsius: None,
       state: WeatherState::default(),
       options,
     };
@@ -266,6 +304,17 @@ impl WeatherSystem {
     }
 
     self.options = options;
+  }
+
+  /// Set the mean temperature in °C where the weather is seen (under the
+  /// camera), or `None` when it is unknown. It decides whether rain falls
+  /// as rain, sleet, or snow, and biases the cycle towards cold weather.
+  pub fn set_celsius(&mut self, celsius: Option<f32>) {
+    self.celsius = celsius.filter(|value| value.is_finite());
+  }
+
+  fn freezing(&self) -> bool {
+    self.celsius.is_some_and(|celsius| celsius < 0.0)
   }
 
   /// The most recently computed state.
@@ -307,7 +356,12 @@ impl WeatherSystem {
 
       if self.hold_seconds <= 0.0 {
         self.step += 1;
-        let next = next_kind(self.to, self.roll(0x77), self.options.allow_snow);
+        let next = next_kind_in_climate(
+          self.to,
+          self.roll(0x77),
+          self.options.allow_snow,
+          self.freezing(),
+        );
         self.begin_transition(next);
         self.hold_seconds = self.roll_hold();
       }
@@ -319,8 +373,16 @@ impl WeatherSystem {
     let mix = |x: f32, y: f32| lerp(x, y, t);
     let scale = self.options.precipitation_scale.max(0.0);
     let raw = (mix(a.rain, b.rain) + mix(a.snow, b.snow)) * scale;
-    let rain = (mix(a.rain, b.rain) * scale).min(1.0);
-    let snow = (mix(a.snow, b.snow) * scale).min(1.0);
+    let mut rain = (mix(a.rain, b.rain) * scale).min(1.0);
+    let mut snow = (mix(a.snow, b.snow) * scale).min(1.0);
+
+    // In the cold, rain falls as sleet or snow instead.
+    if let Some(celsius) = self.celsius {
+      let frozen = snow_fraction(celsius);
+      snow = (snow + rain * frozen).min(1.0);
+      rain *= 1.0 - frozen;
+    }
+
     self.heaviness = if rain + snow > 0.001 {
       (raw / (rain + snow)).max(1.0)
     } else {
@@ -551,6 +613,63 @@ mod tests {
         WeatherKind::Snow
       );
     }
+  }
+
+  #[test]
+  fn rain_falls_as_snow_in_the_cold_and_as_sleet_near_freezing() {
+    let mut cold = WeatherSystem::new(options(WeatherKind::Rain));
+    cold.set_celsius(Some(-3.0));
+    let state = cold.advance(0.1).clone();
+    assert_eq!(state.rain, 0.0);
+    assert!(state.snow > 0.5);
+    assert_eq!(state.to, WeatherKind::Rain);
+
+    let mut sleet = WeatherSystem::new(options(WeatherKind::Rain));
+    sleet.set_celsius(Some(1.5));
+    let state = sleet.advance(0.1).clone();
+    assert!(state.rain > 0.2 && state.snow > 0.2, "{state:?}");
+
+    let mut mild = WeatherSystem::new(options(WeatherKind::Rain));
+    mild.set_celsius(Some(12.0));
+    assert_eq!(mild.advance(0.1).snow, 0.0);
+
+    // Snow settles on the ground in the cold.
+    for _ in 0..200 {
+      cold.advance(1.0);
+    }
+
+    assert!(cold.state().snow_cover > 0.5);
+  }
+
+  #[test]
+  fn cold_climates_turn_rain_and_storms_into_snow_and_always_allow_it() {
+    let freezing = |current, roll| next_kind_in_climate(current, roll, false, true);
+    let mut clear = 0;
+    let mut mild_clear = 0;
+
+    for roll in 0..200 {
+      let roll = roll as f32 / 200.0;
+      assert!(!matches!(
+        freezing(WeatherKind::PartlyCloudy, roll),
+        WeatherKind::Rain | WeatherKind::Storm
+      ));
+      assert!(!matches!(
+        freezing(WeatherKind::Overcast, roll),
+        WeatherKind::Rain | WeatherKind::Storm
+      ));
+      assert!(!matches!(
+        freezing(WeatherKind::Rain, roll),
+        WeatherKind::Rain | WeatherKind::Storm
+      ));
+      clear += (freezing(WeatherKind::PartlyCloudy, roll) == WeatherKind::Clear) as u32;
+      mild_clear +=
+        (next_kind(WeatherKind::PartlyCloudy, roll, false) == WeatherKind::Clear) as u32;
+    }
+
+    assert!(clear > mild_clear);
+    assert!((0..100)
+      .any(|roll| freezing(WeatherKind::Overcast, roll as f32 / 100.0) == WeatherKind::Snow));
+    assert_eq!(freezing(WeatherKind::Storm, 0.1), WeatherKind::Snow);
   }
 
   #[test]

@@ -10,12 +10,15 @@ use crate::camera::CameraProjector;
 use crate::config::VistaEngineConfig;
 use crate::dem::{decode_geotiff, decode_raw_heightmap};
 use crate::errors::{VistaError, VistaResult};
+use crate::maths::smoothstep;
 #[cfg(target_arch = "wasm32")]
 use crate::maths::{cross, normalise, sub};
 use crate::render::flora::TreeInstance;
 use crate::render::tree_models::{layers, mesh_from_arrays, TreeMesh};
 use crate::render::water::{build_river_network, restore_carving, RiverNetwork};
 use crate::terrain::biomes::SurfaceSample;
+#[cfg(target_arch = "wasm32")]
+use crate::terrain::biomes::{celsius_to_unit, sea_level_celsius};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::clipmap::build_clipmap_levels;
 use crate::terrain::fractal::Progress;
@@ -31,6 +34,8 @@ pub const TEXTURE_LAYER_SIZE: u32 = 512;
 pub const TERRAIN_TEXTURE_LAYERS: u32 = 10;
 /// Largest custom tree instance list accepted by `set_tree_instances`.
 pub const MAX_CUSTOM_TREES: usize = 1_000_000;
+/// Sea colder than this, in °C, starts to freeze over (see `water.wgsl`).
+const SEA_ICE_CELSIUS: f32 = -1.5;
 
 /// Core engine state owned by the browser-facing wrapper.
 pub struct EngineCore {
@@ -77,6 +82,8 @@ pub struct EngineCore {
   applied_rivers: Option<RiverOptions>,
   /// Original heights of the samples raised into glacier surfaces.
   glaciers: Vec<(usize, f32)>,
+  /// Whether any sea on the terrain is cold enough to freeze.
+  sea_ice_possible: bool,
   /// Cached per-sample normals for the active terrain, computed once when
   /// the terrain is installed and reused by every LOD mesh rebuild so the
   /// camera can recentre the mesh without repeating a full-heightmap pass.
@@ -129,6 +136,8 @@ struct FrameWeatherValues {
   lightning_position: [f32; 2],
   heaviness: f32,
   lens_drops: bool,
+  /// Low drifting snow, 0 to 1.
+  blowing_snow: f32,
 }
 
 /// Options after the weather has been applied.
@@ -188,6 +197,7 @@ impl EngineCore {
       rivers: RiverNetwork::default(),
       applied_rivers: None,
       glaciers: Vec::new(),
+      sea_ice_possible: false,
     })
   }
 
@@ -241,6 +251,7 @@ impl EngineCore {
       rivers: RiverNetwork::default(),
       applied_rivers: None,
       glaciers: Vec::new(),
+      sea_ice_possible: false,
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
       mesh_stream: None,
@@ -651,6 +662,10 @@ impl EngineCore {
     );
 
     if self.weather.options().enabled {
+      let camera = self.camera.options.position;
+      self
+        .weather
+        .set_celsius(self.celsius_at(camera[0], camera[2]));
       self.weather.advance(dt);
       self.stats.weather = Some(self.weather.dominant());
     } else {
@@ -863,6 +878,11 @@ impl EngineCore {
         let (normals, surface) =
           crate::render::terrain_mesh::bake_terrain_shading(terrain, &self.biomes, mask);
         self.surface = surface;
+        let ocean = BiomeKind::Ocean as u8;
+        self.sea_ice_possible = self
+          .surface
+          .iter()
+          .any(|sample| sample.biome == ocean && sample.celsius() < SEA_ICE_CELSIUS);
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -891,6 +911,7 @@ impl EngineCore {
       }
       None => {
         self.surface = Vec::new();
+        self.sea_ice_possible = false;
       }
     }
 
@@ -970,6 +991,16 @@ impl EngineCore {
       flora: self.flora.clone(),
       weather: FrameWeatherValues::default(),
     };
+    let camera = self.camera.options.position;
+    let camera_surface = self.surface_at(camera[0], camera[2]).copied();
+
+    // Cold air holds little moisture or haze, so it is clear and crisp.
+    if let Some(sample) = camera_surface {
+      let crisp = smoothstep(-sample.celsius() / 3.0);
+      out.atmosphere.haze_distance_metres *= 1.0 + 0.4 * crisp;
+      out.atmosphere.mie_strength *= 1.0 - 0.3 * crisp;
+    }
+
     let options = self.weather.options();
 
     if !options.enabled {
@@ -997,11 +1028,12 @@ impl EngineCore {
       // The sky greys with full cover and darkens further under
       // rain-laden cloud. A near-complete deck (rain's 97 % cover) is a full
       // overcast: no direct sun, no sharp shadows, no glint on the water.
-      // Heavy rain means a full deck overhead too, even between storm cells.
+      // Heavy rain (or the sleet and snow it turns to in the cold) means a
+      // full deck overhead too, even between storm cells.
       out.weather.overcast = ((state.cloud_coverage - 0.6) / 0.35)
         .clamp(0.0, 1.0)
         .max(state.base_darkness * 0.9)
-        .max(state.rain);
+        .max((state.rain + state.snow).min(1.0));
     }
 
     if effects.mist {
@@ -1047,6 +1079,13 @@ impl EngineCore {
       out.weather.wetness = state.wetness;
       out.weather.snow_cover = state.snow_cover;
     }
+
+    // Snow lifted off the ground by a strong wind, over settled snow or
+    // snow that lies all year.
+    let lying = camera_surface.map_or(0.0, |sample| sample.permanent_snow_unit());
+    let cover = out.weather.snow_cover.max(lying);
+    let gale = (out.weather.wind[0].powi(2) + out.weather.wind[1].powi(2)).sqrt();
+    out.weather.blowing_snow = smoothstep((cover - 0.5) / 0.2) * smoothstep((gale - 8.0) / 4.0);
 
     if effects.lightning {
       out.weather.lightning = state.lightning;
@@ -1149,6 +1188,11 @@ impl EngineCore {
         lightning_position: weather.lightning_position,
         heaviness: weather.heaviness.max(1.0),
         lens_drops: weather.lens_drops,
+        blowing_snow: weather.blowing_snow,
+      },
+      sea_ice: crate::render::gpu::SeaIce {
+        possible: self.sea_ice_possible || sea_level_celsius(&self.biomes) < SEA_ICE_CELSIUS,
+        open_sea_unit: celsius_to_unit(sea_level_celsius(&self.biomes)).clamp(0.0, 1.0),
       },
       height_range: self.height_range,
       render_scale: self.stats.render_scale,
@@ -1582,6 +1626,94 @@ mod tests {
       .unwrap();
     assert!(engine.glaciers.is_empty());
     assert_eq!(engine.export_heightmap().unwrap(), original);
+  }
+
+  fn cold_engine(celsius: f32) -> EngineCore {
+    let mut engine = generated_engine();
+    engine
+      .set_biomes(BiomeOptions {
+        mean_temperature_celsius: Some(celsius),
+        ..BiomeOptions::default()
+      })
+      .unwrap();
+    engine
+  }
+
+  #[test]
+  fn cold_air_is_crisp_and_clear() {
+    let mild = generated_engine().weathered_options();
+    let cold = cold_engine(-20.0).weathered_options();
+
+    assert!(cold.atmosphere.haze_distance_metres > mild.atmosphere.haze_distance_metres * 1.35);
+    assert!(cold.atmosphere.mie_strength < mild.atmosphere.mie_strength * 0.75);
+    assert!(cold_engine(-20.0).sea_ice_possible);
+    assert!(!generated_engine().sea_ice_possible);
+  }
+
+  #[test]
+  fn rain_falls_as_snow_where_the_camera_is_cold() {
+    let mut engine = cold_engine(-20.0);
+    engine
+      .set_weather(WeatherOptions {
+        enabled: true,
+        state: vista_types::WeatherKind::Rain,
+        transition_seconds: 0.0,
+        ..Default::default()
+      })
+      .unwrap();
+    engine.render_once().unwrap();
+    let weather = engine.weathered_options().weather;
+
+    assert_eq!(weather.rain, 0.0);
+    assert!(weather.snow > 0.5);
+  }
+
+  #[test]
+  fn strong_wind_over_lying_snow_blows_it_about() {
+    let mut engine = cold_engine(-20.0);
+    let terrain = engine.terrain.as_ref().unwrap();
+    let width = terrain.metadata.width as usize;
+    let metres = terrain.metadata.metres_per_sample;
+    let glacier = engine
+      .surface
+      .iter()
+      .position(|sample| sample.is_glacier())
+      .unwrap();
+    let x = ((glacier % width) as f32 - (width as f32 - 1.0) * 0.5) * metres;
+    let z = ((glacier / width) as f32 - (terrain.metadata.height as f32 - 1.0) * 0.5) * metres;
+    engine
+      .set_camera(vista_types::CameraOptions {
+        position: [x, 800.0, z],
+        target: [x + 10.0, 790.0, z + 10.0],
+        ..Default::default()
+      })
+      .unwrap();
+    engine
+      .set_weather(WeatherOptions {
+        enabled: true,
+        state: vista_types::WeatherKind::Storm,
+        transition_seconds: 0.0,
+        ..Default::default()
+      })
+      .unwrap();
+
+    for _ in 0..4 {
+      engine.render_once().unwrap();
+    }
+
+    let blowing = engine.weathered_options().weather.blowing_snow;
+    assert!(blowing > 0.5, "blowing {blowing}");
+
+    engine
+      .set_weather(WeatherOptions {
+        enabled: true,
+        state: vista_types::WeatherKind::Clear,
+        transition_seconds: 0.0,
+        ..Default::default()
+      })
+      .unwrap();
+    engine.render_once().unwrap();
+    assert_eq!(engine.weathered_options().weather.blowing_snow, 0.0);
   }
 
   #[test]
