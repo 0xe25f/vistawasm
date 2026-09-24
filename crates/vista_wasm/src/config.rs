@@ -653,6 +653,29 @@ mod tests {
   }
 
   #[test]
+  fn rejects_unknown_edges_with_the_valid_names() {
+    use serde::de::value::{Error, StrDeserializer};
+    use serde::de::IntoDeserializer;
+    use serde::Deserialize;
+    use vista_types::TerrainEdges;
+
+    let parse = |name: &'static str| {
+      let deserializer: StrDeserializer<'_, Error> = name.into_deserializer();
+      TerrainEdges::deserialize(deserializer)
+    };
+
+    assert_eq!(FractalTerrainOptions::default().edges, TerrainEdges::Coast);
+    assert_eq!(parse("coast").unwrap(), TerrainEdges::Coast);
+    assert_eq!(parse("open").unwrap(), TerrainEdges::Open);
+
+    let message = parse("cliff").unwrap_err().to_string();
+
+    for name in ["cliff", "coast", "open"] {
+      assert!(message.contains(name), "{message}");
+    }
+  }
+
+  #[test]
   fn rejects_out_of_range_fractal_and_erosion_options() {
     let valid = FractalTerrainOptions::default();
     assert!(validate_fractal(&valid).is_ok());

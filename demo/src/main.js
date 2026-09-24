@@ -20,6 +20,7 @@ const biomeLegend = document.querySelector("#biomeLegend");
 
 const inputs = {
   landform: select("landform"),
+  edges: select("edges"),
   seed: input("seed"),
   size: select("size"),
   noiseKind: select("noiseKind"),
@@ -280,6 +281,7 @@ function buildFractalOptions() {
 
   return {
     landform: inputs.landform.value,
+    edges: inputs.edges.value,
     seed: readNumber(inputs.seed, 12345),
     size: readNumber(inputs.size, 512),
     horizontalScaleMetres: readNumber(inputs.horizontalScale, 12),

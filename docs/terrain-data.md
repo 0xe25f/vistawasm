@@ -56,7 +56,9 @@ detail, then erosion. It runs in four stages:
 
 1. **Tectonics** (`terrain/tectonics.rs`, coarse grid). Continents come
     from warped low-frequency gradient noise, thresholded so exactly
-    `landform.landFraction` of the map is land. Mountain ranges are an
+    `landform.landFraction` of the map is land. With `edges: "coast"`
+    they first sink into the sea over a rim at the border (see
+    [Map edges](#map-edges)). Mountain ranges are an
     uplift field of warped ridged noise, confined to part of the land and
     faded in from the coast.
 2. **Drainage** (`terrain/stream_power.rs`, coarse grid). An implicit
@@ -151,6 +153,36 @@ still holds a coherent coast and range.
 
 Each image is seed 1 at 512 x 512 and 12 m per sample, with `"high"`
 erosion.
+
+### Map edges
+
+`FractalTerrainOptions.edges` decides what happens at the map's square
+edge:
+
+- `"coast"` (the default) rings the land with sea. Over a rim along the
+    border, 6 % of the map's width (at least 300 m) and up to 4 % more
+    where noise widens it, the continents sink into the sea. The coast
+    wanders in bays and headlands, and drainage and erosion see the sea,
+    so rivers reach it. Each landform keeps its land fraction; land-filled
+    landforms such as `"alpine"`, `"rollingHills"` and `"mesaDesert"` keep
+    their inland character, with the coast only a rim at the border. The
+    sea shelves to a quarter of the landform's sea floor at the border
+    itself.
+- `"open"` lets the land run to the edge, as the generator did before
+    1.1.0. Use it when you place several maps side by side.
+
+```ts
+// A map to tile with its neighbours: no coast at the edge.
+await engine.generateFractal({
+  seed: 7,
+  size: 512,
+  horizontalScaleMetres: 12,
+  verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 },
+  landform: "alpine",
+  edges: "open"
+});
+```
 
 ### Determinism
 

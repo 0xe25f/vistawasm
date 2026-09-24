@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "vitest";
-import type { FractalTerrainOptions, LandformKind } from "../src/types";
+import type { FractalTerrainOptions, LandformKind, TerrainEdges } from "../src/types";
 
 describe("LandformKind", () => {
   it("accepts every documented landform", () => {
@@ -23,5 +23,19 @@ describe("LandformKind", () => {
     const kebab: LandformKind = "rolling-hills";
     expectTypeOf(unknown).toBeString();
     expectTypeOf(kebab).toBeString();
+  });
+});
+
+describe("TerrainEdges", () => {
+  it("accepts coast and open", () => {
+    const edges: TerrainEdges[] = ["coast", "open"];
+    expectTypeOf(edges).toEqualTypeOf<TerrainEdges[]>();
+    expectTypeOf<FractalTerrainOptions["edges"]>().toEqualTypeOf<TerrainEdges | undefined>();
+  });
+
+  it("rejects other values", () => {
+    // @ts-expect-error "cliff" is not an edge treatment.
+    const unknown: TerrainEdges = "cliff";
+    expectTypeOf(unknown).toBeString();
   });
 });

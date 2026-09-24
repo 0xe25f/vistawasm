@@ -53,6 +53,7 @@ fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
 }
 
 /// The value below which `fraction` of `values` lie.
+#[inline(never)]
 fn quantile(values: &[f32], fraction: f32) -> f32 {
   if values.is_empty() {
     return 0.0;
@@ -153,13 +154,70 @@ pub fn distance_to_coast(size: u32, land: &[bool], spacing: f32) -> Vec<f32> {
   distance
 }
 
-/// Build the tectonic base for a square map `extent` metres across.
+/// Width of the rim over which `edges: "coast"` lowers the land into the
+/// sea, as a fraction of the extent, and never under [`COAST_RIM_MIN`].
+pub const COAST_RIM: f32 = 0.06;
+
+/// The narrowest coast rim, in metres.
+pub const COAST_RIM_MIN: f32 = 300.0;
+
+/// How much the warp noise widens the coast rim, as a fraction of the
+/// extent.
+pub const COAST_WARP: f32 = 0.04;
+
+/// Drown islands that share no sample with `before`, the land without
+/// the coast rim. Lowering the threshold to keep the land fraction grows
+/// existing coasts, but would also lift crests of the sea floor into new
+/// islets that the continent never had.
+fn drown_new_islets(n: usize, land: &mut [bool], before: &[bool]) {
+  let mut seen = vec![false; land.len()];
+  let mut members = Vec::new();
+
+  for start in 0..land.len() {
+    if seen[start] || !land[start] {
+      continue;
+    }
+
+    members.clear();
+    let mut stack = vec![start];
+    seen[start] = true;
+    let mut existed = false;
+
+    while let Some(i) = stack.pop() {
+      members.push(i);
+      existed |= before[i];
+      let (x, y) = (i % n, i / n);
+
+      for (ok, j) in [
+        (x > 0, i.wrapping_sub(1)),
+        (x + 1 < n, i + 1),
+        (y > 0, i.wrapping_sub(n)),
+        (y + 1 < n, i + n),
+      ] {
+        if ok && land[j] && !seen[j] {
+          seen[j] = true;
+          stack.push(j);
+        }
+      }
+    }
+
+    if !existed {
+      for i in &members {
+        land[*i] = false;
+      }
+    }
+  }
+}
+
+/// Build the tectonic base for a square map `extent` metres across. With
+/// `coast`, the continents fall away to sea along the map edge.
 pub fn tectonic_base(
   seed: u64,
   map_size: u32,
   extent: f32,
   kind: LandformKind,
   landform: &Landform,
+  coast: bool,
 ) -> Tectonics {
   let by_spacing = (extent / COARSE_MIN_SPACING) as u32 + 1;
   let size = map_size.min(COARSE_MAX).min(by_spacing).max(16);
@@ -246,12 +304,66 @@ pub fn tectonic_base(
     }
   }
 
+  // The land before the coast rim, for `edges: "coast"`.
+  let mut before = Vec::new();
+
+  if coast {
+    let threshold = quantile(&raw, 1.0 - landform.land_fraction);
+    before = raw.iter().map(|value| *value > threshold).collect();
+
+    // The continent field sinks towards its lowest value over a rim along
+    // the border, reaching it at the edge, so the land-fraction threshold
+    // below puts the sea there and drainage and erosion see it. The warp
+    // noise, at a sixth of the extent, widens the rim by up to
+    // `COAST_WARP`, so the coast wanders in bays and headlands instead of
+    // tracing a rounded square. The falloff is 0 only on the edge itself,
+    // so no two samples tie and the threshold stays exact.
+    let low = raw.iter().copied().fold(f32::INFINITY, f32::min);
+    let range = raw.iter().copied().fold(low, f32::max) - low;
+    // Islands in an open sea sink whole and keep their shapes, rather than
+    // flattening into low domes; land that fills most of the map flattens
+    // into a coastal plain, since sinking it would leave its ranges
+    // standing at the edge.
+    let sparse = landform.land_fraction < 0.5;
+    let rim = (extent * COAST_RIM).max(COAST_RIM_MIN);
+    let scale = 6.0 / extent;
+    let shift = extent * COAST_WARP;
+
+    for gy in 0..n {
+      for gx in 0..n {
+        let i = gy * n + gx;
+        let x = gx as f32 * spacing - half;
+        let y = gy as f32 * spacing - half;
+        // Two octaves of noise rarely reach their extremes, so the warp is
+        // stretched to use its whole reach.
+        let warp = smoothstep(
+          -0.45,
+          0.45,
+          fbm(continent_warp_x, x * scale, y * scale, 2, 0.5, 2.0),
+        );
+        let border = half - x.abs().max(y.abs());
+        let falloff = smoothstep(0.0, rim + warp * shift, border);
+        raw[i] = if sparse {
+          raw[i] - range * (1.0 - falloff)
+        } else {
+          low + (raw[i] - low) * falloff
+        };
+      }
+    }
+  }
+
   let threshold = quantile(&raw, 1.0 - landform.land_fraction);
   let land: Vec<bool> = if landform.land_fraction >= 1.0 {
     vec![true; count]
   } else {
     raw.iter().map(|value| *value > threshold).collect()
   };
+  let mut land = land;
+
+  if coast {
+    drown_new_islets(n, &mut land, &before);
+  }
+
   let coast_distance = distance_to_coast(size, &land, spacing);
   let land_raw: Vec<f32> = raw
     .iter()
@@ -351,7 +463,7 @@ mod tests {
       LandformKind::VolcanicIsland,
     ] {
       let landform = Landform::for_extent(kind, 6000.0);
-      let base = tectonic_base(3, 256, 6000.0, kind, &landform);
+      let base = tectonic_base(3, 256, 6000.0, kind, &landform, false);
       let fraction = base.land.iter().filter(|l| **l).count() as f32 / base.land.len() as f32;
       assert!(
         (fraction - landform.land_fraction).abs() < 0.01,
@@ -368,7 +480,7 @@ mod tests {
   fn ranges_cover_only_part_of_the_land_and_none_of_the_sea() {
     let kind = LandformKind::Continental;
     let landform = Landform::for_extent(kind, 20_000.0);
-    let base = tectonic_base(5, 128, 20_000.0, kind, &landform);
+    let base = tectonic_base(5, 128, 20_000.0, kind, &landform, false);
     let land = base.land.iter().filter(|l| **l).count() as f32;
     let raised = base.uplift.iter().filter(|u| **u > 0.05).count() as f32;
 
@@ -382,8 +494,32 @@ mod tests {
     }
 
     let hills = Landform::for_extent(LandformKind::RollingHills, 20_000.0);
-    let base = tectonic_base(5, 128, 20_000.0, LandformKind::RollingHills, &hills);
+    let base = tectonic_base(5, 128, 20_000.0, LandformKind::RollingHills, &hills, false);
     assert!(base.uplift.iter().all(|u| *u == 0.0));
+  }
+
+  #[test]
+  fn coast_edges_put_sea_along_the_border_and_keep_the_land_fraction() {
+    for kind in [
+      LandformKind::Alpine,
+      LandformKind::MesaDesert,
+      LandformKind::Archipelago,
+    ] {
+      let landform = Landform::for_extent(kind, 6000.0);
+      let base = tectonic_base(3, 256, 6000.0, kind, &landform, true);
+      let n = base.size as usize;
+      let edge = (0..n).flat_map(|k| [k, (n - 1) * n + k, k * n, k * n + n - 1]);
+
+      for i in edge {
+        assert!(!base.land[i], "{kind:?} land at {i}");
+      }
+
+      let fraction = base.land.iter().filter(|l| **l).count() as f32 / base.land.len() as f32;
+      assert!(
+        (fraction - landform.land_fraction).abs() < 0.03,
+        "{kind:?} {fraction}"
+      );
+    }
   }
 
   #[test]

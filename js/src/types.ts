@@ -180,7 +180,20 @@ export interface FractalTerrainOptions {
   erosion?: ErosionOptions;
   /** Character of the land. Defaults to "continental". */
   landform?: LandformKind;
+  /**
+   * "coast" (default) keeps the land inside the map, ringed by sea.
+   * "open" lets land run to the map edge, for tiling several maps.
+   */
+  edges?: TerrainEdges;
 }
+
+/**
+ * What happens where a generated map meets its square edge.
+ *
+ * - `coast`: the land falls away to sea along a natural coastline.
+ * - `open`: the land runs to the edge, as it would on a tile of a larger map.
+ */
+export type TerrainEdges = "coast" | "open";
 
 /**
  * The character of a generated map.

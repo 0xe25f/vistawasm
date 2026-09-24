@@ -11,7 +11,9 @@
 
 use std::sync::OnceLock;
 
-use vista_types::{ErosionOptions, ErosionQuality, FractalTerrainOptions, LandformKind};
+use vista_types::{
+  ErosionOptions, ErosionQuality, FractalTerrainOptions, LandformKind, TerrainEdges,
+};
 
 use crate::terrain::drainage::{edge_or_sea_outlet, neighbours, priority_flood, NO_RECEIVER};
 use crate::terrain::fractal::{generate_fractal_heightmap, MIN_BASIN_SAMPLES};
@@ -423,4 +425,70 @@ fn landforms_differ() {
     .aux
     .as_ref()
     .is_some_and(|aux| !aux.drainage_area.is_empty()));
+}
+
+/// Share of the outermost ring of samples that is land.
+fn border_land(map: &HeightMap) -> f32 {
+  let n = map.metadata.width as usize;
+  let sea = map.metadata.sea_level_metres;
+  let ring: Vec<usize> = (0..n)
+    .flat_map(|k| [k, (n - 1) * n + k, k * n, k * n + n - 1])
+    .collect();
+  ring.iter().filter(|i| map.heights[**i] > sea).count() as f32 / ring.len() as f32
+}
+
+#[test]
+fn coasts_ring_the_map_edge() {
+  let mut failures = Failures::default();
+
+  for sample in samples() {
+    let land = border_land(&sample.map);
+
+    failures.check(land <= 0.02, || {
+      format!("{}: {land} of the border is land", describe(sample))
+    });
+  }
+
+  failures.assert_none();
+}
+
+/// FNV-1a over the bits of every height.
+fn height_hash(map: &HeightMap) -> u64 {
+  map
+    .heights
+    .iter()
+    .fold(0xcbf2_9ce4_8422_2325, |hash, height| {
+      height
+        .to_bits()
+        .to_le_bytes()
+        .iter()
+        .fold(hash, |hash, byte| {
+          (hash ^ *byte as u64).wrapping_mul(0x100_0000_01b3)
+        })
+    })
+}
+
+#[test]
+fn open_edges_keep_the_heights_of_before_coasts() {
+  // Hashes of 128 x 128 maps at 12 m, seed 7, "high" erosion, made by the
+  // generator before `edges` existed.
+  let expected = [
+    (LandformKind::Continental, 0xb8c8_8f20_c737_dfd9),
+    (LandformKind::Alpine, 0xc937_f79f_32cb_b5dd),
+    (LandformKind::RollingHills, 0x615d_6e68_97e4_838b),
+    (LandformKind::Archipelago, 0x9a82_82cf_1777_c0c7),
+    (LandformKind::MesaDesert, 0x6aed_073e_68b1_7658),
+    (LandformKind::Fjords, 0x302a_2199_75b4_f3ce),
+    (LandformKind::VolcanicIsland, 0x9815_591c_b9e6_9b19),
+  ];
+
+  for (landform, hash) in expected {
+    let options = FractalTerrainOptions {
+      size: 128,
+      edges: TerrainEdges::Open,
+      ..options(landform, 7)
+    };
+    let map = generate_fractal_heightmap(&options).unwrap();
+    assert_eq!(height_hash(&map), hash, "{landform:?}");
+  }
 }

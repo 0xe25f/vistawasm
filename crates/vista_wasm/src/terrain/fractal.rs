@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use vista_types::{FractalTerrainOptions, LandformKind, NoiseKind, TerrainMetadata};
+use vista_types::{FractalTerrainOptions, LandformKind, NoiseKind, TerrainEdges, TerrainMetadata};
 
 use crate::errors::VistaResult;
 use crate::maths::{hash_u64, lerp};
@@ -15,7 +15,7 @@ use crate::terrain::stream_power::{
   plane_valley_floors, resample, stream_power, stream_power_coarse_to_fine, StreamPowerOptions,
   AREA_EXPONENT, CREST_PASSES, SETTLING_ITERATIONS,
 };
-use crate::terrain::tectonics::{tectonic_base, Tectonics};
+use crate::terrain::tectonics::{tectonic_base, Tectonics, COAST_RIM, COAST_RIM_MIN};
 
 const GENERATOR_VERSION: &str = "vistawasm-fractal-0.2.0";
 
@@ -99,7 +99,14 @@ pub fn generate_fractal_heightmap_base_with_progress(
 
   // Stage A: continents and uplift on the coarse grid.
   progress("tectonics", 0.0);
-  let mut base = tectonic_base(options.seed, size, extent, options.landform, &landform);
+  let mut base = tectonic_base(
+    options.seed,
+    size,
+    extent,
+    options.landform,
+    &landform,
+    options.edges == TerrainEdges::Coast,
+  );
   progress("tectonics", 1.0);
 
   // Stage B: carve the valley network into the coarse grid.
@@ -215,6 +222,11 @@ pub fn generate_fractal_heightmap_base_with_progress(
   // Stage C: full-resolution detail.
   progress("detail", 0.0);
   let mut heights = add_detail(options, &landform, &base, &coarse);
+
+  if options.edges == TerrainEdges::Coast {
+    shelve_border(size as usize, spacing, &mut heights, &landform);
+  }
+
   progress("detail", 1.0);
 
   let relief = (landform.lowland_relief + landform.mountain_relief).max(100.0);
@@ -486,6 +498,32 @@ fn erode_lowlands(size: u32, spacing: f64, heights: &mut [f64], options: &Stream
   for (height, eroded) in heights.iter_mut().zip(resample(&coarse, half, size)) {
     if *height > 0.0 {
       *height = eroded.max(0.5);
+    }
+  }
+}
+
+/// Blend the ground down to a third of the landform's sea floor at the
+/// border, over a band a tenth of the coast rim wide. A map whose land
+/// nearly fills it has only a thin strip of sea at the edge; the shelf
+/// keeps erosion from filling it back above water, and meets the
+/// renderer's skirt beyond the map with open sea. It is a shelf rather
+/// than a trench, since erosion slumps coastal land into a trench.
+fn shelve_border(size: usize, spacing: f32, heights: &mut [f32], landform: &Landform) {
+  let extent = (size - 1) as f32 * spacing;
+  let band = (extent * COAST_RIM).max(COAST_RIM_MIN) * 0.1;
+  let samples = (band / spacing).ceil() as usize + 1;
+
+  for y in 0..size {
+    for x in 0..size {
+      let edge = x.min(y).min(size - 1 - x).min(size - 1 - y);
+
+      if edge >= samples {
+        continue;
+      }
+
+      let t = smoothstep_between(0.0, band, edge as f32 * spacing);
+      let height = &mut heights[y * size + x];
+      *height = lerp(landform.sea_floor * 0.35, *height, t);
     }
   }
 }

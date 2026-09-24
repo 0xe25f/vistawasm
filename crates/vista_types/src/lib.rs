@@ -180,6 +180,20 @@ pub struct FractalTerrainOptions {
   /// Character of the land. Defaults to [`LandformKind::Continental`].
   #[serde(default)]
   pub landform: LandformKind,
+  /// What happens at the map edge. Defaults to [`TerrainEdges::Coast`].
+  #[serde(default)]
+  pub edges: TerrainEdges,
+}
+
+/// What happens where a generated map meets its square edge.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TerrainEdges {
+  /// The land stays inside the map, ringed by sea along a natural coast.
+  #[default]
+  Coast,
+  /// The land runs to the map edge, for tiling several maps.
+  Open,
 }
 
 /// The character of a generated map: how much of it is land, how the
@@ -217,6 +231,7 @@ impl Default for FractalTerrainOptions {
       shape: None,
       erosion: None,
       landform: LandformKind::Continental,
+      edges: TerrainEdges::Coast,
     }
   }
 }

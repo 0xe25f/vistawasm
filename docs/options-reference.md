@@ -348,6 +348,7 @@ Passed to `engine.generateFractal(options)`.
 | `baseHeightMetres` | `number?` | `0` | Offset added after scaling; raises or sinks the whole map, coast included. |
 | `seaLevelMetres` | `number?` | `0` | Where the generated coast sits, and the initial `TerrainMetadata.seaLevelMetres`. Independent from `WaterOptions.seaLevelMetres`, which controls the rendered water plane. |
 | `landform` | `LandformKind?` | `"continental"` | The character of the land. See below and [`docs/terrain-data.md`](terrain-data.md#landforms). Unknown names are rejected with a list of the valid ones. |
+| `edges` | `"coast" \| "open"` | `"coast"` | `"coast"` keeps the land inside the map, ringed by sea along a natural coastline. `"open"` lets land run to the map edge, for tiling several maps. See [`docs/terrain-data.md`](terrain-data.md#map-edges). Unknown values are rejected with a list of the valid ones. |
 | `noise` | `NoiseOptions` | see below | The detail layer. |
 | `shape` | `TerrainShapeOptions?` | none | |
 | `erosion` | `ErosionOptions?` | none (disabled) | |

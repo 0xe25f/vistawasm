@@ -144,6 +144,10 @@ for changed defaults.
 - **Demo.** A climate temperature slider with an automatic setting, the
   temperature under the camera in the biome readout, and a biome colour
   legend for the biomes debug view.
+- **Map edges.** `FractalTerrainOptions.edges`: `"coast"` (the default)
+  rings the land with sea along a natural, wandering coastline, and
+  `"open"` lets the land run to the map edge for tiling several maps. The
+  demo's terrain section has an Edges select.
 
 ### Changed
 
@@ -159,6 +163,10 @@ for changed defaults.
   `TerrainShapeOptions` applies in units of the landform's relief.
 - The coast is generated at `seaLevelMetres`, and `verticalScale`
   stretches heights about sea level.
+- Generated maps are ringed by sea by default (`edges: "coast"`), for
+  every landform, so land no longer runs into the map edge. Each landform
+  keeps its land fraction. `edges: "open"` gives the previous heights bit
+  for bit.
 - **Erosion** is a virtual-pipe shallow-water model that cuts gullies,
   aggrades valley floors and builds alluvial fans, plus talus-angle
   thermal erosion with soil creep. It runs at half and then full
