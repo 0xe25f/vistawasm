@@ -149,6 +149,24 @@ canvas {
   border-radius: 8px;
 }
 
+.subsection {
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  padding-top: 8px;
+}
+
+.subsection > summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(238 243 239 / 80%);
+  cursor: pointer;
+}
+
+.subsection-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
+
 fieldset {
   display: grid;
   gap: 10px;

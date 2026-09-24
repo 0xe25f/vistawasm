@@ -18,6 +18,7 @@ const statsPanel = document.querySelector("#stats");
 const biomeReadout = document.querySelector("#biomeReadout");
 
 const inputs = {
+  landform: select("landform"),
   seed: input("seed"),
   size: select("size"),
   noiseKind: select("noiseKind"),
@@ -31,6 +32,8 @@ const inputs = {
   shapeCanyon: input("shapeCanyon"),
   shapeCrater: input("shapeCrater"),
   erosionEnabled: input("erosionEnabled"),
+  erosionQuality: select("erosionQuality"),
+  erosionCustom: input("erosionCustom"),
   hydraulicIterations: input("hydraulicIterations"),
   thermalIterations: input("thermalIterations"),
   sun: input("sun"),
@@ -258,15 +261,22 @@ function showError(error) {
 }
 
 function buildFractalOptions() {
+  // Unset iteration counts follow the quality preset, and the landform
+  // supplies rain and talus angle.
   const erosion = inputs.erosionEnabled.checked
     ? {
-        hydraulicIterations: readNumber(inputs.hydraulicIterations, 0),
-        thermalIterations: readNumber(inputs.thermalIterations, 0),
-        quality: "preview"
+        quality: inputs.erosionQuality.value,
+        ...(inputs.erosionCustom.checked
+          ? {
+              hydraulicIterations: readNumber(inputs.hydraulicIterations, 200),
+              thermalIterations: readNumber(inputs.thermalIterations, 100)
+            }
+          : {})
       }
     : undefined;
 
   return {
+    landform: inputs.landform.value,
     seed: readNumber(inputs.seed, 12345),
     size: readNumber(inputs.size, 512),
     horizontalScaleMetres: readNumber(inputs.horizontalScale, 12),
@@ -824,10 +834,43 @@ async function generate() {
 
   setStatus("Generating terrain...");
   buttons.generate.disabled = true;
+  // Time each generation phase from its first progress event to the next
+  // phase's, and show them as they run.
+  const phases = [];
+  const started = performance.now();
+  let total = 0;
+  const stopProgress = engine.on("progress", ({ phase, progress }) => {
+    const now = performance.now();
+    const last = phases[phases.length - 1];
+
+    if (phase === "fractal") {
+      return;
+    }
+
+    if (!last || last.phase !== phase) {
+      if (last) {
+        last.ms = now - last.started;
+      }
+
+      phases.push({ phase, started: now, ms: 0 });
+    }
+
+    setStatus(`Generating terrain: ${phase} ${Math.round(progress * 100)} %`);
+  });
 
   try {
     const options = buildFractalOptions();
-    const handle = await engine.generateFractal(options);
+    const handle = await engine.generateFractal(options).finally(() => {
+      total = performance.now() - started;
+      const last = phases[phases.length - 1];
+
+      if (last) {
+        last.ms = performance.now() - last.started;
+      }
+
+      stopProgress?.();
+    });
+    const timings = phases.map((entry) => `${entry.phase} ${Math.round(entry.ms)} ms`).join(", ");
     latestMetadata = handle.metadata;
 
     // Hand-placed trees belong to the old terrain.
@@ -839,7 +882,10 @@ async function generate() {
 
     applyAllLiveControls();
     await refreshExportData();
-    setStatus(`Seed ${options.seed} ready (${handle.metadata.width}x${handle.metadata.height}).`);
+    setStatus(
+      `Seed ${options.seed} ready (${handle.metadata.width}x${handle.metadata.height}) in ` +
+        `${Math.round(total)} ms: ${timings}.`
+    );
   } catch (error) {
     showError(error);
   } finally {
@@ -1184,6 +1230,15 @@ async function run() {
   wireLiveControls();
   wireWeatherChips();
   wireExportButtons();
+  // Iteration sliders only apply when custom counts are chosen; otherwise
+  // the quality preset sets them.
+  const syncErosionControls = () => {
+    inputs.hydraulicIterations.disabled = !inputs.erosionCustom.checked;
+    inputs.thermalIterations.disabled = !inputs.erosionCustom.checked;
+  };
+  inputs.erosionCustom.addEventListener("change", syncErosionControls);
+  syncErosionControls();
+
   buttons.generate.addEventListener("click", () => {
     generate().catch(showError);
   });
