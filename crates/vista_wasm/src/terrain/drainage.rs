@@ -184,50 +184,6 @@ pub fn steepest_receivers(width: u32, height: u32, surface: &[f64], receiver: &m
   }
 }
 
-/// Route every non-outlet cell to its steepest downhill neighbour (D8),
-/// or return `None` if some cell has no lower neighbour. On a surface
-/// with no depressions this gives the same receivers as
-/// [`priority_flood`] followed by [`steepest_receivers`], without the
-/// flood.
-pub fn steepest_if_drained(
-  width: u32,
-  height: u32,
-  heights: &[f64],
-  is_outlet: impl Fn(u32) -> bool,
-) -> Option<Vec<u32>> {
-  let mut receiver = vec![NO_RECEIVER; heights.len()];
-
-  for index in 0..heights.len() as u32 {
-    if is_outlet(index) {
-      continue;
-    }
-
-    let i = index as usize;
-    let mut best = NO_RECEIVER;
-    let mut best_drop = 0.0;
-
-    for neighbour in neighbours(width, height, index) {
-      let n = neighbour as usize;
-      let dx = (neighbour % width) as f64 - (index % width) as f64;
-      let dy = (neighbour / width) as f64 - (index / width) as f64;
-      let drop = (heights[i] - heights[n]) / (dx * dx + dy * dy).sqrt();
-
-      if drop > best_drop {
-        best_drop = drop;
-        best = neighbour;
-      }
-    }
-
-    if best == NO_RECEIVER {
-      return None;
-    }
-
-    receiver[i] = best;
-  }
-
-  Some(receiver)
-}
-
 /// Order cells so every cell comes after its receiver (the "stack" of
 /// Braun and Willett, 2013), walking up the receiver trees from the
 /// outlets. Cells whose receiver chain never reaches an outlet are left

@@ -109,16 +109,10 @@ pub fn stream_power(
   let cell_area = (spacing * spacing) as f32;
 
   // Fill depressions once. Every later step keeps each cell above its
-  // receiver, so no new depressions can form. A surface that already
-  // drains (such as one upsampled from a solved grid) needs no filling;
-  // the first routing pass then finds every receiver.
-  let mut receiver = if has_pits(size, heights, &outlet) {
-    let flood = priority_flood(size, size, heights, EPSILON, |i| outlet[i as usize]);
-    heights.copy_from_slice(&flood.filled);
-    flood.receiver
-  } else {
-    vec![NO_RECEIVER; count]
-  };
+  // receiver, so no new depressions can form.
+  let flood = priority_flood(size, size, heights, EPSILON, |i| outlet[i as usize]);
+  heights.copy_from_slice(&flood.filled);
+  let mut receiver = flood.receiver;
   let mut area = vec![cell_area; count];
   let mut order: Vec<u32> = Vec::with_capacity(count);
   let mut stacker = StackOrder::default();
@@ -477,28 +471,6 @@ fn stochastic_descent(
   }
 }
 
-/// Whether any non-outlet cell has no strictly lower neighbour. Every
-/// edge cell is an outlet, so interior cells need no bounds checks.
-fn has_pits(size: u32, heights: &[f64], outlet: &[bool]) -> bool {
-  let n = size as usize;
-
-  (0..heights.len()).any(|i| {
-    !outlet[i]
-      && [
-        i - 1,
-        i + 1,
-        i - n,
-        i + n,
-        i - n - 1,
-        i - n + 1,
-        i + n - 1,
-        i + n + 1,
-      ]
-      .iter()
-      .all(|j| heights[*j] >= heights[i])
-  })
-}
-
 /// How glaciated a cell at `height` is, 0 to 1.
 fn glacial_weight(height: f64, options: &StreamPowerOptions) -> f64 {
   if options.glacial <= 0.0 {
@@ -513,14 +485,6 @@ fn glacial_weight(height: f64, options: &StreamPowerOptions) -> f64 {
 /// The mean height of the 3 x 3 block around `index`: glaciers erode
 /// against a wider base than a single receiver, which widens valleys.
 fn mean_around(size: u32, heights: &[f64], index: usize) -> f64 {
-  let n = size as usize;
-  let (x, y) = (index % n, index / n);
-
-  if x > 0 && y > 0 && x + 1 < n && y + 1 < n {
-    let row = |i: usize| heights[i - 1] + heights[i] + heights[i + 1];
-    return (row(index - n) + row(index) + row(index + n)) / 9.0;
-  }
-
   let mut sum = heights[index];
   let mut count = 1.0;
 

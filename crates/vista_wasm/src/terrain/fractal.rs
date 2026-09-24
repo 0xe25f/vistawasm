@@ -5,8 +5,7 @@ use vista_types::{FractalTerrainOptions, LandformKind, NoiseKind, TerrainMetadat
 use crate::errors::VistaResult;
 use crate::maths::{hash_u64, lerp};
 use crate::terrain::drainage::{
-  accumulate, edge_or_sea_outlet, neighbours, priority_flood, stack_order, steepest_if_drained,
-  steepest_receivers,
+  accumulate, edge_or_sea_outlet, neighbours, priority_flood, stack_order, steepest_receivers,
 };
 use crate::terrain::erosion::apply_erosion;
 use crate::terrain::heightmap::{update_stats, HeightMap, TerrainAux};
@@ -596,13 +595,15 @@ fn relevel_sea(heights: &mut [f64], land_fraction: f32) {
 /// Upstream drainage area in square metres on a coarse grid, after
 /// filling depressions.
 fn coarse_drainage_area(size: u32, spacing: f64, heights: &[f64]) -> Vec<f32> {
-  let outlet = edge_or_sea_outlet(size, size, heights, 0.0);
-  let receiver = steepest_if_drained(size, size, heights, &outlet).unwrap_or_else(|| {
-    let flood = priority_flood(size, size, heights, 1e-4, &outlet);
-    let mut receiver = flood.receiver;
-    steepest_receivers(size, size, &flood.filled, &mut receiver);
-    receiver
-  });
+  let flood = priority_flood(
+    size,
+    size,
+    heights,
+    1e-4,
+    edge_or_sea_outlet(size, size, heights, 0.0),
+  );
+  let mut receiver = flood.receiver;
+  steepest_receivers(size, size, &flood.filled, &mut receiver);
   let order = stack_order(&receiver);
   accumulate(
     &order,
