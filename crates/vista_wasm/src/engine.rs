@@ -879,6 +879,7 @@ impl EngineCore {
             crate::render::terrain_mesh::CENTRED_MESH_SAMPLES_PER_SIDE,
           );
           self.gpu.upload_terrain(&mesh);
+          self.gpu.upload_surface(terrain, &self.surface);
           self.terrain_normals = normals;
           self.mesh_centre_sample = Some((centre_sample_x, centre_sample_z));
           // A half-built next mesh has the old heights and colours.

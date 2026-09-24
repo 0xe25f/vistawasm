@@ -27,6 +27,8 @@ struct VertexOut {
   @location(3) @interpolate(flat) fade: f32,
   @location(4) @interpolate(flat) dryness: f32,
   @location(5) normal: vec3<f32>,
+  // Settled snow at the tuft: the weather's, or snow lying all year.
+  @location(6) @interpolate(flat) snow: f32,
 };
 
 @vertex
@@ -65,13 +67,14 @@ fn vertex_main(in: VertexIn) -> VertexOut {
   // Grass normals lean towards up so tufts shade like the ground they
   // grow from rather than like vertical cards.
   out.normal = normalize(world_up * 2.0 + cross(right, world_up) * 0.5);
+  out.snow = max(frame.weather.w, permanent_snow_at(in.instance_position.xz));
   return out;
 }
 
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // Settled snow buries the grass rather than sitting on top of it.
-  if (in.fade * (1.0 - frame.weather.w * 0.95) <= pixel_dither(in.clip_position.xy)) {
+  if (in.fade * (1.0 - in.snow * 0.95) <= pixel_dither(in.clip_position.xy)) {
     discard;
   }
 

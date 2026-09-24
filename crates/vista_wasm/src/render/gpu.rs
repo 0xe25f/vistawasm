@@ -19,6 +19,7 @@ use crate::render::tree_models::{
   build_species_mesh, merge_tree_meshes, TreeMesh, TreeSpecies, SPECIES_COUNT,
 };
 use crate::render::water::{build_ocean_grid, WaterVertex, OCEAN_SNAP_METRES};
+use crate::terrain::biomes::{celsius_to_unit, SurfaceSample, DEFAULT_SEA_LEVEL_CELSIUS};
 use crate::terrain::HeightMap;
 
 /// Per-frame uniforms shared by every render shader.
@@ -512,6 +513,7 @@ pub struct GpuContext {
   impostor_texture: wgpu::Texture,
   impostor_view: wgpu::TextureView,
   height_view: wgpu::TextureView,
+  surface_view: wgpu::TextureView,
   height_size: (u32, u32),
   height_version: u64,
   terrain_shadow: TerrainShadow,
@@ -636,6 +638,7 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
         uniform_entry(9, both),
         texture_entry(10, Dim::D2, filterable, both),
         sampler_entry(11, wgpu::SamplerBindingType::Filtering),
+        texture_entry(12, Dim::D2, filterable, both),
       ],
     ),
     shadow: layout(
@@ -715,6 +718,7 @@ fn create_world_bind_group(
   impostors: &wgpu::TextureView,
   height: &wgpu::TextureView,
   terrain_shadow: &wgpu::TextureView,
+  surface: &wgpu::TextureView,
   world_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
   device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -736,6 +740,7 @@ fn create_world_bind_group(
       },
       view_entry(10, terrain_shadow),
       sampler_binding(11, clamp_sampler),
+      view_entry(12, surface),
     ],
   })
 }
@@ -827,6 +832,39 @@ fn create_height_texture(
     height,
   );
   default_view(&texture)
+}
+
+/// The per-terrain surface texture: r temperature unit ((°C + 30) / 65),
+/// g moisture, b permanent snow (fast ice on the sea), a biome index / 255.
+fn create_surface_texture(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  width: u32,
+  height: u32,
+  data: &[u8],
+) -> wgpu::TextureView {
+  let texture = create_texture_2d(
+    device,
+    "VistaWASM terrain surface",
+    width,
+    height,
+    wgpu::TextureFormat::Rgba8Unorm,
+    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+  );
+  write_layer(queue, &texture, 0, data, width * 4, width, height);
+  default_view(&texture)
+}
+
+/// Surface texel for one terrain sample.
+fn surface_texel(sample: &SurfaceSample) -> [u8; 4] {
+  let temperature = celsius_to_unit(sample.celsius()).clamp(0.0, 1.0);
+
+  [
+    (temperature * 255.0).round() as u8,
+    sample.moisture,
+    sample.permanent_snow,
+    sample.biome,
+  ]
 }
 
 fn create_terrain_shadow(
@@ -1558,6 +1596,16 @@ impl GpuContext {
       wgpu::BufferUsages::UNIFORM,
     );
     let height_view = create_height_texture(&device, &queue, 1, 1, &[-100_000.0]);
+    let surface_view = create_surface_texture(
+      &device,
+      &queue,
+      1,
+      1,
+      &surface_texel(&SurfaceSample {
+        celsius_hundredths: (DEFAULT_SEA_LEVEL_CELSIUS * 100.0) as i16,
+        ..SurfaceSample::default()
+      }),
+    );
     let terrain_shadow = create_terrain_shadow(&device, &queue, 1, 1);
     let tree_shadow_map = create_tree_shadow_map(&device, tree_shadow_resolution);
     let shadow_bind_group =
@@ -1580,6 +1628,7 @@ impl GpuContext {
       &impostor_view,
       &height_view,
       &terrain_shadow.view,
+      &surface_view,
       &world_buffer,
     );
     let grass_base_vertex_buffer = buffer_with_data(
@@ -1625,6 +1674,7 @@ impl GpuContext {
       impostor_texture,
       impostor_view,
       height_view,
+      surface_view,
       height_size: (1, 1),
       height_version: 0,
       terrain_shadow,
@@ -1675,6 +1725,7 @@ impl GpuContext {
       &self.impostor_view,
       &self.height_view,
       &self.terrain_shadow.view,
+      &self.surface_view,
       &self.world_buffer,
     );
   }
@@ -1707,6 +1758,7 @@ impl GpuContext {
       &placeholder_view,
       &self.height_view,
       &self.terrain_shadow.view,
+      &self.surface_view,
       &self.world_buffer,
     );
     let depth_view = default_view(&create_texture_2d(
@@ -2010,6 +2062,38 @@ impl GpuContext {
     ];
     self.world_info.terrain2 = [texture_width as f32, texture_height as f32, 1.0, 0.0];
     self.write_world_info();
+    self.rebuild_world_bind_group();
+  }
+
+  /// Upload the per-terrain surface texture (temperature, moisture,
+  /// permanent snow, biome) at the same resolution as the height texture.
+  pub fn upload_surface(&mut self, map: &HeightMap, surface: &[SurfaceSample]) {
+    let width = map.metadata.width;
+    let height = map.metadata.height;
+
+    if width == 0 || height == 0 || surface.len() != map.heights.len() {
+      return;
+    }
+
+    let stride = (width.max(height).saturating_sub(1) / (HEIGHT_TEXTURE_MAX - 1)).max(1);
+    let texture_width = (width - 1) / stride + 1;
+    let texture_height = (height - 1) / stride + 1;
+    let mut data = Vec::with_capacity((texture_width * texture_height * 4) as usize);
+
+    for ty in 0..texture_height {
+      for tx in 0..texture_width {
+        let index = ((ty * stride) * width + tx * stride) as usize;
+        data.extend_from_slice(&surface_texel(&surface[index]));
+      }
+    }
+
+    self.surface_view = create_surface_texture(
+      &self.device,
+      &self.queue,
+      texture_width,
+      texture_height,
+      &data,
+    );
     self.rebuild_world_bind_group();
   }
 

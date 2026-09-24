@@ -157,8 +157,9 @@ fn sample_material(
 ) -> MaterialSample {
   let scale = material_scale(material) * max(frame.surface.z, 0.01);
 
-  if (material == MAT_ROCK) {
-    // Triplanar projection weighted by the geometric normal.
+  // Triplanar projection weighted by the geometric normal, for rock and
+  // glacier ice, which cover steep slopes, and for snow clinging to them.
+  if (material == MAT_ROCK || material == MAT_ICE || (material == MAT_SNOW && normal.y < 0.8)) {
     var weights = pow(abs(normal), vec3<f32>(4.0));
     weights = weights / max(weights.x + weights.y + weights.z, 0.0001);
     let inv = 1.0 / scale;
@@ -237,6 +238,49 @@ fn material_debug_colour(material: i32) -> vec3<f32> {
     case 9: { return vec3<f32>(0.55, 0.55, 0.3); }
     default: { return vec3<f32>(0.6, 0.1, 0.05); }
   }
+}
+
+// Crevasses open across the direction the ice flows, where it speeds up
+// over steeper ground (8 to 30 degrees). Ice flows downslope, so a crack
+// across the flow follows a contour line: cracks are drawn every few
+// metres of height, which spaces them closer on steeper ice. Noise bends
+// them into arcs and breaks them into separate crevasses. Working from
+// height and world position, rather than rotating into a per-pixel flow
+// frame, keeps the pattern stable. Derivatives come from the caller, so
+// this is safe inside a per-pixel branch.
+fn crevasses(
+  position: vec3<f32>,
+  ddx_p: vec3<f32>,
+  ddy_p: vec3<f32>,
+  normal: vec3<f32>,
+  distance: f32
+) -> f32 {
+  let slope = acos(clamp(normal.y, -1.0, 1.0)) * 57.29578;
+  let steepness = smoothstep(8.0, 11.0, slope) * (1.0 - smoothstep(27.0, 30.0, slope));
+  let fade = 1.0 - smoothstep(250.0, 1000.0, distance);
+
+  if (steepness * fade <= 0.001) {
+    return 0.0;
+  }
+
+  let scale = 1.0 / 110.0;
+  let noise = textureSampleGrad(noise_texture, linear_sampler, position.xz * scale, ddx_p.xz * scale, ddy_p.xz * scale);
+  // One crack every `rise` metres of height, bowed by the noise.
+  let rise = 4.0;
+  let phase = (position.y + (noise.g - 0.5) * 9.0) / rise;
+  let crack_index = floor(phase);
+  let offset = abs(fract(phase) - 0.5);
+  // Each crack breaks into separate crevasses that taper at their ends.
+  let run = noise.r * 5.0 + hash12(vec2<f32>(crack_index, 7.7)) * 3.0;
+  let segment = step(0.4, hash12(vec2<f32>(crack_index, floor(run))));
+  let width = 0.08 * sin(fract(run) * PI);
+  // Thin cracks shrink below a pixel in the distance; fade them rather than
+  // let them shimmer.
+  let footprint = max(abs(ddx_p.y), abs(ddy_p.y)) / rise;
+  let crack = (1.0 - smoothstep(width * 0.5, width + footprint, offset)) * saturate(width / max(footprint, 0.0001));
+  // Crevasse fields come and go across the glacier.
+  let field = smoothstep(0.35, 0.6, noise.a);
+  return crack * segment * field * steepness * fade;
 }
 
 @fragment
@@ -346,6 +390,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var roughness = 0.0;
   var total = 0.0;
   var snow_amount = 0.0;
+  var ice_amount = 0.0;
   var volcanic_amount = 0.0;
   var volcanic_height = 1.0;
   var wet_amount = 0.0;
@@ -361,6 +406,10 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
       if (top[k] == MAT_SNOW) {
         snow_amount = snow_amount + w;
+      }
+
+      if (top[k] == MAT_ICE) {
+        ice_amount = ice_amount + w;
       }
 
       if (top[k] == MAT_VOLCANIC) {
@@ -380,6 +429,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   occlusion = occlusion / total;
   roughness = roughness / total;
   snow_amount = snow_amount / total;
+  ice_amount = ice_amount / total;
   volcanic_amount = volcanic_amount / total;
   wet_amount = wet_amount / total;
 
@@ -399,6 +449,18 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let macro_uv = position.xz / 380.0;
   let macro_noise = textureSampleGrad(noise_texture, linear_sampler, macro_uv, ddx_p.xz / 380.0, ddy_p.xz / 380.0);
   albedo = albedo * (0.84 + macro_noise.g * 0.32) * mix(vec3<f32>(1.0), vec3<f32>(1.05, 1.0, 0.9), macro_noise.b * 0.5);
+
+  var crevasse = 0.0;
+
+  if (ice_amount > 0.01) {
+    crevasse = crevasses(position, ddx_p, ddy_p, geometric_normal, distance) * ice_amount;
+    // Light scattered inside glacier ice comes out blue where the sun does
+    // not reach directly, and deepest in the cracks.
+    let shaded = (1.0 - saturate(dot(geometric_normal, sun_dir()))) * 0.35;
+    albedo = mix(albedo, srgb_to_linear(vec3<f32>(0.25, 0.55, 0.85)), ice_amount * shaded);
+    albedo = mix(albedo, srgb_to_linear(vec3<f32>(0.04, 0.16, 0.34)), crevasse);
+    roughness = mix(roughness, 0.3, crevasse);
+  }
 
   // Damp ground near water, in wet biomes, and after rain darkens and
   // turns glossy; flat hollows collect puddles that mirror the sky.
@@ -422,8 +484,12 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let detail_strength = mix(1.0, 0.35, far_blend) * (1.0 - puddle);
   var normal = normalize(geometric_normal + vec3<f32>(detail.x, 0.0, detail.y) * detail_strength);
 
-  // Settled snow from the weather covers upward-facing ground.
-  let settled = frame.weather.w * smoothstep(0.55, 0.85, geometric_normal.y);
+  // Settled snow from the weather covers upward-facing ground, and so does
+  // snow that never melts: old snow patches in the hollows of the tundra.
+  // Glacier ice shows its own snow and ice through its material weights.
+  let permanent = in.materials_c.z * (1.0 - ice_amount);
+  let permanent_cover = smoothstep(1.0 - permanent, 1.2 - permanent, macro_noise.r * 0.8 + (1.0 - blend_height_avg) * 0.2);
+  let settled = max(frame.weather.w, permanent_cover * permanent) * smoothstep(0.55, 0.85, geometric_normal.y);
 
   if (settled > 0.001) {
     let snow_cover = saturate(settled * (0.75 + blend_height_avg * 0.5));
@@ -434,7 +500,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // Snow settles on the upward-facing side of bumps.
   normal = normalize(mix(normal, geometric_normal, snow_amount * 0.5));
 
-  let ao = occlusion * cavity;
+  let ao = occlusion * cavity * (1.0 - crevasse * 0.6);
   let specular = mix(0.35, 1.0, wetness) * (1.0 - roughness);
   var colour = shade_surface(albedo, normal, position, ao, specular + snow_amount * 0.25, max(roughness, 0.12));
 

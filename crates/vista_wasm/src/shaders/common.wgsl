@@ -123,6 +123,10 @@ struct WorldInfo {
 @group(1) @binding(9) var<uniform> world: WorldInfo;
 @group(1) @binding(10) var terrain_shadow_texture: texture_2d<f32>;
 @group(1) @binding(11) var clamp_sampler: sampler;
+// Per-terrain surface data at height texture resolution: r temperature
+// unit ((°C + 30) / 65), g moisture, b permanent snow (fast ice on the
+// sea), a biome index / 255. Always sampled with `textureSampleLevel`.
+@group(1) @binding(12) var surface_texture: texture_2d<f32>;
 
 // Shadow receivers only (terrain, trees, grass, water).
 @group(2) @binding(0) var tree_shadow_map: texture_depth_2d;
@@ -318,6 +322,27 @@ fn terrain_height_at(xz: vec2<f32>) -> f32 {
   let outside = max(abs(xz) - world.terrain.xy, vec2<f32>(0.0));
   h = h - length(outside) * 0.08;
   return h;
+}
+
+// Whether a world position lies over the loaded terrain.
+fn over_terrain(xz: vec2<f32>) -> bool {
+  return world.terrain2.z > 0.5 && all(abs(xz) <= world.terrain.xy);
+}
+
+// The surface texture at a world position (see `surface_texture`).
+fn surface_at(xz: vec2<f32>) -> vec4<f32> {
+  let size = max(world.terrain2.xy, vec2<f32>(1.0));
+  let uv = ((xz + world.terrain.xy) / world.terrain.zw + 0.5) / size;
+  return textureSampleLevel(surface_texture, clamp_sampler, uv, 0.0);
+}
+
+// Snow that never melts at a world position, 0 to 1.
+fn permanent_snow_at(xz: vec2<f32>) -> f32 {
+  if (!over_terrain(xz)) {
+    return 0.0;
+  }
+
+  return surface_at(xz).b;
 }
 
 // --- Clouds (shared by the sky pass and cloud shadows) -------------------

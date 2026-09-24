@@ -361,9 +361,11 @@ fn ice(uv: vec2<f32>) -> vec4<f32> {
   let broad = fbm2(uv, 3, 4, 91u);
   let warp = fbm2(uv, 2, 3, 92u);
   let scour = sin((uv.x * 4.0 + uv.y * 1.0 + warp * 1.6) * TAU) * 0.5 + 0.5;
-  let height = saturate(broad * 0.6 + scour * 0.3 + fbm2(uv, 16, 3, 93u) * 0.1);
+  let fine = fbm2(uv, 16, 3, 93u);
+  let height = saturate(broad * 0.7 + scour * 0.15 + fine * 0.15);
   // Low, scoured hollows show the deep blue of dense glacier ice.
-  var colour = mix(vec3<f32>(0.35, 0.6, 0.8), vec3<f32>(0.8, 0.9, 0.97), smoothstep(0.2, 0.75, height));
+  let depth = saturate(broad * 0.85 + fine * 0.15);
+  var colour = mix(vec3<f32>(0.35, 0.6, 0.8), vec3<f32>(0.8, 0.9, 0.97), smoothstep(0.05, 0.5, depth));
   // Trapped air bubbles: fine, pale specks.
   let bubbles = worley2(uv * 48.0, 48, 94u);
   let bubble = smoothstep(0.16, 0.06, bubbles.x) * step(0.72, bubbles.z);

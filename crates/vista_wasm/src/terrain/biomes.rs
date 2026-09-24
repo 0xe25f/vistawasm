@@ -308,11 +308,22 @@ enum ColdGround {
   Cliff,
 }
 
+/// The mean temperature, in °C, below which ice builds up into a glacier.
+/// Glaciers need snowfall as well as cold, so dry climates stay bare
+/// tundra and polar desert down to much lower temperatures. `moisture` is
+/// the large-scale climate moisture, 0 to 1.
+fn glacier_celsius(moisture: f32) -> f32 {
+  -2.0 - (0.5 - moisture).max(0.0) * 16.0
+}
+
 /// The ice and tundra rules. Ice flows off slopes steeper than about 35
-/// degrees unless it is very cold, and nothing holds above 50 degrees.
-fn cold_ground(celsius: f32, slope_degrees: f32) -> ColdGround {
-  if celsius < -2.0 {
-    if slope_degrees < 35.0 || (celsius < -6.0 && slope_degrees < 50.0) {
+/// degrees unless it is 4 °C colder still, and nothing holds above 50
+/// degrees.
+fn cold_ground(celsius: f32, slope_degrees: f32, moisture: f32) -> ColdGround {
+  let glacier = glacier_celsius(moisture);
+
+  if celsius < glacier {
+    if slope_degrees < 35.0 || (celsius < glacier - 4.0 && slope_degrees < 50.0) {
       ColdGround::Glacier
     } else if slope_degrees < 50.0 {
       ColdGround::Tundra
@@ -321,6 +332,8 @@ fn cold_ground(celsius: f32, slope_degrees: f32) -> ColdGround {
     }
   } else if celsius < 3.0 && slope_degrees < 50.0 {
     ColdGround::Tundra
+  } else if celsius < -2.0 && slope_degrees >= 50.0 {
+    ColdGround::Cliff
   } else {
     ColdGround::None
   }
@@ -339,6 +352,12 @@ fn cold_gate(options: &BiomeOptions) -> f32 {
 
 fn slope_degrees(normal: Vec3) -> f32 {
   normal[1].clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// Large-scale moisture before local detail: the climate field, wetter in
+/// the lowlands.
+fn climate_moisture(base_moisture: f32, rel: f32) -> f32 {
+  (base_moisture + (1.0 - rel).powi(3) * 0.12).clamp(0.0, 1.0)
 }
 
 /// Sea level and the relief used for relative altitude.
@@ -374,9 +393,10 @@ pub fn glacier_mask(map: &HeightMap, normals: &[Vec3], options: &BiomeOptions) -
         continue;
       }
 
-      let (_, _, noise) = climate.sample(x, y);
+      let (_, base_moisture, noise) = climate.sample(x, y);
       let celsius = local_celsius(options, noise, h - sea, rel, range);
-      mask[index] = cold_ground(celsius, slope) == ColdGround::Glacier;
+      let moisture = climate_moisture(base_moisture, rel);
+      mask[index] = cold_ground(celsius, slope, moisture) == ColdGround::Glacier;
     }
   }
 
@@ -550,10 +570,11 @@ pub fn classify_surface(
       };
       let slope = slope_degrees(normal);
       let gate = cold_gate(options);
+      let climate_wetness = climate_moisture(base_moisture, rel);
       let cold = if h < sea - 0.3 || gate <= 0.0 {
         ColdGround::None
       } else {
-        cold_ground(celsius, slope)
+        cold_ground(celsius, slope, climate_wetness)
       };
       // A little high-frequency jitter keeps biome borders organic rather
       // than following the smooth climate contours exactly.
@@ -662,7 +683,7 @@ pub fn classify_surface(
         smoothstep((into_band * 1.3 - 0.35 + (1.0 - occlusion) * 0.8 + jitter * 3.0) / 0.35);
       let upper = smoothstep((h - upper_snow_line) / transition_band.max(1.0) + 0.5);
       let steep_limit = 0.3 + upper * 0.25;
-      let snow = if snowy {
+      let mut snow = if snowy {
         let settled = smoothstep((h - snow_line_here) / 60.0 + 0.5);
         (settled.max(patches * 0.6 * into_band) * (1.0 - smoothstep((steep - steep_limit) / 0.25)))
           .max(upper * 0.9)
@@ -670,14 +691,16 @@ pub fn classify_surface(
       } else {
         0.0
       };
-      let snow_holds = 1.0 - smoothstep((steep - 0.3) / 0.25);
-      let mut snow = snow;
 
       // Wherever it is below freezing all year, snow lies on anything flat
-      // enough to hold it, whatever the height.
-      if h >= sea - 0.3 {
-        snow = snow.max(gate * smoothstep((-2.0 - celsius) / 6.0) * snow_holds);
-      }
+      // enough to hold it, whatever the height. Cold, dry snow clings to
+      // steeper faces than wet snow does.
+      let cold_snow = if h >= sea - 0.3 {
+        gate * smoothstep((-2.0 - celsius) / 6.0) * (1.0 - smoothstep((steep - 0.4) / 0.25))
+      } else {
+        0.0
+      };
+      snow = snow.max(cold_snow);
       let mountain = smoothstep((rel - 0.5) / 0.25);
       let mut rock = smoothstep((steep - 0.16) / 0.26) * 0.95 + mountain * 0.35 * (1.0 - snow);
 
@@ -690,6 +713,9 @@ pub fn classify_surface(
       if biome == BiomeKind::AlpineTransition {
         rock = rock.max(0.3 + 0.35 * into_band);
       }
+
+      // Snow that never melts buries all but the steepest rock.
+      rock *= 1.0 - cold_snow * 0.6;
 
       let sand_band = 1.0 - smoothstep((above_sea - beach * 0.7) / (beach * 0.9).max(0.5));
       let desert =
@@ -746,6 +772,7 @@ pub fn classify_surface(
             celsius,
             slope,
             glacier: cold == ColdGround::Glacier && biome == BiomeKind::IceArctic,
+            glacier_celsius: glacier_celsius(climate_wetness),
             detail: value_noise(detail_seed ^ 0x1ce, x as f32 * 0.07, y as f32 * 0.07),
           },
         );
@@ -796,6 +823,8 @@ pub fn classify_surface(
 struct ColdMaterials {
   gate: f32,
   celsius: f32,
+  /// Where glacier ice starts, from [`glacier_celsius`].
+  glacier_celsius: f32,
   slope: f32,
   glacier: bool,
   /// Value noise in -1 to 1 that breaks up snow and stone patches.
@@ -806,8 +835,8 @@ struct ColdMaterials {
 /// temperature and slope keep the borders natural; `cold.glacier` makes
 /// sure every sample classified as glacier is mostly ice or snow.
 fn apply_cold_materials(weights: &mut [f32; MATERIAL_COUNT], cold: ColdMaterials) {
-  let slope_limit = 35.0 + 15.0 * smoothstep((-4.0 - cold.celsius) / 4.0);
-  let mut ice = smoothstep((-1.0 - cold.celsius) / 2.0)
+  let slope_limit = 35.0 + 15.0 * smoothstep((cold.glacier_celsius - 2.0 - cold.celsius) / 4.0);
+  let mut ice = smoothstep((cold.glacier_celsius + 1.0 - cold.celsius) / 2.0)
     * (1.0 - smoothstep((cold.slope - slope_limit + 3.0) / 6.0))
     * cold.gate;
 
@@ -841,7 +870,7 @@ fn apply_cold_materials(weights: &mut [f32; MATERIAL_COUNT], cold: ColdMaterials
 
     // Fresh snow lies on the ice: deeper where it is colder and flatter,
     // scoured to bare blue ice in patches and on steeper ice falls.
-    let depth = (0.2 + 0.45 * smoothstep((-6.0 - cold.celsius) / 14.0) + cold.detail * 0.25)
+    let depth = (0.35 + 0.4 * smoothstep((-4.0 - cold.celsius) / 12.0) + cold.detail * 0.25)
       * (1.0 - smoothstep((cold.slope - 8.0) / 20.0) * 0.6);
     let depth = depth.clamp(0.1, 0.85);
     weights[MAT_SNOW] += ice * depth;

@@ -110,10 +110,12 @@ fn vertex_mesh(in: MeshIn) -> MeshOut {
   return out;
 }
 
-// Rain darkens bark and leaves; settled snow whitens their tops.
-fn weather_surface(albedo: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+// Rain darkens bark and leaves; settled snow, from the weather or lying
+// all year round, whitens their tops.
+fn weather_surface(albedo: vec3<f32>, normal: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
   var colour = albedo * (1.0 - frame.weather.z * 0.25);
-  let snow = frame.weather.w * smoothstep(0.1, 0.7, normal.y);
+  let cover = max(frame.weather.w, permanent_snow_at(position.xz));
+  let snow = cover * smoothstep(0.1, 0.7, normal.y);
   return mix(colour, vec3<f32>(0.78, 0.82, 0.88), snow * 0.85);
 }
 
@@ -158,7 +160,7 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
 
     let normal = normalize(in.normal);
     var albedo = foliage_colour(srgb_to_linear(texel.rgb), in.species, in.tint, in.dryness);
-    albedo = weather_surface(albedo, normal);
+    albedo = weather_surface(albedo, normal, in.world_position);
     return vec4<f32>(shade_foliage(albedo, normal, in.world_position, in.ao), 1.0);
   }
 
@@ -168,7 +170,7 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
     normal = -normal;
   }
 
-  let albedo = weather_surface(srgb_to_linear(texel.rgb) * (0.9 + in.tint * 0.2), normal);
+  let albedo = weather_surface(srgb_to_linear(texel.rgb) * (0.9 + in.tint * 0.2), normal, in.world_position);
   let colour = shade_surface(albedo, normal, in.world_position, in.ao * (0.6 + texel.a * 0.4), 0.0, 0.9);
   return vec4<f32>(colour, 1.0);
 }
@@ -253,7 +255,7 @@ fn fragment_impostor(in: ImpostorOut) -> @location(0) vec4<f32> {
 
   var albedo = srgb_to_linear(texel.rgb) * (0.82 + in.tint * 0.36);
   albedo = mix(albedo, albedo * vec3<f32>(1.25, 1.05, 0.55), in.dryness * 0.35);
-  albedo = weather_surface(albedo, vec3<f32>(0.0, 1.0 - in.uv.y, 0.0));
+  albedo = weather_surface(albedo, vec3<f32>(0.0, 1.0 - in.uv.y, 0.0), in.world_position);
   let colour = shade_foliage(albedo, normalize(in.normal), in.world_position, 0.85);
   return vec4<f32>(colour, 1.0);
 }

@@ -2,7 +2,9 @@ use vista_types::GrassOptions;
 
 use crate::maths::hash_noise;
 use crate::render::flora::{unit_from_hash, FloraInstance, FloraVertex};
-use crate::terrain::biomes::{SurfaceSample, MAT_DRY_GRASS, MAT_FOREST_FLOOR, MAT_LUSH_GRASS};
+use crate::terrain::biomes::{
+  SurfaceSample, MAT_DRY_GRASS, MAT_FOREST_FLOOR, MAT_LUSH_GRASS, MAT_TUNDRA,
+};
 use crate::terrain::heightmap::HeightMap;
 
 /// Candidate grid resolution used when scattering grass. Grass reads much
@@ -15,6 +17,12 @@ const MAX_CANDIDATE_SAMPLES_PER_SIDE: u32 = 768;
 /// Slightly more permissive than flora's, since ground cover survives
 /// steeper ground than trees do.
 const MAX_PLANTING_SLOPE: f32 = 0.85;
+
+/// Tundra tufts grow at this fraction of the density of a meadow.
+const TUNDRA_GRASS_DENSITY: f32 = 0.4;
+
+/// Tundra tufts are this fraction of the height of meadow grass.
+const TUNDRA_GRASS_HEIGHT: f32 = 0.4;
 
 /// One quad's worth of vertices, reused for every one of a grass tuft's
 /// three crossed blades.
@@ -206,10 +214,13 @@ fn candidate_at(
 
   let sample = materials.and_then(|weights| weights.get(index));
   let acceptance_weight = match sample {
+    // Nothing grows on glacier ice; tundra carries sparse sedge tufts.
+    Some(sample) if sample.is_glacier() => 0.0,
     Some(sample) => {
       sample.weight(MAT_LUSH_GRASS)
         + sample.weight(MAT_DRY_GRASS) * 0.9
         + sample.weight(MAT_FOREST_FLOOR) * 0.25
+        + sample.weight(MAT_TUNDRA) * TUNDRA_GRASS_DENSITY
     }
     None => {
       let left = map.height_at(x.saturating_sub(1), y).unwrap_or(elevation);
@@ -242,6 +253,25 @@ fn candidate_at(
 
   let scale_roll = unit_from_hash(hash_noise(seed ^ 0x0a2b_c3d4, x as i32, y as i32));
   let tint_roll = unit_from_hash(hash_noise(seed ^ 0x5f2e_1d0c, x as i32, y as i32));
+
+  if let Some(sample) = sample.filter(|sample| sample.is_tundra()) {
+    let tundra = sample.weight(MAT_TUNDRA);
+    let grass = sample.weight(MAT_LUSH_GRASS) + sample.weight(MAT_DRY_GRASS);
+
+    // Where tundra is the ground, tufts are short and ochre-green.
+    if tundra >= grass {
+      return Some(FloraInstance {
+        position: [
+          x as f32 * metres_per_sample,
+          elevation,
+          y as f32 * metres_per_sample,
+        ],
+        scale: (0.5 + scale_roll * 0.6) * TUNDRA_GRASS_HEIGHT,
+        tint: tint_roll,
+        dryness: 0.5,
+      });
+    }
+  }
 
   Some(FloraInstance {
     position: [
@@ -287,6 +317,35 @@ mod tests {
       max_instances: 50_000,
       ..GrassOptions::default()
     }
+  }
+
+  fn cold_surface(map: &HeightMap, celsius: f32) -> Vec<SurfaceSample> {
+    let options = vista_types::BiomeOptions {
+      mean_temperature_celsius: Some(celsius),
+      volcanism: 0.0,
+      ..vista_types::BiomeOptions::default()
+    };
+    let normals = crate::terrain::normals::generate_normals(map);
+    crate::terrain::biomes::classify_surface(map, &normals, None, &options)
+  }
+
+  #[test]
+  fn glaciers_grow_no_grass_and_tundra_grows_short_sparse_tufts() {
+    let map = flat_map(64, 20.0);
+    let glacier = cold_surface(&map, -20.0);
+    assert!(glacier.iter().all(|sample| sample.is_glacier()));
+    assert!(build_grass_instances(&map, Some(&glacier), &grass_options(), 1.0).is_empty());
+
+    let tundra = cold_surface(&map, 1.0);
+    assert!(tundra.iter().all(|sample| sample.is_tundra()));
+    let tufts = build_grass_instances(&map, Some(&tundra), &grass_options(), 1.0);
+    let meadow = build_grass_instances(&map, None, &grass_options(), 1.0);
+
+    assert!(!tufts.is_empty());
+    assert!(tufts.len() * 2 < meadow.len());
+    assert!(tufts
+      .iter()
+      .all(|tuft| tuft.scale <= 1.1 * TUNDRA_GRASS_HEIGHT && tuft.dryness == 0.5));
   }
 
   #[test]

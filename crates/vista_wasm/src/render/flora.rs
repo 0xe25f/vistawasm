@@ -459,6 +459,37 @@ mod tests {
     assert_eq!(first, second);
   }
 
+  fn cold_surface(map: &HeightMap, celsius: f32) -> Vec<SurfaceSample> {
+    let options = BiomeOptions {
+      mean_temperature_celsius: Some(celsius),
+      volcanism: 0.0,
+      ..BiomeOptions::default()
+    };
+    classify_surface(map, &generate_normals(map), None, &options)
+  }
+
+  #[test]
+  fn glaciers_are_treeless_and_tundra_grows_only_dwarf_shrubs() {
+    let map = flat_map(96, 50.0);
+    let options = flora_options();
+    let glacier = cold_surface(&map, -20.0);
+
+    assert!(glacier.iter().all(|sample| sample.is_glacier()));
+    assert!(build_tree_instances(&map, &glacier, &options, 1.0).is_empty());
+
+    let tundra = cold_surface(&map, 1.0);
+    assert!(tundra.iter().all(|sample| sample.is_tundra()));
+    let shrubs = build_tree_instances(&map, &tundra, &options, 1.0);
+
+    // A tenth of full forest cover: one candidate per sample on this grid,
+    // so well under a fifth of them become shrubs.
+    assert!(!shrubs.is_empty());
+    assert!(shrubs.len() * 5 < 96 * 96, "{} shrubs", shrubs.len());
+    assert!(shrubs.iter().all(|tree| {
+      tree.species == TreeSpecies::Shrub as u32 && (0.35..=0.6).contains(&tree.scale)
+    }));
+  }
+
   #[test]
   fn species_follow_the_biome() {
     assert_eq!(

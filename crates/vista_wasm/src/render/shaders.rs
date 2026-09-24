@@ -96,6 +96,22 @@ mod tests {
   }
 
   #[test]
+  fn the_surface_texture_is_bound_where_every_render_shader_expects_it() {
+    for (name, body) in RENDER_SHADERS {
+      let source = render_source(body);
+      let module = naga::front::wgsl::parse_str(&source).unwrap();
+      let binding = module
+        .global_variables
+        .iter()
+        .find(|(_, variable)| variable.name.as_deref() == Some("surface_texture"))
+        .and_then(|(_, variable)| variable.binding)
+        .unwrap_or_else(|| panic!("{name} has no surface_texture"));
+
+      assert_eq!((binding.group, binding.binding), (1, 12), "{name}");
+    }
+  }
+
+  #[test]
   fn minification_removes_comments() {
     assert!(!COMMON.contains("//"));
     assert!(COMMON.len() < include_str!("../shaders/common.wgsl").len());
