@@ -91,10 +91,16 @@ its own.
     1920 x 1080 on a mid-range GPU (roughly an Apple M-series base chip or
     a desktop RTX 3060). Dynamic resolution (`RenderQualityOptions.dynamicResolution`)
     is a safety net, not a budget.
-- Tiny files: the gzipped `dist/pkg/vista_wasm_bg.wasm` is 237,820 bytes
-    at the start of this work. Each plan states how much it may add. Check
-    with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`. Generate data
-    procedurally at start-up instead of embedding it.
+- Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
+    start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
+    (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
+    plan states how much it may add on top of that. Every byte must buy
+    real value that can't be done smaller. Generate data procedurally at
+    start-up instead of embedding it.
+- Performance gate: from plan 2b onwards, run
+    `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
+    No pass may be more than 5 % slower than before, beyond what the plan's
+    own GPU budget allows. Put both sets of numbers in the report.
 
 ### Commands
 

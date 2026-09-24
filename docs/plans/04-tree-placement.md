@@ -88,10 +88,16 @@ its own.
     1920 x 1080 on a mid-range GPU (roughly an Apple M-series base chip or
     a desktop RTX 3060). Dynamic resolution (`RenderQualityOptions.dynamicResolution`)
     is a safety net, not a budget.
-- Tiny files: the gzipped `dist/pkg/vista_wasm_bg.wasm` is 237,820 bytes
-    at the start of this work. Each plan states how much it may add. Check
-    with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`. Generate data
-    procedurally at start-up instead of embedding it.
+- Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
+    start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
+    (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
+    plan states how much it may add on top of that. Every byte must buy
+    real value that can't be done smaller. Generate data procedurally at
+    start-up instead of embedding it.
+- Performance gate: from plan 2b onwards, run
+    `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
+    No pass may be more than 5 % slower than before, beyond what the plan's
+    own GPU budget allows. Put both sets of numbers in the report.
 
 ### Commands
 
@@ -173,7 +179,9 @@ GPU-time deltas, and any risks. Keep the report short.
 - **Plan 1** (drainage area in `HeightMap.aux`, `terrain/drainage.rs`).
 - **Plan 2** (the surface texture and `SurfaceSample::celsius()`,
     permanent snow, `IceArctic`).
-- **Plan 3** (the distance-to-water field and the carved rivers).
+- **Plan 2b** (map edges with a skirt, and the performance gate).
+- **Plan 3** (the distance-to-water field in `surface_texture_b.r` at
+    `group(1) binding(13)`, and the carved rivers).
 - Check that each exists. If one is missing, carry out that plan first;
     each is self-contained.
 
@@ -303,12 +311,22 @@ Confirm each cause with a test or capture before fixing it.
         - sand weight above 0.5, unless the species is `beach_ok`;
         - rock weight above 0.6;
         - permanent snow above 0.5;
+        - the `lowerSnowyPeaks` (16) and `upperSnowyPeaks` (17) biomes;
+        - snow material weight above 0.5;
         - glacier;
+        - the skirt outside the terrain footprint (plan 2b): nothing
+            grows off the map.
         - volcanic heat above 0.2;
         - the plunge pools, deltas and lake beds from plan 3.
     - **Tree line:** 1 at 200 m below `treeLineMetres`, falling to 0 at
         the tree line, with the plan 2 temperature rule as a second
         limit: a mean below -1 °C means no trees.
+    - **`alpineTransition`** (the band below the snow line added after
+        plan 2): only shrubs (dwarf, scale 0.35 to 0.6) and stunted
+        conifers (pine and spruce, flagged `stunted`), at 15 % of the
+        normal density. They thin to none at the band's upper edge. The
+        tree line and this band must agree: whichever is lower wins, so no
+        full-size tree ever stands in the transition band.
 - Species choice: among species with suitability above 0.05 in this
     biome, weighted by suitability. `FloraRule` overrides still apply
     first, and still respect the hard exclusions.

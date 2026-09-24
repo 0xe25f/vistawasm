@@ -96,10 +96,16 @@ its own.
     1920 x 1080 on a mid-range GPU (roughly an Apple M-series base chip or
     a desktop RTX 3060). Dynamic resolution (`RenderQualityOptions.dynamicResolution`)
     is a safety net, not a budget.
-- Tiny files: the gzipped `dist/pkg/vista_wasm_bg.wasm` is 237,820 bytes
-    at the start of this work. Each plan states how much it may add. Check
-    with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`. Generate data
-    procedurally at start-up instead of embedding it.
+- Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
+    start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
+    (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
+    plan states how much it may add on top of that. Every byte must buy
+    real value that can't be done smaller. Generate data procedurally at
+    start-up instead of embedding it.
+- Performance gate: from plan 2b onwards, run
+    `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
+    No pass may be more than 5 % slower than before, beyond what the plan's
+    own GPU budget allows. Put both sets of numbers in the report.
 
 ### Commands
 
@@ -186,6 +192,33 @@ GPU-time deltas, and any risks. Keep the report short.
     `BiomeKind::IceArctic`, the surface texture at `group(1) binding(12)`,
     and `SurfaceSample.permanent_snow`. If it is missing, carry out plan 2
     first.
+- **Plan 2b** (course correction) must be merged. Check for
+    `FractalTerrainOptions.edges`, the skirt in `common.wgsl`
+    `terrain_height_at`, and `scripts/visual-check/fixed-scene.mjs`. If it
+    is missing, carry out plan 2b first.
+
+### What plans 1, 2 and 2b actually built
+
+These notes correct assumptions made before those plans were
+implemented:
+
+- `HeightMap.aux` drainage area is on a **coarse grid** (at most 256 per
+    side; see `TerrainAux::size` and its bilinear sampler), and it is
+    `None` for DEM and raw imports. Use it only as an optional weighting.
+    Compute full-resolution D8 receivers and accumulation with
+    `terrain/drainage.rs` on the final heights, after erosion, glacier
+    smoothing and any water mask, for every terrain source.
+- Biomes now include `alpineTransition` (15), `lowerSnowyPeaks` (16),
+    `upperSnowyPeaks` (17) and `iceArctic` (18). With an unset climate,
+    high ground carries the snowy-peak biomes, and `permanent_snow` is 0
+    everywhere. Snowmelt must not rely on `permanent_snow` alone (see
+    section 1).
+- The surface texture's alpha channel already holds the biome index (read
+    with `textureLoad`), so the distance-to-water field gets its own
+    texture (see section 6).
+- With `edges: "coast"` (the default), every map is ringed by sea, so
+    rivers can always reach it. With `"open"`, channels reaching the map
+    edge end there, which counts as a valid outlet.
 
 ## Current state
 
@@ -219,8 +252,15 @@ Read these files before starting:
         mapped to 300 to 3000 mm per year.
     - Accumulate it along the D8 receivers from `terrain/drainage.rs` to
         get a mean discharge Q in m^3/s.
-- **Snowmelt:** cells with `permanent_snow > 0` add melt, which is
-    `snowmelt x permanent_snow x 0.6 m per year` over their area.
+- **Snowmelt:** cells add melt in proportion to their snow, which is
+    `snowmelt x snow x 0.6 m per year` over their area. Here `snow` is the
+    largest of three values:
+    - `permanent_snow / 255`;
+    - the snow material weight;
+    - 1 in `upperSnowyPeaks`, and 0.6 in `lowerSnowyPeaks`.
+    Default (unset-climate) maps then get snowmelt streams from their
+    snowy peaks. The lower edge of each connected snowy-peak region
+    becomes an explicit source, as glacier snouts do.
     - Glacier snouts (the lowest glacier cells of each connected glacier)
         become explicit sources, even if their catchment is below the
         threshold.
@@ -327,6 +367,38 @@ Read these files before starting:
     the river surface by up to `0.2 x d` inside the carved channel. The
     geometry stays the same, so no rebuild is needed.
 
+### 4b. Frozen lakes, rivers and falls
+
+Verification of plan 2 found lakes staying liquid and turquoise at
+-18 °C. Water follows the climate:
+
+- **Lakes** freeze where the lake's mean temperature (`celsius()` at its
+    outlet) is below 0 °C.
+    - Draw them with plan 2b's pack-ice shading at concentration 1: large
+        smooth sheets with pressure cracks, and snow cover rising as the
+        temperature falls.
+    - Clear blue-black ice shows where the snow is thin (by noise and
+        wind exposure).
+    - There are no ripples, flow or foam.
+- **Rivers** freeze below -5 °C: an ice surface following the channel,
+    snow-dusted, with open dark leads over the fastest reaches (speed
+    above 2 m/s).
+- **Waterfalls** below -8 °C become icefalls: the sheet mesh is shaded as
+    static blue-white ice with vertical ribbing. There is no spray, no
+    plunge-pool foam, and no sound in `getWaterSounds`.
+- Between -2 and 0 °C (and -7 to -5 °C for rivers), freezing is partial:
+    ice concentration rises linearly, so margins freeze first.
+- All of these are uniform-branch-guarded: nothing is evaluated on maps
+    with no water below 0 °C, like the existing sea-ice guard.
+- **Tests:**
+    - a CPU port of the freeze function (fully frozen at -3 °C, open at
+        1 °C, partial at -1 °C);
+    - `getWaterSounds` returns null for a waterfall at -10 °C.
+- **Verification:** the plan 2 cold capture
+    (`meanTemperatureCelsius: -18`, `fjords` seed 2, camera 30 m above
+    the lake) shows a frozen, snow-covered lake with cracks, not open
+    water.
+
 ### 5. Real waterfalls
 
 For each recorded waterfall (lip position, lip height, foot height,
@@ -366,9 +438,13 @@ width w, discharge Q, flow direction):
         in metres, encoded 0 to 40 m.
     - Build it on the CPU with a two-pass distance transform after the
         river build.
-    - Pack it into the surface texture: put it in the alpha channel and
-        move the biome index to a new `surface_texture_b` if necessary,
-        updating the documented channel layout.
+    - Upload it as a new `@group(1) @binding(13) surface_texture_b`, an
+        rgba8unorm texture at terrain resolution:
+        - r: distance to water / 40 m;
+        - g, b, a: reserved (0), for later plans.
+    - Add it to every bind group layout that uses group 1. Document it
+        next to the surface texture in `docs/architecture.md`. Sample it
+        with `textureSampleLevel`.
 - **Terrain shader:** within 0 to 6 m of water, darken albedo by up to
     35 %, lower roughness to 0.35, and blend mud on gentle banks.
 - **Grass:**

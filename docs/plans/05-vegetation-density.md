@@ -90,10 +90,16 @@ its own.
     1920 x 1080 on a mid-range GPU (roughly an Apple M-series base chip or
     a desktop RTX 3060). Dynamic resolution (`RenderQualityOptions.dynamicResolution`)
     is a safety net, not a budget.
-- Tiny files: the gzipped `dist/pkg/vista_wasm_bg.wasm` is 237,820 bytes
-    at the start of this work. Each plan states how much it may add. Check
-    with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`. Generate data
-    procedurally at start-up instead of embedding it.
+- Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
+    start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
+    (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
+    plan states how much it may add on top of that. Every byte must buy
+    real value that can't be done smaller. Generate data procedurally at
+    start-up instead of embedding it.
+- Performance gate: from plan 2b onwards, run
+    `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
+    No pass may be more than 5 % slower than before, beyond what the plan's
+    own GPU budget allows. Put both sets of numbers in the report.
 
 ### Commands
 
@@ -230,7 +236,9 @@ GPU-time deltas, and any risks. Keep the report short.
 ### 2. Suitability on the GPU
 
 - Bake suitability at height-map resolution into a new rgba8 texture,
-    the cover texture, at `group(1)` next to the surface texture:
+    the cover texture, at `@group(1) @binding(14)` (binding 12 is the
+    surface texture from plan 2, and 13 is `surface_texture_b` from
+    plan 3):
     - r: `p` at d = 1;
     - g: the dominant species index / 255;
     - b: the second species index / 255;
@@ -292,6 +300,9 @@ GPU-time deltas, and any risks. Keep the report short.
         in `clipmap_render.wgsl`.
     - It offsets each vertex upwards by canopy height:
         `mix(8, 28 m, species height factor) x cover`.
+    - Cover is 0 on plan 2b's skirt outside the terrain footprint, so no
+        canopy is ever drawn off the map. Discard those vertices'
+        triangles early, by collapsing them in the vertex shader.
 - Shading:
     - Canopy albedo comes from the species colours, broken up by a
         clump pattern: Worley noise at 6 to 12 m scale.

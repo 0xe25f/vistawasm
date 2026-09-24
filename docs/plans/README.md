@@ -13,6 +13,7 @@ check it is there.
 | --- | --- | --- |
 | 1 | [Realistic terrain generation](01-realistic-terrain-generation.md) | Geology-led landforms, multi-scale GPU erosion, landform presets. |
 | 2 | [Ice and arctic biome](02-ice-arctic-biome.md) | `iceArctic`: glaciers, tundra fringe, sea ice and permanent snow, driven by climate temperature. |
+| 2b | [Course correction](02b-course-correction.md) | Sea-ringed map edges and a skirt beyond them, real alpine relief, realistic pack ice, stretched-snow fix, and a like-for-like performance gate. |
 | 3 | [Rivers, lakes and waterfalls](03-rivers-lakes-and-waterfalls.md) | Erosion-coupled drainage from rain, snowmelt, springs and overflowing lakes; flowing water, real waterfalls, wet banks and audio queries. |
 | 4 | [Tree placement](04-tree-placement.md) | Trees on the rendered ground at every distance, and ecological placement rules. |
 | 5 | [Vegetation density](05-vegetation-density.md) | Closed-canopy forests and full grass cover at 60 FPS: streamed placement, a far canopy layer and a forest floor. |
@@ -33,5 +34,9 @@ GPU:
 
 - Default scene: at most 12 ms of GPU time per frame. Rain or storm: at
     most 14 ms. That leaves headroom under the 16.7 ms of a 60 FPS frame.
-- Gzipped WASM: at most +150 KB over 237,820 bytes in total. Each plan
-    states its own share.
+- Gzipped WASM: at most +176 KB over 237,820 bytes in total. Each plan
+    states its own share. Plans 1 and 2 were allowed up to 32 KB and
+    12 KB, and plans 1, 2 and 2b together up to 44 KB. They added 39,131
+    bytes, reaching 276,951.
+- Every byte must buy real value that can't be done smaller, without lag,
+    frame drops, regressions or any loss of realism.
