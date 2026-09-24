@@ -123,9 +123,18 @@ fn sample_waves(xz: vec2<f32>, depth: f32, spacing: f32) -> WaveSample {
   return result;
 }
 
+// False in the pipeline drawn when no sea can freeze, so that pipeline
+// compiles without any of the sea ice code.
+override SEA_ICE: bool = true;
+
+// Whether sea ice may form this frame.
+fn sea_ice_possible() -> bool {
+  return SEA_ICE && frame.sea_ice.x > 0.5;
+}
+
 // Sea ice concentration on the ocean, 0 (open water) to 1 (full pack).
 fn sea_ice_concentration(xz: vec2<f32>) -> f32 {
-  if (frame.sea_ice.x < 0.5) {
+  if (!sea_ice_possible()) {
     return 0.0;
   }
 
@@ -220,9 +229,8 @@ fn vertex_main(in: VertexIn) -> VertexOut {
     let waves = sample_waves(position.xz, depth, in.params.z);
     var displacement = waves.displacement;
 
-    // Pack ice damps the swell. `sea_ice.x` is uniform, so seas that never
-    // freeze skip this.
-    if (frame.sea_ice.x > 0.5) {
+    // Pack ice damps the swell.
+    if (sea_ice_possible()) {
       displacement = displacement * (1.0 - sea_ice_concentration(position.xz));
     }
 
@@ -311,7 +319,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     jacobian = waves.jacobian;
     crest = waves.height / max(frame.wave_params.x * 0.5, 0.01);
 
-    if (frame.sea_ice.x > 0.5) {
+    if (sea_ice_possible()) {
       // Waves die down in the water between floes.
       ice = sea_ice_concentration(in.rest_xz);
       normal = normalize(mix(normal, vec3<f32>(0.0, 1.0, 0.0), ice));
@@ -401,7 +409,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // Fade out the thinnest film of water at the waterline.
   alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
 
-  if (frame.sea_ice.x > 0.5 && ice > 0.001) {
+  if (sea_ice_possible() && ice > 0.001) {
     // Small floes near the camera, large ones in the distance, where small
     // ones would shimmer.
     let near_weight = 1.0 - smoothstep(300.0, 1500.0, distance);

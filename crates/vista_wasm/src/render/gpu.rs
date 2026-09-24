@@ -500,6 +500,7 @@ struct Pipelines {
   clouds_quarter: wgpu::RenderPipeline,
   composite: wgpu::RenderPipeline,
   water: wgpu::RenderPipeline,
+  open_water: wgpu::RenderPipeline,
   lens: wgpu::RenderPipeline,
   cull: wgpu::ComputePipeline,
   terrain_shadow: wgpu::ComputePipeline,
@@ -1053,6 +1054,8 @@ struct PipelineSpec<'a> {
   depth: Option<(bool, wgpu::CompareFunction)>,
   cull_mode: Option<wgpu::Face>,
   depth_bias: wgpu::DepthBiasState,
+  // Values for the shader's pipeline-overridable constants.
+  constants: &'a [(&'a str, f64)],
 }
 
 impl<'a> PipelineSpec<'a> {
@@ -1074,6 +1077,7 @@ impl<'a> PipelineSpec<'a> {
       depth: Some((true, wgpu::CompareFunction::Less)),
       cull_mode: None,
       depth_bias: wgpu::DepthBiasState::default(),
+      constants: &[],
     }
   }
 }
@@ -1095,13 +1099,19 @@ fn create_pipeline(
     vertex: wgpu::VertexState {
       module: spec.module,
       entry_point: Some(spec.vertex_entry),
-      compilation_options: wgpu::PipelineCompilationOptions::default(),
+      compilation_options: wgpu::PipelineCompilationOptions {
+        constants: spec.constants,
+        ..Default::default()
+      },
       buffers: spec.buffers,
     },
     fragment: Some(wgpu::FragmentState {
       module: spec.module,
       entry_point: Some(spec.fragment_entry),
-      compilation_options: wgpu::PipelineCompilationOptions::default(),
+      compilation_options: wgpu::PipelineCompilationOptions {
+        constants: spec.constants,
+        ..Default::default()
+      },
       targets: if spec.format.is_some() { &targets } else { &[] },
     }),
     primitive: wgpu::PrimitiveState {
@@ -1451,6 +1461,19 @@ fn create_pipelines(
         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
         depth: Some((false, wgpu::CompareFunction::Less)),
         ..PipelineSpec::opaque("VistaWASM water", &modules.water, main, &water_buffers)
+      },
+    ),
+    // The same water without sea ice, drawn whenever no sea can freeze, so
+    // mild maps pay nothing for it.
+    open_water: create_pipeline(
+      device,
+      &receivers,
+      PipelineSpec {
+        format: Some(surface_format),
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        depth: Some((false, wgpu::CompareFunction::Less)),
+        constants: &[("SEA_ICE", 0.0)],
+        ..PipelineSpec::opaque("VistaWASM open water", &modules.water, main, &water_buffers)
       },
     ),
     cull: compute_pipeline(
@@ -3127,7 +3150,11 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_WATER;
-      pass.set_pipeline(&self.pipelines.water);
+      pass.set_pipeline(if self.uniforms.sea_ice[0] > 0.5 {
+        &self.pipelines.water
+      } else {
+        &self.pipelines.open_water
+      });
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);

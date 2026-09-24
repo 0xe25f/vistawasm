@@ -204,7 +204,9 @@ Each terrain vertex is 36 bytes:
     tone maps (ACES).
 8. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
     depth-tested against the opaque scene, alpha-blended, fogged, and tone
-    mapped in the same way.
+    mapped in the same way. The pass has two pipelines from the same
+    shader: one with sea ice, and one compiled with the `SEA_ICE`
+    override constant off, drawn whenever no sea can freeze.
 9. **Present pass** (`shaders/atmosphere.wgsl`, `present_main`), only when
     the scene is rendered below the canvas resolution or lens drops are on.
     Steps 5 to 8 then draw into an off-screen image at the render scale,
