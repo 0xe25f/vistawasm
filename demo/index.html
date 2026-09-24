@@ -568,7 +568,15 @@
               Snow line (m)
               <input id="biomeSnowLine" type="range" min="200" max="4000" step="50" value="1400">
             </label>
-            <p id="biomeReadout" class="readout">Biome: –</p>
+            <label class="checkbox">
+              <input id="biomeCelsiusAuto" type="checkbox" checked>
+              Automatic climate temperature
+            </label>
+            <label>
+              Climate temperature (°C at sea level)
+              <input id="biomeCelsius" type="range" min="-30" max="35" step="1" value="15">
+            </label>
+            <p id="biomeReadout" class="readout" aria-live="polite">Biome: –</p>
           </fieldset>
         </details>
 
@@ -794,6 +802,24 @@
                 <option value="no-data">No data</option>
               </select>
             </label>
+            <ul id="biomeLegend" class="legend" aria-label="Biome colours" hidden>
+              <li><span style="background: rgb(140 204 77)"></span>Grassy meadows</li>
+              <li><span style="background: rgb(102 158 56)"></span>Outer thicket</li>
+              <li><span style="background: rgb(51 128 46)"></span>Outer forest</li>
+              <li><span style="background: rgb(20 82 26)"></span>Inner forest</li>
+              <li><span style="background: rgb(153 140 102)"></span>Mountain foothills</li>
+              <li><span style="background: rgb(140 140 148)"></span>Mountain proper</li>
+              <li><span style="background: rgb(89 51 46)"></span>Outer volcanic</li>
+              <li><span style="background: rgb(230 64 13)"></span>Caldera volcanic</li>
+              <li><span style="background: rgb(217 184 89)"></span>Savannah expanse</li>
+              <li><span style="background: rgb(242 224 158)"></span>Coastal beach</li>
+              <li><span style="background: rgb(128 115 107)"></span>Coastal rocky</li>
+              <li><span style="background: rgb(38 179 89)"></span>Outer jungle</li>
+              <li><span style="background: rgb(5 115 51)"></span>Inner jungle</li>
+              <li><span style="background: rgb(77 97 64)"></span>Swamp wetlands</li>
+              <li><span style="background: rgb(26 64 140)"></span>Ocean</li>
+              <li><span style="background: rgb(191 235 255)"></span>Ice and arctic (iceArctic)</li>
+            </ul>
           </fieldset>
         </details>
       </aside>

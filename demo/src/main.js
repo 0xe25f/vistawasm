@@ -16,6 +16,7 @@ const minimap = document.querySelector("#minimap");
 const status = document.querySelector("#status");
 const statsPanel = document.querySelector("#stats");
 const biomeReadout = document.querySelector("#biomeReadout");
+const biomeLegend = document.querySelector("#biomeLegend");
 
 const inputs = {
   landform: select("landform"),
@@ -68,6 +69,8 @@ const inputs = {
   biomeBeachHeight: input("biomeBeachHeight"),
   biomeSnowLineAuto: input("biomeSnowLineAuto"),
   biomeSnowLine: input("biomeSnowLine"),
+  biomeCelsiusAuto: input("biomeCelsiusAuto"),
+  biomeCelsius: input("biomeCelsius"),
   floraEnabled: input("floraEnabled"),
   floraDensity: input("floraDensity"),
   treeLine: input("treeLine"),
@@ -357,7 +360,10 @@ function applyBiomes() {
     beachHeightMetres: readNumber(inputs.biomeBeachHeight, 5),
     snowLineMetres: inputs.biomeSnowLineAuto.checked
       ? undefined
-      : readNumber(inputs.biomeSnowLine, 1400)
+      : readNumber(inputs.biomeSnowLine, 1400),
+    meanTemperatureCelsius: inputs.biomeCelsiusAuto.checked
+      ? undefined
+      : readNumber(inputs.biomeCelsius, 15)
   });
 }
 
@@ -752,6 +758,10 @@ function applyQuality() {
 
 function applyDebugView() {
   engine?.setDebugView(inputs.debugView.value);
+
+  if (biomeLegend) {
+    biomeLegend.hidden = inputs.debugView.value !== "biomes";
+  }
 }
 
 function applyAllLiveControls() {
@@ -937,7 +947,9 @@ function wireLiveControls() {
     inputs.biomeVolcanism,
     inputs.biomeBeachHeight,
     inputs.biomeSnowLineAuto,
-    inputs.biomeSnowLine
+    inputs.biomeSnowLine,
+    inputs.biomeCelsiusAuto,
+    inputs.biomeCelsius
   ]) {
     element.addEventListener("change", applyBiomes);
   }
@@ -1160,7 +1172,9 @@ async function run() {
 
       if (biomeReadout) {
         const biome = engine?.biomeAt(camera.position[0], camera.position[2]);
-        biomeReadout.textContent = `Biome: ${biome ?? "–"}`;
+        const celsius = engine?.temperatureAt(camera.position[0], camera.position[2]) ?? null;
+        const temperature = celsius === null ? "" : `, ${celsius.toFixed(1)} °C`;
+        biomeReadout.textContent = `Biome: ${biome ?? "–"}${temperature}`;
       }
     }
   });
