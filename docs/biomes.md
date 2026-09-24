@@ -71,8 +71,10 @@ Every sample has a mean annual temperature in °C. Read it with
 `engine.temperatureAt(x, z)`, which returns `null` off the terrain.
 
 Set `meanTemperatureCelsius` (from -30 to 35) to choose the climate. It
-is the mean at sea level. Each sample adds up to ±4 °C of climate noise,
-then cools by 6.5 °C per 1000 m of altitude, as real air does. A
+is the mean at sea level. Climate noise makes some regions warmer and
+others colder, by up to about 4 °C across most of a map (never more
+than 6 °C), and every sample then cools by 6.5 °C per 1000 m of
+altitude, as real air does. A
 3000 m mountain on a 15 °C map is about -4.5 °C at the top.
 `temperatureBias` still shifts the whole map, by up to ±26 °C. The same
 temperature then drives every biome: warm, moist lowlands become jungle
@@ -99,12 +101,12 @@ if (celsius !== null && celsius < 0) {
 
 ## Ice and tundra (`iceArctic`)
 
-- **Glacier.** Ice forms where the mean temperature is below -2 °C on
-    slopes under 35 degrees, or 4 °C colder still (-6 °C) on slopes up
-    to 50 degrees.
-    Glaciers need snowfall as well as cold, so in dry climates the
-    threshold falls further, to about -10 °C in the driest places. Cold,
-    dry ground stays tundra instead: polar desert.
+- **Glacier.** Ice forms on slopes under 35 degrees where the mean
+    temperature is below the glacier threshold, and on slopes up to 50
+    degrees where it is 4 °C colder still. Glaciers need snowfall as well
+    as cold, so the threshold follows the moisture: -2 °C in the wettest
+    climates, about -6 °C in average ones, and down to about -16 °C in
+    the driest. Cold, dry ground stays tundra instead: polar desert.
 - **Tundra.** Moss, lichen, dwarf shrubs, and frost-heaved stones cover
     ground from the glacier threshold up to 3 °C, and cold slopes too
     steep for ice.

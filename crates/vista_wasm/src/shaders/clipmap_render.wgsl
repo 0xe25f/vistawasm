@@ -488,8 +488,17 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // snow that never melts: old snow patches in the hollows of the tundra.
   // Glacier ice shows its own snow and ice through its material weights.
   let permanent = in.materials_c.z * (1.0 - ice_amount);
-  let permanent_cover = smoothstep(1.0 - permanent, 1.2 - permanent, macro_noise.r * 0.8 + (1.0 - blend_height_avg) * 0.2);
-  let settled = max(frame.weather.w, permanent_cover * permanent) * smoothstep(0.55, 0.85, geometric_normal.y);
+  var lying = 0.0;
+
+  if (permanent > 0.001) {
+    // Two scales of noise, so the patches never visibly repeat.
+    let broad_scale = 1.0 / 1730.0;
+    let broad = textureSampleGrad(noise_texture, linear_sampler, position.xz * broad_scale + vec2<f32>(0.23, 0.61), ddx_p.xz * broad_scale, ddy_p.xz * broad_scale).r;
+    let field = macro_noise.r * 0.45 + broad * 0.35 + (1.0 - blend_height_avg) * 0.2;
+    lying = smoothstep(1.0 - permanent, 1.2 - permanent, field) * permanent;
+  }
+
+  let settled = max(frame.weather.w, lying) * smoothstep(0.55, 0.85, geometric_normal.y);
 
   if (settled > 0.001) {
     let snow_cover = saturate(settled * (0.75 + blend_height_avg * 0.5));

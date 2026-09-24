@@ -170,7 +170,9 @@ struct ClimateGrid {
   step: f32,
   temperature: Vec<f32>,
   moisture: Vec<f32>,
-  /// Raw temperature noise in roughly -1 to 1, for the °C climate.
+  /// Temperature noise for the °C climate, centred on the map's mean so
+  /// `meanTemperatureCelsius` really is the mean. Most of a map lies
+  /// within about ±0.5.
   noise: Vec<f32>,
 }
 
@@ -213,6 +215,12 @@ impl ClimateGrid {
           moisture.push(0.5 + m * 0.55);
         }
       }
+    }
+
+    let mean = noise.iter().sum::<f32>() / noise.len().max(1) as f32;
+
+    for value in &mut noise {
+      *value -= mean;
     }
 
     Self {
@@ -261,8 +269,9 @@ const DEFAULT_RELIEF_COOLING_CELSIUS: f32 = 19.0;
 /// Real atmospheric lapse rate, in °C per metre.
 const LAPSE_RATE_PER_METRE: f32 = 0.0065;
 
-/// Climate noise amplitude in °C.
-const CLIMATE_NOISE_CELSIUS: f32 = 4.0;
+/// Climate noise, in °C per unit of centred noise: most of a map lies
+/// within ±4 °C of the mean, and no sample more than 6 °C from it.
+const CLIMATE_NOISE_CELSIUS: f32 = 8.0;
 
 /// The sea-level mean temperature in °C before climate noise, including
 /// `temperatureBias`.
@@ -283,7 +292,7 @@ pub fn sea_level_celsius(options: &BiomeOptions) -> f32 {
 /// `rel` the same altitude as a fraction of the map's relief, and `relief`
 /// the height of the highest point above sea level.
 fn local_celsius(options: &BiomeOptions, noise: f32, above_sea: f32, rel: f32, relief: f32) -> f32 {
-  let sea_level = sea_level_celsius(options) + noise * CLIMATE_NOISE_CELSIUS;
+  let sea_level = sea_level_celsius(options) + (noise * CLIMATE_NOISE_CELSIUS).clamp(-6.0, 6.0);
 
   if options.mean_temperature_celsius.is_some() {
     sea_level - above_sea.max(0.0) * LAPSE_RATE_PER_METRE
@@ -309,11 +318,12 @@ enum ColdGround {
 }
 
 /// The mean temperature, in °C, below which ice builds up into a glacier.
-/// Glaciers need snowfall as well as cold, so dry climates stay bare
-/// tundra and polar desert down to much lower temperatures. `moisture` is
-/// the large-scale climate moisture, 0 to 1.
+/// Glaciers need snowfall as well as cold: -2 °C is enough in the wettest
+/// climates, average ones need about -6 °C, and dry ones stay bare tundra
+/// and polar desert down to about -16 °C. `moisture` is the large-scale
+/// climate moisture, 0 to 1.
 fn glacier_celsius(moisture: f32) -> f32 {
-  -2.0 - (0.5 - moisture).max(0.0) * 16.0
+  -2.0 - (0.7 - moisture).max(0.0) * 20.0
 }
 
 /// The ice and tundra rules. Ice flows off slopes steeper than about 35
