@@ -4,7 +4,6 @@
 /// shaders are standalone.
 pub const SHADER_MODULES: &[&str] = &[
   "common.wgsl",
-  "terrain_noise.wgsl",
   "hydraulic_erosion.wgsl",
   "thermal_erosion.wgsl",
   "normals.wgsl",
