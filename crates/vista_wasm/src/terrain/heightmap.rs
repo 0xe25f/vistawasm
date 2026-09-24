@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use vista_types::TerrainMetadata;
 
 use crate::errors::{VistaError, VistaResult};
@@ -11,6 +13,45 @@ pub struct HeightMap {
   pub no_data: Vec<bool>,
   /// Terrain metadata.
   pub metadata: TerrainMetadata,
+  /// Derived data from generation, shared between clones. `None` for
+  /// loaded terrain and for generators that do not compute it.
+  pub aux: Option<Arc<TerrainAux>>,
+}
+
+/// Derived terrain data from fractal generation, kept for later stages
+/// such as rivers and moisture.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TerrainAux {
+  /// Samples per side of the grid the data is stored on. It spans the
+  /// same extent as the heightmap, usually at a coarser resolution.
+  pub size: u32,
+  /// Upstream drainage area of each sample in square metres, row-major.
+  /// Empty when not computed.
+  pub drainage_area: Vec<f32>,
+}
+
+impl TerrainAux {
+  /// Bilinearly sample the drainage area at a fractional heightmap
+  /// position, where `(0, 0)` and `(1, 1)` are opposite corners. Returns
+  /// 0 when no drainage area was computed.
+  pub fn drainage_area_at(&self, u: f32, v: f32) -> f32 {
+    let n = self.size as usize;
+
+    if n < 2 || self.drainage_area.len() != n * n {
+      return 0.0;
+    }
+
+    let x = u.clamp(0.0, 1.0) * (n - 1) as f32;
+    let y = v.clamp(0.0, 1.0) * (n - 1) as f32;
+    let x0 = (x as usize).min(n - 2);
+    let y0 = (y as usize).min(n - 2);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let at = |xx: usize, yy: usize| self.drainage_area[yy * n + xx];
+    let top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx;
+    let bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+    top + (bottom - top) * ty
+  }
 }
 
 impl HeightMap {
@@ -50,6 +91,7 @@ impl HeightMap {
       heights,
       no_data,
       metadata,
+      aux: None,
     })
   }
 
@@ -66,6 +108,7 @@ impl HeightMap {
       heights,
       no_data,
       metadata,
+      aux: None,
     }
   }
 
@@ -145,5 +188,24 @@ mod tests {
     let map = HeightMap::flat(1, 1, 2.5, TerrainMetadata::default());
 
     assert_eq!(map.export_f32_le(), 2.5_f32.to_le_bytes());
+  }
+
+  #[test]
+  fn drainage_area_samples_bilinearly_and_clones_share_it() {
+    let aux = TerrainAux {
+      size: 2,
+      drainage_area: vec![0.0, 10.0, 20.0, 30.0],
+    };
+    assert_eq!(aux.drainage_area_at(0.5, 0.5), 15.0);
+    assert_eq!(aux.drainage_area_at(1.0, 0.0), 10.0);
+    assert_eq!(TerrainAux::default().drainage_area_at(0.5, 0.5), 0.0);
+
+    let mut map = HeightMap::flat(2, 2, 0.0, TerrainMetadata::default());
+    map.aux = Some(Arc::new(aux));
+    let copy = map.clone();
+    assert!(Arc::ptr_eq(
+      map.aux.as_ref().unwrap(),
+      copy.aux.as_ref().unwrap()
+    ));
   }
 }

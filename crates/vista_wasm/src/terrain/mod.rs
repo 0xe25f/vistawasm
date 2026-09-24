@@ -10,6 +10,13 @@ pub mod landforms;
 pub mod materials;
 pub mod noise;
 pub mod normals;
+#[cfg(test)]
+mod realism_tests;
+pub mod stream_power;
+pub mod tectonics;
 
-pub use fractal::{generate_fractal_heightmap, generate_fractal_heightmap_base};
+pub use fractal::{
+  finish_fractal_heightmap, generate_fractal_heightmap, generate_fractal_heightmap_base,
+  generate_fractal_heightmap_base_with_progress, generate_fractal_heightmap_with_progress,
+};
 pub use heightmap::HeightMap;

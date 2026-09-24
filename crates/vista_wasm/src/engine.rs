@@ -287,10 +287,10 @@ impl EngineCore {
       {
         Ok(eroded) => {
           map.heights = eroded;
-          crate::terrain::heightmap::update_stats(&map.heights, &map.no_data, &mut map.metadata);
         }
         Err(error) => {
-          crate::terrain::erosion::apply_erosion(&mut map, erosion)?;
+          let landform = crate::terrain::fractal::fractal_landform(options);
+          crate::terrain::erosion::apply_erosion(&mut map, erosion, &landform, &mut |_, _| {})?;
           map.metadata.warnings.push(format!(
             "GPU erosion failed, so erosion ran on the CPU instead: {error}"
           ));
@@ -298,6 +298,7 @@ impl EngineCore {
       }
     }
 
+    crate::terrain::finish_fractal_heightmap(&mut map);
     Ok(map)
   }
 

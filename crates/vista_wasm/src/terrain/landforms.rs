@@ -126,7 +126,7 @@ impl Landform {
         hillslope_diffusion: 0.03,
         plains_roughness: 0.1,
         mountain_roughness: 0.6,
-        talus_angle_degrees: 48.0,
+        talus_angle_degrees: 42.0,
         rain: 0.35,
         terrace: 0.7,
         ..base

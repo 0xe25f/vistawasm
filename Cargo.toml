@@ -27,6 +27,11 @@ vista_types = { path = "crates/vista_types" }
 
 
 
+# The terrain realism tests generate and erode 84 maps; unoptimised code
+# would take minutes.
+[profile.test]
+opt-level = 2
+
 # Release builds favour a small download. Link-time optimisation over one
 # codegen unit lets LLVM inline and prune across crates, and WASM cannot
 # unwind, so aborting drops the unused unwinding tables. Measured after
