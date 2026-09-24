@@ -12,9 +12,9 @@
 // Cold seas freeze. Ice concentration comes from the surface texture's
 // temperature over the terrain and from the open-sea temperature beyond
 // it: open water above -1.5 °C, full pack ice below -7.5 °C, and fast ice
-// frozen to the shore where the climate is colder than -10 °C. Floes are
-// Worley cells, 40 m across near the camera and 300 m in the distance,
-// drifting with the wind; waves and foam die down between them.
+// frozen to the shore where the climate is colder than -10 °C. The pack
+// (see `pack_ice`) has floes of many sizes, leads, pressure ridges and
+// brash, drifting with the wind; waves and foam die down between them.
 //
 // Shading uses real water depth from the terrain height texture for
 // absorption (turquoise shallows, dark deep water, visible sea bed), a
@@ -159,30 +159,43 @@ struct FloeCell {
   // Distance to the nearest and second-nearest cell centres, in cells.
   f1: f32,
   f2: f32,
-  // Random value of the nearest cell.
+  // Random values of the nearest and second-nearest cells.
   id: f32,
+  pair: f32,
+  // The warp noise, reused for drifted snow on the smallest scale.
+  grain: f32,
   // Unit direction from the nearest cell centre to the point.
   outward: vec2<f32>,
 };
 
+// Three random values for a cell, from one hash.
+fn floe_hash(cell: vec2<f32>) -> vec3<f32> {
+  var p3 = fract(vec3<f32>(cell.x, cell.y, cell.x) * vec3<f32>(0.1031, 0.103, 0.0973));
+  p3 = p3 + dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yzz) * p3.zyx);
+}
+
 fn floe_cell(p: vec2<f32>) -> FloeCell {
   let base = floor(p);
-  var result = FloeCell(8.0, 8.0, 0.0, vec2<f32>(0.0, 1.0));
+  var result = FloeCell(8.0, 8.0, 0.0, 0.0, 0.5, vec2<f32>(0.0, 1.0));
 
   for (var y = -1; y <= 1; y = y + 1) {
     for (var x = -1; x <= 1; x = x + 1) {
       let cell = base + vec2<f32>(f32(x), f32(y));
-      let centre = cell + vec2<f32>(hash12(cell), hash12(cell + 19.19)) * 0.8 + 0.1;
-      let offset = p - centre;
+      let random = floe_hash(cell);
+      let offset = p - cell - random.xy * 0.8 - 0.1;
       let d = length(offset);
+      let id = random.z;
 
       if (d < result.f1) {
         result.f2 = result.f1;
+        result.pair = result.id;
         result.f1 = d;
-        result.id = hash12(cell + 7.31);
+        result.id = id;
         result.outward = offset / max(d, 0.0001);
       } else if (d < result.f2) {
         result.f2 = d;
+        result.pair = id;
       }
     }
   }
@@ -190,26 +203,114 @@ fn floe_cell(p: vec2<f32>) -> FloeCell {
   return result;
 }
 
+// One scale of floes: Worley cells whose lookup is warped by noise with
+// wavelengths of one and half a cell, by up to 0.3 of a cell, so floe
+// edges are rounded and irregular, never straight polygon sides. The
+// noise is sampled at the mip level of the pixel's footprint, so distant
+// floes do not shimmer.
+fn floe_layer(p: vec2<f32>, size: f32, footprint: f32) -> FloeCell {
+  let span = size * 4.0;
+  let lod = max(log2(footprint * 512.0 / span), 0.0);
+  let warp = textureSampleLevel(noise_texture, linear_sampler, p / span, lod).rg - 0.5;
+  var cell = floe_cell(p / size + warp * 0.6);
+  cell.grain = warp.x + 0.5;
+  return cell;
+}
+
 struct Floes {
-  // How much of the pixel is ice, 0 to 1.
+  // How much of the pixel is ice, 0 to 1, and how much of the water
+  // between floes is grey brash and grease ice.
   cover: f32,
+  brash: f32,
   // Bevelled rim, 0 to 1, and the direction it slopes down.
   rim: f32,
   outward: vec2<f32>,
-  // Per-floe colour variation.
+  // Pressure ridge, 0 to 1, and the direction it rises from.
+  ridge: f32,
+  ridge_side: vec2<f32>,
+  // Per-floe colour variation, and how much bare ice shows through thin,
+  // patchy snow.
   shade: f32,
+  bare: f32,
+  // Drifted snow, 0 to 1, lighter and darker patches a few metres across.
+  grain: f32,
 };
 
-// Floes of `size` metres at a position: a cell is ice when its random
-// value is below the concentration.
-fn floes_at(xz: vec2<f32>, size: f32, concentration: f32, footprint: f32) -> Floes {
-  let cell = floe_cell((xz + frame.sea_ice.zw) / size);
-  let edge = cell.f2 - cell.f1;
-  let blur = footprint / size;
-  let ice = select(0.0, 1.0, cell.id < concentration);
-  let cover = ice * smoothstep(0.02 - blur, 0.06 + blur, edge);
-  let rim = 1.0 - smoothstep(0.04, 0.16 + blur, edge);
-  return Floes(cover, rim, cell.outward, fract(cell.id * 7.7));
+// Pack ice at a concentration: big floes 600 m across, broken by a 120 m
+// scale into bays and loose pieces, with 25 m cakes and brash in the gaps,
+// so floe sizes span orders of magnitude; long leads of open water that
+// follow a slowly turning direction; and pressure ridges along some floe
+// boundaries. Beyond a few kilometres the small scales fade out, and the
+// big floes, their colours and the leads carry the look.
+fn pack_ice(xz: vec2<f32>, concentration: f32, footprint: f32, distance: f32) -> Floes {
+  let p = xz + frame.sea_ice.zw;
+  let c = concentration;
+  var floes = Floes(0.0, 0.0, 0.0, vec2<f32>(0.0, 1.0), 0.0, vec2<f32>(0.0, 1.0), 0.0, 0.0, 0.5);
+
+  let large = floe_layer(p, 600.0, footprint);
+  let large_edge = large.f2 - large.f1;
+  let large_blur = footprint / 600.0;
+  // Big floes stay apart even in a closed pack, by a gap of slush that
+  // widens as the pack opens, so their outlines read from far away.
+  let gap = 0.03 + (1.0 - c) * 0.03;
+  floes.cover = step(large.id, c) * smoothstep(gap, gap + 0.02 + large_blur, large_edge);
+  floes.rim = 1.0 - smoothstep(0.0, 0.05 + large_blur, large_edge);
+  floes.outward = large.outward;
+  floes.shade = fract(large.id * 7.7);
+  // One floe in five carries only thin, patchy snow.
+  let thin = step(fract(large.id * 13.7), 0.2);
+
+  let middle_weight = 1.0 - smoothstep(4000.0, 8000.0, distance);
+
+  if (middle_weight > 0.01 && floes.cover > 0.0) {
+    let middle = floe_layer(p + 37.0, 120.0, footprint);
+    let middle_edge = middle.f2 - middle.f1;
+    let blur = footprint / 120.0;
+    // Some middle cells have broken away, leaving bays and loose pieces;
+    // others are split off from their floe by cracks.
+    let broken = step(middle.id, 0.08 + 0.3 * (1.0 - c));
+    let cracked = step(middle.id, 0.35);
+    let split = mix(1.0, smoothstep(0.0, 0.02 + blur, middle_edge), cracked);
+    floes.cover = floes.cover * mix(1.0, (1.0 - broken) * split, middle_weight);
+    // Pressure ridges where floes pushed together: along a quarter of the
+    // boundaries, chosen by both cells so the ridge rises on both sides.
+    floes.ridge = step(0.75, fract((middle.id + middle.pair) * 7.3)) * (1.0 - smoothstep(0.0, 0.06 + blur, middle_edge))
+      * floes.cover * middle_weight;
+    floes.ridge_side = middle.outward;
+    floes.bare = thin * step(0.45, fract(middle.id * 5.31)) * middle_weight;
+  }
+
+  let small_weight = 1.0 - smoothstep(1500.0, 3000.0, distance);
+
+  // Cakes only matter in the gaps; inside a floe, only its snow grain.
+  if (small_weight > 0.01 && floes.cover < 0.99) {
+    let small = floe_layer(p + 91.0, 25.0, footprint);
+    let cake = step(small.id, c * 0.75)
+      * smoothstep(0.0, 0.02 + footprint / 25.0, small.f2 - small.f1);
+    floes.cover = floes.cover + (1.0 - floes.cover) * cake * small_weight;
+    floes.grain = mix(0.5, small.grain, small_weight);
+  } else if (small_weight > 0.01) {
+    let grain = textureSampleLevel(noise_texture, linear_sampler, (p + 91.0) / 100.0, max(log2(footprint * 5.12), 0.0)).r;
+    floes.grain = mix(0.5, grain, small_weight);
+  }
+
+  // Leads: the contour lines of noise stretched along one direction,
+  // meandering with a wavelength of about 2 km, broken into long segments,
+  // fewer and narrower as the pack closes up.
+  let across = dot(p, vec2<f32>(-0.6, 0.8));
+  let along = dot(p, vec2<f32>(0.8, 0.6));
+  let bend = 150.0 * sin(along * 0.003 + 0.8 * sin(across * 0.0009)) + 90.0 * sin(along * 0.0011 + 1.7);
+  let q = vec2<f32>(along / 16000.0, (across + bend) / 2000.0);
+  let lead_noise = textureSampleLevel(noise_texture, linear_sampler, q, max(log2(footprint * 0.256), 0.0));
+  let width = mix(0.032, 0.011, c) + footprint * 0.00014;
+  let lead = (1.0 - smoothstep(width * 0.5, width, abs(lead_noise.r - 0.5)))
+    * smoothstep(0.2, 0.3, lead_noise.g - c * 0.35);
+  floes.cover = floes.cover * (1.0 - lead);
+  floes.ridge = floes.ridge * (1.0 - lead);
+  // Brash and grease ice fill the rest in a close pack, not black water:
+  // the share of the water between floes that is slush.
+  floes.brash = (1.0 - lead) * smoothstep(0.55, 0.95, c);
+  return floes;
 }
 
 @vertex
@@ -312,133 +413,131 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var crest = 0.0;
   let pixel_footprint = distance * frame.camera_forward.w * 2.0 * frame.viewport.w;
   var ice = 0.0;
+  var floes = Floes(0.0, 0.0, 0.0, vec2<f32>(0.0, 1.0), 0.0, vec2<f32>(0.0, 1.0), 0.0, 0.0, 0.5);
+  // How much of the pixel is floes or slush. Where it is all ice, the open
+  // water beneath is never seen, so it is not shaded.
+  var solid = 0.0;
 
-  if (in.kind == 0) {
-    let waves = sample_waves(in.rest_xz, depth, max(in.spacing, pixel_footprint * 2.0));
-    normal = waves.normal;
-    jacobian = waves.jacobian;
-    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01);
+  if (in.kind == 0 && sea_ice_possible()) {
+    ice = sea_ice_concentration(in.rest_xz);
 
-    if (sea_ice_possible()) {
-      // Waves die down in the water between floes.
-      ice = sea_ice_concentration(in.rest_xz);
-      normal = normalize(mix(normal, vec3<f32>(0.0, 1.0, 0.0), ice));
-      jacobian = mix(jacobian, 1.0, ice);
-      crest = crest * (1.0 - ice);
-      detail = detail * (1.0 - ice * 0.8);
+    if (ice > 0.001) {
+      floes = pack_ice(in.rest_xz, ice, pixel_footprint, distance);
+      solid = floes.cover + (1.0 - floes.cover) * floes.brash;
     }
   }
 
-  // Ripples fade with distance so far water turns into a calm mirror
-  // instead of aliasing.
-  let detail_fade = 1.0 - smoothstep(60.0, 1400.0, distance);
-  normal = normalize(normal + detail * ripple_strength * 0.55 * (0.25 + 0.75 * detail_fade));
+  if (in.kind == 0 && solid < 0.999) {
+    let waves = sample_waves(in.rest_xz, depth, max(in.spacing, pixel_footprint * 2.0));
+    // Waves die down in the water between floes.
+    normal = normalize(mix(waves.normal, vec3<f32>(0.0, 1.0, 0.0), ice));
+    jacobian = mix(waves.jacobian, 1.0, ice);
+    crest = waves.height / max(frame.wave_params.x * 0.5, 0.01) * (1.0 - ice);
+    detail = detail * (1.0 - ice * 0.8);
+  }
 
   let sun = sun_dir();
-  let n_dot_v = saturate(dot(normal, view));
-  let fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
-  var reflected = reflect(-view, normal);
-  reflected.y = abs(reflected.y);
-  var reflection = sky_radiance(reflected);
+  var colour = vec3<f32>(0.0);
+  var alpha_out = 1.0;
 
-  // Clouds reflected on the water.
-  if (frame.cloud_params.x > 0.001 && reflected.y > 0.02) {
-    let travel = max(frame.cloud_params.y - position.y, 10.0) / reflected.y;
-    let weather = cloud_weather(position.xz + reflected.xz * travel);
-    // Under a full overcast the deck already is the sky being reflected.
-    let cloud = smoothstep(0.05, 0.6, weather) * saturate(reflected.y * 5.0) * (1.0 - frame.weather2.y);
-    reflection = mix(reflection, (sun_light() * 0.35 + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.3) * frame.cloud_colour.rgb, cloud * 0.8);
-  }
+  if (solid < 0.999) {
+    // Ripples fade with distance so far water turns into a calm mirror
+    // instead of aliasing.
+    let detail_fade = 1.0 - smoothstep(60.0, 1400.0, distance);
+    normal = normalize(normal + detail * ripple_strength * 0.55 * (0.25 + 0.75 * detail_fade));
 
-  let shadow = sun_visibility(position, vec3<f32>(0.0, 1.0, 0.0));
+    let n_dot_v = saturate(dot(normal, view));
+    let fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
+    var reflected = reflect(-view, normal);
+    reflected.y = abs(reflected.y);
+    var reflection = sky_radiance(reflected);
 
-  // Sun glitter: GGX with roughness that grows with distance.
-  let roughness = mix(0.05, 0.22, smoothstep(50.0, 3000.0, distance)) + ripple_strength * 0.02;
-  let half_vector = normalize(view + sun);
-  let n_dot_h = saturate(dot(normal, half_vector));
-  let alpha = roughness * roughness;
-  let ggx = alpha * alpha / (PI * pow(n_dot_h * n_dot_h * (alpha * alpha - 1.0) + 1.0, 2.0));
-  // The sun's glint needs the sun's disc; an overcast deck hides it.
-  let glint = (1.0 - frame.weather2.y) * (1.0 - frame.weather2.y);
-  let specular = sun_light() * shadow * ggx * fresnel * saturate(dot(normal, sun)) * 0.9 * glint;
-
-  // Water body: absorption by depth, lit by sky and sun.
-  let clarity = max(frame.water_params.z, 0.1);
-  let absorption = 1.0 - exp(-depth / clarity);
-  let body_colour = mix(srgb_to_linear(frame.water_shallow.rgb), srgb_to_linear(frame.water_deep.rgb), absorption);
-  let body_light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * shadow * (0.35 + 0.65 * saturate(sun.y));
-  // Leads between floes are dark: the ice shades the water beneath.
-  var body = body_colour * body_light * 0.55 * (1.0 - ice * 0.5);
-
-  // Light shining through the thin tops of waves.
-  let subsurface = pow(saturate(dot(view, -sun) * 0.5 + 0.5), 3.0) * saturate(crest) * 0.9;
-  body = body + srgb_to_linear(frame.water_shallow.rgb) * sun_light() * shadow * subsurface * 0.35;
-
-  let opacity = saturate(1.0 - exp(-depth / (clarity * 0.45)) + 0.08);
-  let reflectivity = clamp(0.55 + frame.water_params.y * 0.9, 0.0, 1.0);
-  let reflect_weight = fresnel * reflectivity;
-  var alpha_out = reflect_weight + opacity * (1.0 - reflect_weight);
-  var colour = (reflection * reflect_weight + body * opacity * (1.0 - reflect_weight)) / max(alpha_out, 0.001) + specular;
-
-  // Foam: breaking crests, shorelines (bands that roll in towards the
-  // beach), and fast-flowing rapids.
-  let foam_strength = frame.water_params.w;
-  var foam = 0.0;
-
-  if (in.kind == 0) {
-    let breaking = smoothstep(0.55, 0.15, jacobian) * foam_texel;
-    let swell = max(frame.wave_params.x, 0.2);
-    let surf_zone = 1.0 - smoothstep(0.0, 1.2 + swell * 1.5, depth);
-    let bands = pow(saturate(sin(depth * 2.2 - t * 1.6) * 0.5 + 0.5), 3.0);
-    foam = max(breaking, surf_zone * mix(0.35, 1.0, bands) * shore_foam_texel * 1.6);
-  } else {
-    let edge = 1.0 - smoothstep(0.0, 0.8, depth);
-    foam = max(edge * shore_foam_texel * 0.8, smoothstep(1.6, 3.5, flow_speed) * foam_texel);
-  }
-
-  foam = saturate(foam * foam_strength * (1.0 - smoothstep(400.0, 2500.0, distance) * 0.7)) * (1.0 - ice);
-  let foam_colour = vec3<f32>(0.9) * (sun_light() * shadow * saturate(sun.y + 0.2) + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.4) / PI * 2.2;
-  colour = mix(colour, foam_colour, foam);
-  alpha_out = max(alpha_out, foam);
-
-  // Soften river ribbon edges where they meet the bank.
-  if (in.kind == 1) {
-    alpha_out = alpha_out * (1.0 - smoothstep(0.75, 1.0, abs(in.across)));
-  }
-
-  // Fade out the thinnest film of water at the waterline.
-  alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
-
-  if (sea_ice_possible() && ice > 0.001) {
-    // Small floes near the camera, large ones in the distance, where small
-    // ones would shimmer.
-    let near_weight = 1.0 - smoothstep(300.0, 1500.0, distance);
-    var floes = Floes(0.0, 0.0, vec2<f32>(0.0, 1.0), 0.0);
-
-    if (near_weight > 0.01) {
-      floes = floes_at(in.rest_xz, 40.0, ice, pixel_footprint);
+    // Clouds reflected on the water.
+    if (frame.cloud_params.x > 0.001 && reflected.y > 0.02) {
+      let travel = max(frame.cloud_params.y - position.y, 10.0) / reflected.y;
+      let weather = cloud_weather(position.xz + reflected.xz * travel);
+      // Under a full overcast the deck already is the sky being reflected.
+      let cloud = smoothstep(0.05, 0.6, weather) * saturate(reflected.y * 5.0) * (1.0 - frame.weather2.y);
+      reflection = mix(reflection, (sun_light() * 0.35 + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.3) * frame.cloud_colour.rgb, cloud * 0.8);
     }
 
-    if (near_weight < 0.99) {
-      let far = floes_at(in.rest_xz, 300.0, ice, pixel_footprint);
-      floes = Floes(
-        mix(far.cover, floes.cover, near_weight),
-        mix(far.rim, floes.rim, near_weight),
-        select(far.outward, floes.outward, near_weight > 0.5),
-        mix(far.shade, floes.shade, near_weight)
-      );
+    let shadow = sun_visibility(position, vec3<f32>(0.0, 1.0, 0.0));
+
+    // Sun glitter: GGX with roughness that grows with distance.
+    let roughness = mix(0.05, 0.22, smoothstep(50.0, 3000.0, distance)) + ripple_strength * 0.02;
+    let half_vector = normalize(view + sun);
+    let n_dot_h = saturate(dot(normal, half_vector));
+    let alpha = roughness * roughness;
+    let ggx = alpha * alpha / (PI * pow(n_dot_h * n_dot_h * (alpha * alpha - 1.0) + 1.0, 2.0));
+    // The sun's glint needs the sun's disc; an overcast deck hides it.
+    let glint = (1.0 - frame.weather2.y) * (1.0 - frame.weather2.y);
+    let specular = sun_light() * shadow * ggx * fresnel * saturate(dot(normal, sun)) * 0.9 * glint;
+
+    // Water body: absorption by depth, lit by sky and sun.
+    let clarity = max(frame.water_params.z, 0.1);
+    let absorption = 1.0 - exp(-depth / clarity);
+    let body_colour = mix(srgb_to_linear(frame.water_shallow.rgb), srgb_to_linear(frame.water_deep.rgb), absorption);
+    let body_light = sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.35 + sun_light() * shadow * (0.35 + 0.65 * saturate(sun.y));
+    // Leads between floes are dark: the ice shades the water beneath.
+    var body = body_colour * body_light * 0.55 * (1.0 - ice * 0.5);
+
+    // Light shining through the thin tops of waves.
+    let subsurface = pow(saturate(dot(view, -sun) * 0.5 + 0.5), 3.0) * saturate(crest) * 0.9;
+    body = body + srgb_to_linear(frame.water_shallow.rgb) * sun_light() * shadow * subsurface * 0.35;
+
+    let opacity = saturate(1.0 - exp(-depth / (clarity * 0.45)) + 0.08);
+    let reflectivity = clamp(0.55 + frame.water_params.y * 0.9, 0.0, 1.0);
+    let reflect_weight = fresnel * reflectivity;
+    alpha_out = reflect_weight + opacity * (1.0 - reflect_weight);
+    colour = (reflection * reflect_weight + body * opacity * (1.0 - reflect_weight)) / max(alpha_out, 0.001) + specular;
+
+    // Foam: breaking crests, shorelines (bands that roll in towards the
+    // beach), and fast-flowing rapids.
+    let foam_strength = frame.water_params.w;
+    var foam = 0.0;
+
+    if (in.kind == 0) {
+      let breaking = smoothstep(0.55, 0.15, jacobian) * foam_texel;
+      let swell = max(frame.wave_params.x, 0.2);
+      let surf_zone = 1.0 - smoothstep(0.0, 1.2 + swell * 1.5, depth);
+      let bands = pow(saturate(sin(depth * 2.2 - t * 1.6) * 0.5 + 0.5), 3.0);
+      foam = max(breaking, surf_zone * mix(0.35, 1.0, bands) * shore_foam_texel * 1.6);
+    } else {
+      let edge = 1.0 - smoothstep(0.0, 0.8, depth);
+      foam = max(edge * shore_foam_texel * 0.8, smoothstep(1.6, 3.5, flow_speed) * foam_texel);
     }
 
-    if (floes.cover > 0.001) {
-      // Snow-covered floes, some bare and blue-grey, lit like snow on the
-      // ground, with rounded, bevelled rims.
-      let tilt = floes.outward * floes.rim * 0.55;
-      let ice_normal = normalize(vec3<f32>(tilt.x, 1.0, tilt.y));
-      let albedo = mix(vec3<f32>(0.8, 0.84, 0.9), vec3<f32>(0.5, 0.58, 0.66), floes.shade * 0.55 + floes.rim * 0.2);
-      let ice_colour = shade_surface(albedo, ice_normal, position, 1.0 - floes.rim * 0.25, 0.35 * 0.55 + 0.25, 0.45);
-      colour = mix(colour, ice_colour, floes.cover);
-      alpha_out = mix(alpha_out, 1.0, floes.cover);
+    foam = saturate(foam * foam_strength * (1.0 - smoothstep(400.0, 2500.0, distance) * 0.7)) * (1.0 - ice);
+    let foam_colour = vec3<f32>(0.9) * (sun_light() * shadow * saturate(sun.y + 0.2) + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.4) / PI * 2.2;
+    colour = mix(colour, foam_colour, foam);
+    alpha_out = max(alpha_out, foam);
+
+    // Soften river ribbon edges where they meet the bank.
+    if (in.kind == 1) {
+      alpha_out = alpha_out * (1.0 - smoothstep(0.75, 1.0, abs(in.across)));
     }
+
+    // Fade out the thinnest film of water at the waterline.
+    alpha_out = alpha_out * smoothstep(0.0, 0.12, depth + select(0.0, 0.1, in.kind == 0));
+  }
+
+  // Floes over grey slush, so their soft edges blend into slush, never
+  // into a line of open water. Both are shaded in one go.
+  if (solid > 0.001) {
+    let share = floes.cover / solid;
+    // Snow-covered floes, some bare and blue-grey under thin snow, with
+    // rounded, bevelled rims and bright pressure ridges.
+    let tilt = (floes.outward * floes.rim * 0.55 - floes.ridge_side * floes.ridge * 0.6) * share;
+    let ice_normal = normalize(vec3<f32>(tilt.x, 1.0, tilt.y));
+    var albedo = mix(vec3<f32>(0.8, 0.84, 0.9) * (0.74 + floes.shade * 0.12 + floes.grain * 0.2), vec3<f32>(0.62, 0.72, 0.78) * 0.8, floes.bare);
+    albedo = mix(albedo, vec3<f32>(0.9, 0.93, 0.97), floes.ridge);
+    // Light scattered in the snow comes out blue on the shadowed side.
+    albedo = albedo * mix(vec3<f32>(1.0), vec3<f32>(0.86, 0.93, 1.06), (1.0 - saturate(dot(ice_normal, sun))) * 0.6);
+    // Slush is matt and grey, with no glint.
+    albedo = mix(vec3<f32>(0.4, 0.43, 0.46), albedo, share);
+    let ice_colour = shade_surface(albedo, ice_normal, position, 1.0 - floes.rim * 0.25 * share, (0.3 + floes.bare * 0.3) * share, mix(0.9, 0.45, share));
+    colour = mix(colour, ice_colour, solid);
+    alpha_out = mix(alpha_out, 1.0, solid);
   }
 
   colour = apply_fog(colour, position, in.clip_position.xy);

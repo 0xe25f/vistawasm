@@ -6,8 +6,8 @@
 //
 // The terrain is a fixed heightmap (`fixed-512.f32.gz`, 512 x 512 float32
 // samples at 12 m), loaded with `loadRawHeightmap`, so generator changes
-// do not change the scene. The scene is drawn clear and then in rain with
-// lens drops. Each prints `gpuPassTimesMs` averaged over 6 frames, after 3
+// do not change the scene. The scene is drawn clear, then in rain with
+// lens drops, then at -18 °C looking out over pack ice. Each prints `gpuPassTimesMs` averaged over 6 frames, after 3
 // warm-up frames. Software rendering makes absolute times meaningless;
 // compare passes between runs on the same machine.
 //
@@ -53,6 +53,13 @@ const scenes = {
       lensDrops: true,
       lensDropCount: 120
     }
+  },
+  // Pack ice on the open sea, far enough past the map edge that nothing
+  // but sea ice is on screen.
+  ice: {
+    setWeather: { enabled: false },
+    setBiomes: { meanTemperatureCelsius: -18 },
+    setCamera: { ...camera, position: [9000, 900, 400], target: [13000, 0, 1200] }
   }
 };
 const writeHeightmap = process.argv.includes("--write-heightmap");

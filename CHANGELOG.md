@@ -180,6 +180,13 @@ for changed defaults.
   and 12 m, alpine maps now reach p99 heights of 1,500 m and more with
   snowy peaks on every seed, fjords 1,100 m and more, and continental
   maps peak between 900 and 1,400 m.
+- **Sea ice looks like pack ice, not floor tiles.** The single mosaic of
+  equal plates is replaced by floes at three scales (600 m, 120 m and
+  25 m), so their sizes span orders of magnitude, with rounded, irregular
+  edges; long leads of open water that meander across the sea and close
+  up as the pack tightens; pressure ridges along some floe boundaries;
+  grey slush between floes in a close pack; and white, blue-grey and
+  thinly snowed floes. Open water under solid ice is no longer shaded.
 - Terrain deep under opaque water skips its shading, since the water
   hides it; the terrain pass is about 5 % faster in the fixed test scene.
 - Generated maps are ringed by sea by default (`edges: "coast"`), for

@@ -185,9 +185,10 @@ ones.
 
 ### Performance gate
 
-`scripts/visual-check/fixed-scene.mjs` renders one fixed scene, clear and
-then in rain with lens drops, and prints the GPU time of every pass,
-averaged over 6 frames after 3 warm-up frames:
+`scripts/visual-check/fixed-scene.mjs` renders one fixed scene clear,
+then in rain with lens drops, then at -18 °C looking out over pack ice,
+and prints the GPU time of every pass, averaged over 6 frames after 3
+warm-up frames:
 
 ```bash
 node scripts/visual-check/fixed-scene.mjs          # add out.png to save the frames

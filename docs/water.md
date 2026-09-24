@@ -118,13 +118,24 @@ it, from the sea-level mean of `BiomeOptions.meanTemperatureCelsius` and
 `temperatureBias`. Where the climate is colder than -10 °C, fast ice is
 frozen solid to the shore for 200 m out.
 
-- **Floes** are cells about 40 m across near the camera, blending into
-    300 m cells in the distance, where small ones would shimmer. They
-    drift with the weather's wind at 2 % of its speed.
-- **Shading.** Floes are snow-white to blue-grey, lit like snow on the
-    ground, with rounded, bevelled rims. The water in the leads between
-    them is dark.
+- **Floes** come in three sizes: big floes about 600 m across, broken by
+    a 120 m scale into bays, cracks and loose pieces, with 25 m cakes in
+    the gaps. Their edges are rounded and irregular. Beyond 1.5 to 3 km
+    the cakes fade out, and beyond 4 to 8 km the middle scale, so distant
+    ice does not shimmer. The pack drifts with the weather's wind at 2 %
+    of its speed.
+- **Leads** are long, narrow cracks of open water, 5 to 40 m wide, that
+    meander across the sea. They grow fewer and narrower as the pack
+    closes up.
+- **Pressure ridges** run along some floe boundaries as thin, bright,
+    raised lines.
+- **Slush.** In a close pack, grey brash and grease ice fills the gaps
+    between floes, matt and without glint.
+- **Shading.** Floes are snow-white with a blue shadow side, lit like
+    snow on the ground, with bevelled rims. About one in five carries only
+    thin, patchy snow over blue-grey ice. The water in the leads is dark.
 - **Calm.** Waves, ripples, and foam die down as the concentration rises.
+    Where the ice is solid, the water beneath is not shaded at all.
 
 Sea ice only forms on the ocean, not on rivers or lakes. A map whose sea
 never freezes pays nothing for it.

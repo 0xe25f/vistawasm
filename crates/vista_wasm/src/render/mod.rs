@@ -16,3 +16,6 @@ pub mod terrain_mesh;
 pub mod textures;
 pub mod tree_models;
 pub mod water;
+
+#[cfg(test)]
+mod pack_ice_tests;
