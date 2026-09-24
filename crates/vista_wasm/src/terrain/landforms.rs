@@ -42,6 +42,15 @@ pub struct Landform {
   pub coastal_cliffs: bool,
   /// Strength of glacial carving, 0 to 1.
   pub glacial: f32,
+  /// How high a range may stand, as a fraction of its wavelength: the
+  /// steepness the landform's rock and climate hold. Glacier-carved alpine
+  /// and fjord ranges stand steepest; real 6 km alpine valleys hold 1,500
+  /// to 2,200 m of relief.
+  pub steepness: f32,
+  /// Height of the block the range belt stands on, as a fraction of the
+  /// mountain relief. Real ranges rise from high ground: alpine valley
+  /// floors lie hundreds of metres up, and the peaks stand above them.
+  pub massif: f32,
 }
 
 impl Landform {
@@ -64,10 +73,16 @@ impl Landform {
       terrace: 0.0,
       coastal_cliffs: false,
       glacial: 0.0,
+      massif: 0.0,
+      steepness: 0.35,
     };
 
     match kind {
-      LandformKind::Continental => base,
+      LandformKind::Continental => Self {
+        massif: 1.0,
+        talus_angle_degrees: 47.0,
+        ..base
+      },
       LandformKind::Alpine => Self {
         land_fraction: 0.95,
         continent_wavelength: 50_000.0,
@@ -83,6 +98,8 @@ impl Landform {
         talus_angle_degrees: 42.0,
         rain: 1.2,
         glacial: 0.4,
+        massif: 0.65,
+        steepness: 0.55,
         ..base
       },
       LandformKind::RollingHills => Self {
@@ -98,6 +115,7 @@ impl Landform {
         plains_roughness: 0.12,
         mountain_roughness: 0.4,
         talus_angle_degrees: 30.0,
+        steepness: 0.25,
         ..base
       },
       LandformKind::Archipelago => Self {
@@ -112,6 +130,7 @@ impl Landform {
         talus_angle_degrees: 36.0,
         rain: 1.2,
         coastal_cliffs: false,
+        steepness: 0.4,
         ..base
       },
       LandformKind::MesaDesert => Self {
@@ -129,6 +148,7 @@ impl Landform {
         talus_angle_degrees: 42.0,
         rain: 0.35,
         terrace: 0.7,
+        steepness: 0.3,
         ..base
       },
       LandformKind::Fjords => Self {
@@ -143,10 +163,12 @@ impl Landform {
         hillslope_diffusion: 0.06,
         plains_roughness: 0.1,
         mountain_roughness: 1.1,
-        talus_angle_degrees: 44.0,
+        talus_angle_degrees: 46.0,
         rain: 1.3,
         coastal_cliffs: true,
         glacial: 1.0,
+        massif: 0.8,
+        steepness: 0.55,
         ..base
       },
       LandformKind::VolcanicIsland => Self {
@@ -162,6 +184,7 @@ impl Landform {
         talus_angle_degrees: 36.0,
         rain: 1.2,
         coastal_cliffs: true,
+        steepness: 0.4,
         ..base
       },
     }
@@ -171,9 +194,9 @@ impl Landform {
   ///
   /// Continents are at most 1.5 x the extent and ranges at most 0.6 x,
   /// so a small map still holds a coastline and a whole range. Relief is
-  /// capped by feature width (ranges at a quarter of their wavelength,
-  /// lowlands at a fortieth of the continent wavelength), which keeps the
-  /// mean slope of a shrunken range near 25 degrees instead of letting
+  /// capped by feature width (ranges at [`Landform::steepness`] of their
+  /// wavelength, lowlands at a fortieth of the continent wavelength), so
+  /// a shrunken range keeps a plausible slope instead of letting
   /// full-size relief stand on a small footprint.
   pub fn for_extent(kind: LandformKind, extent: f32) -> Self {
     let preset = Self::preset(kind);
@@ -183,7 +206,9 @@ impl Landform {
     Self {
       continent_wavelength,
       range_wavelength,
-      mountain_relief: preset.mountain_relief.min(range_wavelength * 0.25),
+      mountain_relief: preset
+        .mountain_relief
+        .min(range_wavelength * preset.steepness),
       lowland_relief: preset.lowland_relief.min(continent_wavelength / 40.0),
       sea_floor: preset.sea_floor.max(-continent_wavelength / 40.0),
       ..preset
@@ -240,6 +265,7 @@ mod tests {
         "{kind:?}"
       );
       assert!((0.0..=1.0).contains(&preset.glacial), "{kind:?}");
+      assert!((0.0..=1.0).contains(&preset.massif), "{kind:?}");
       assert!(preset.sea_floor < 0.0, "{kind:?}");
       assert!(preset.talus_angle_degrees > 0.0 && preset.talus_angle_degrees < 90.0);
     }
@@ -250,7 +276,25 @@ mod tests {
     let small = Landform::for_extent(LandformKind::Alpine, 3000.0);
     assert!(small.continent_wavelength <= 4500.5);
     assert!(small.range_wavelength <= 1800.5);
-    assert!(small.mountain_relief <= 450.5);
+    // Alpine ranges stand at most 0.55 of their wavelength.
+    assert!(small.mountain_relief <= 990.5);
+
+    // A 6 km map holds real alpine relief; a 3 km map proportionally less.
+    let default = Landform::for_extent(LandformKind::Alpine, 6132.0);
+    assert!(default.mountain_relief > 2000.0);
+    assert!(small.mountain_relief / default.mountain_relief < 0.5);
+
+    for kind in ALL {
+      let fitted = Landform::for_extent(kind, 6132.0);
+      assert!(
+        fitted.mountain_relief <= fitted.range_wavelength * Landform::preset(kind).steepness + 0.5
+      );
+    }
+
+    assert!(
+      Landform::preset(LandformKind::Continental).steepness
+        < Landform::preset(LandformKind::Fjords).steepness
+    );
 
     let large = Landform::for_extent(LandformKind::Alpine, 100_000.0);
     assert_eq!(large, Landform::preset(LandformKind::Alpine));

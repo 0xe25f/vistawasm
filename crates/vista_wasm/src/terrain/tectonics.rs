@@ -32,6 +32,9 @@ pub struct Tectonics {
   pub lowland: Vec<f64>,
   /// Uplift, 0 to 1, where 1 is the crest of a fully raised range.
   pub uplift: Vec<f32>,
+  /// The block the range belt stands on, 0 to 1 of its full height (see
+  /// [`Landform::massif`]).
+  pub massif: Vec<f32>,
   /// Whether each sample is land.
   pub land: Vec<bool>,
   /// The noise seed shared by later stages.
@@ -319,11 +322,12 @@ pub fn tectonic_base(
     // tracing a rounded square.
     let low = raw.iter().copied().fold(f32::INFINITY, f32::min);
     let range = raw.iter().copied().fold(low, f32::max) - low;
-    // Islands in an open sea sink whole and keep their shapes, rather than
-    // flattening into low domes; land that fills most of the map flattens
-    // into a coastal plain, since sinking it would leave its ranges
-    // standing at the edge.
-    let sparse = landform.land_fraction < 0.5;
+    // Islands in an open sea, and land that meets the sea in cliffs, sink
+    // whole and keep their shapes, rather than flattening into low domes or
+    // coastal plains; other land that fills most of the map flattens into
+    // a coastal plain, since sinking it would leave its ranges standing at
+    // the edge.
+    let sparse = landform.land_fraction < 0.5 || landform.coastal_cliffs;
     let rim = (extent * COAST_RIM).max(COAST_RIM_MIN);
     let scale = 6.0 / extent;
     // Land that fills the map leaves too little sea for deep bays, so the
@@ -386,6 +390,17 @@ pub fn tectonic_base(
     .filter_map(|(d, is_land)| is_land.then_some(*d))
     .fold(spacing, f32::max);
 
+  // Range belts lie within the landmass rather than along its shores, so
+  // they stand where the land is wide enough to hold them. Ranges that
+  // cover nearly all the land have no choice of where to lie.
+  let inland_bias = 2.7 * (1.0 - landform.range_coverage);
+
+  for ((value, d), is_land) in mask_noise.iter_mut().zip(&coast_distance).zip(&land) {
+    if *is_land {
+      *value += inland_bias * d / max_inland;
+    }
+  }
+
   let land_mask: Vec<f32> = mask_noise
     .iter()
     .zip(&land)
@@ -399,6 +414,13 @@ pub fn tectonic_base(
   let mut elevation = vec![0.0f64; count];
   let mut lowlands = vec![0.0f64; count];
   let mut uplift = vec![0.0f32; count];
+  let mut massif = vec![0.0f32; count];
+  // The block rises from the coast over a third of the map, or over the
+  // whole width of narrower land, and stands no higher than half that
+  // width, so it adds to the ranges without becoming one great cone.
+  let massif_ramp = (extent / 3.0).min(max_inland);
+  let massif_cap =
+    (0.6 * massif_ramp / (landform.massif * landform.mountain_relief).max(1.0)).min(1.0);
 
   for i in 0..count {
     let d = coast_distance[i];
@@ -438,6 +460,14 @@ pub fn tectonic_base(
       smoothstep(mask_threshold - 0.08, mask_threshold + 0.08, mask_noise[i])
     };
     let mut raised = ranges[i] * mask * fade;
+    // The range belt stands on a broad block, softer-edged than the ranges
+    // themselves (see `Landform::massif`).
+    let belt = if landform.range_coverage >= 1.0 {
+      1.0
+    } else {
+      smoothstep(mask_threshold - 0.3, mask_threshold + 0.1, mask_noise[i])
+    };
+    massif[i] = belt * smoothstep(0.0, massif_ramp, d) * massif_cap;
 
     if volcanic {
       raised = (raised * 0.3).max(cone[i]);
@@ -454,6 +484,7 @@ pub fn tectonic_base(
     elevation,
     lowland: lowlands,
     uplift,
+    massif,
     land,
     seed,
     summit: ((summit.0 + half) / spacing, (summit.1 + half) / spacing),

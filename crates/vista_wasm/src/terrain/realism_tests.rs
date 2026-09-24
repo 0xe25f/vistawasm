@@ -469,17 +469,19 @@ fn height_hash(map: &HeightMap) -> u64 {
 }
 
 #[test]
-fn open_edges_keep_the_heights_of_before_coasts() {
-  // Hashes of 128 x 128 maps at 12 m, seed 7, "high" erosion, made by the
-  // generator before `edges` existed.
+fn open_edges_are_pinned_bit_for_bit() {
+  // Hashes of 128 x 128 maps at 12 m, seed 7, "high" erosion. Rolling
+  // hills, which has no ranges, is the generator's output from before
+  // `edges` existed; the others were recorded when ranges were raised to
+  // real relief, and pin it since.
   let expected = [
-    (LandformKind::Continental, 0xb8c8_8f20_c737_dfd9),
-    (LandformKind::Alpine, 0xc937_f79f_32cb_b5dd),
+    (LandformKind::Continental, 0x2777_7cc4_0099_c7cf),
+    (LandformKind::Alpine, 0xf9a0_06c8_6bbd_7581),
     (LandformKind::RollingHills, 0x615d_6e68_97e4_838b),
-    (LandformKind::Archipelago, 0x9a82_82cf_1777_c0c7),
-    (LandformKind::MesaDesert, 0x6aed_073e_68b1_7658),
-    (LandformKind::Fjords, 0x302a_2199_75b4_f3ce),
-    (LandformKind::VolcanicIsland, 0x9815_591c_b9e6_9b19),
+    (LandformKind::Archipelago, 0x33db_44b0_ae46_d738),
+    (LandformKind::MesaDesert, 0xe62f_c432_b961_b6e7),
+    (LandformKind::Fjords, 0xe36d_af8b_de90_6ba7),
+    (LandformKind::VolcanicIsland, 0x80d3_8cc4_458f_31d3),
   ];
 
   for (landform, hash) in expected {
@@ -491,4 +493,103 @@ fn open_edges_keep_the_heights_of_before_coasts() {
     let map = generate_fractal_heightmap(&options).unwrap();
     assert_eq!(height_hash(&map), hash, "{landform:?}");
   }
+}
+
+/// Maps of the size people make: 512 x 512 at 12 m, seeds 1 to 12, for
+/// the relief targets, with `"preview"` erosion, which barely moves the
+/// highest ground.
+fn relief_samples() -> &'static [Sample] {
+  static SAMPLES: OnceLock<Vec<Sample>> = OnceLock::new();
+
+  SAMPLES.get_or_init(|| {
+    let jobs: Vec<FractalTerrainOptions> = [
+      LandformKind::Alpine,
+      LandformKind::Fjords,
+      LandformKind::Continental,
+    ]
+    .iter()
+    .flat_map(|landform| {
+      SEEDS.map(move |seed| FractalTerrainOptions {
+        size: 512,
+        erosion: Some(ErosionOptions {
+          quality: Some(ErosionQuality::Preview),
+          ..ErosionOptions::default()
+        }),
+        ..options(*landform, seed)
+      })
+    })
+    .collect();
+    let threads = std::thread::available_parallelism()
+      .map_or(2, |n| n.get())
+      .min(8);
+    let chunk = jobs.len().div_ceil(threads);
+
+    std::thread::scope(|scope| {
+      let handles: Vec<_> = jobs
+        .chunks(chunk)
+        .map(|jobs| {
+          scope.spawn(move || {
+            jobs
+              .iter()
+              .map(|options| Sample {
+                landform: options.landform,
+                seed: options.seed,
+                map: generate_fractal_heightmap(options).unwrap(),
+              })
+              .collect::<Vec<_>>()
+          })
+        })
+        .collect();
+
+      handles
+        .into_iter()
+        .flat_map(|handle| handle.join().unwrap())
+        .collect()
+    })
+  })
+}
+
+#[test]
+fn ranges_stand_as_high_as_real_ones() {
+  use crate::render::terrain_mesh::bake_terrain_shading;
+  use vista_types::{BiomeKind, BiomeOptions};
+
+  let mut failures = Failures::default();
+
+  for sample in relief_samples() {
+    let map = &sample.map;
+    let sea = map.metadata.sea_level_metres;
+    let mut land: Vec<f32> = map.heights.iter().copied().filter(|h| *h > sea).collect();
+    land.sort_by(|a, b| a.total_cmp(b));
+    let p99 = land[land.len() * 99 / 100] - sea;
+    let max = land[land.len() - 1] - sea;
+    println!(
+      "relief {}: max {max:.0} m, p99 {p99:.0} m",
+      describe(sample)
+    );
+
+    match sample.landform {
+      LandformKind::Alpine => {
+        failures.check(p99 >= 1500.0, || {
+          format!("{}: p99 {p99} m", describe(sample))
+        });
+        let (_, surface) = bake_terrain_shading(map, &BiomeOptions::default(), None);
+        let snowy = surface.iter().any(|s| {
+          matches!(
+            s.biome_kind(),
+            BiomeKind::LowerSnowyPeaks | BiomeKind::UpperSnowyPeaks
+          )
+        });
+        failures.check(snowy, || format!("{}: no snowy peaks", describe(sample)));
+      }
+      LandformKind::Fjords => failures.check(p99 >= 1100.0, || {
+        format!("{}: p99 {p99} m", describe(sample))
+      }),
+      _ => failures.check((900.0..=1800.0).contains(&max), || {
+        format!("{}: max {max} m", describe(sample))
+      }),
+    }
+  }
+
+  failures.assert_none();
 }

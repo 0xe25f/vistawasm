@@ -29,6 +29,12 @@ use crate::terrain::drainage::{
 /// Drainage-area exponent `m` of the stream-power law.
 pub const AREA_EXPONENT: f64 = 0.45;
 
+/// Drainage-area exponent for mountain ranges. Rivers in young, rising
+/// ranges keep steep profiles far downstream (low concavity), which holds
+/// their valleys high between the ridges; with the lowlands' exponent, a
+/// range small enough to fit a map erodes to a few hundred metres.
+pub const RANGE_AREA_EXPONENT: f64 = 0.1;
+
 /// A cell draining only itself, under the strongest uplift, settles this
 /// fraction of the threshold slope above its receiver at erodibility 1.
 /// This sets the erosion rate from the uplift, so relief does not depend
@@ -77,6 +83,9 @@ pub struct StreamPowerOptions {
   pub snowline: f64,
   /// Steepest hillslope, as a gradient (rise over run).
   pub threshold_slope: f64,
+  /// Drainage-area exponent `m` ([`AREA_EXPONENT`] or
+  /// [`RANGE_AREA_EXPONENT`]).
+  pub area_exponent: f64,
   /// The 99th percentile of land height to rescale to, in metres, or 0
   /// to keep the raw steady-state heights.
   pub target_relief: f64,
@@ -125,7 +134,7 @@ pub fn stream_power(
   // `(area / cell area)^m` for every possible cell count, since areas are
   // whole numbers of cells and `powf` dominates the solve otherwise.
   let area_power: Vec<f64> = (0..=count)
-    .map(|cells| (cells as f64).powf(AREA_EXPONENT))
+    .map(|cells| (cells as f64).powf(options.area_exponent))
     .collect();
 
   for iteration in 0..options.iterations.max(1) {
@@ -186,7 +195,7 @@ pub fn stream_power(
 
     if !land.is_empty() {
       let index = (land.len() * 99 / 100).min(land.len() - 1);
-      let high = *land.select_nth_unstable_by(index, |a, b| a.total_cmp(b)).1;
+      let high = nth_value(&mut land, index);
 
       if high > 1.0 {
         let scale = options.target_relief / high;
@@ -305,6 +314,27 @@ pub fn stream_power_coarse_to_fine(
       ..*options
     },
   )
+}
+
+/// The value that would sit at `index` if `values` were sorted. One shared
+/// copy, since each call site would otherwise build its own selection.
+#[inline(never)]
+pub fn nth_value(values: &mut [f64], index: usize) -> f64 {
+  *values
+    .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
+    .1
+}
+
+/// The 99th percentile of the positive `values`, or 0 when there are none.
+pub fn positive_p99(values: &[f64]) -> f64 {
+  let mut raised: Vec<f64> = values.iter().copied().filter(|v| *v > 0.0).collect();
+  let index = raised.len() * 99 / 100;
+
+  if index < raised.len() {
+    nth_value(&mut raised, index)
+  } else {
+    0.0
+  }
 }
 
 /// Bilinearly resample a square grid of `from` samples per side onto one
@@ -572,6 +602,9 @@ pub fn plane_valley_floors(
   let cell_area = (spacing * spacing) as f32;
   let widest = spacing * (4.0 + 2.0 * glacial);
   let mut floor = vec![f64::INFINITY; count];
+  // How far each floor is over-deepened below the level its walls rise
+  // from.
+  let mut trough = vec![0.0f64; count];
   let mut heap = BinaryHeap::new();
   let largest = area.iter().cloned().fold(cell_area, f32::max);
   let log_largest = ((largest / cell_area) as f64).ln().max(1.0);
@@ -581,13 +614,15 @@ pub fn plane_valley_floors(
       let flux = ((area[i] / cell_area) as f64).ln() / log_largest;
       let ice = glacial * smooth(0.3, 0.8, flux);
       let width = (FLOODPLAIN_WIDTH * (area[i] as f64).sqrt() * (1.0 + ice)).min(widest);
-      let level = heights[i] - deepening * ice * smooth(0.45, 0.9, flux);
+      let level = heights[i];
       floor[i] = level;
+      trough[i] = deepening * ice * smooth(0.45, 0.9, flux);
       heap.push(FloorCell {
         floor: -level,
         index: i as u32,
         travelled: 0.0,
         width,
+        deepen: trough[i],
       });
     }
   }
@@ -622,11 +657,16 @@ pub fn plane_valley_floors(
 
       if level < floor[n] {
         floor[n] = level;
+        // Ice deepens the trough's flat floor, fading out at its walls;
+        // the walls rise from the undeepened level, so the ridges between
+        // troughs keep their height and the lower walls steepen.
+        trough[n] = cell.deepen * (1.0 - smooth(cell.width * 0.6, cell.width, travelled));
         heap.push(FloorCell {
           floor: -level,
           index: neighbour,
           travelled,
           width: cell.width,
+          deepen: cell.deepen,
         });
       }
     }
@@ -640,7 +680,8 @@ pub fn plane_valley_floors(
   let mut cut: Vec<f64> = heights
     .iter()
     .zip(&floor)
-    .map(|(height, level)| (height - level).max(0.0))
+    .zip(&trough)
+    .map(|((height, level), deeper)| (height - level).max(0.0) + deeper)
     .collect();
   let mut previous = cut.clone();
 
@@ -672,6 +713,7 @@ struct FloorCell {
   index: u32,
   travelled: f64,
   width: f64,
+  deepen: f64,
 }
 
 impl Eq for FloorCell {}
@@ -726,6 +768,7 @@ mod tests {
       glacial: 0.0,
       snowline: 1e9,
       threshold_slope: 0.8,
+      area_exponent: AREA_EXPONENT,
       target_relief: 0.0,
       settling_iterations: SETTLING_ITERATIONS,
       crest_passes: CREST_PASSES,

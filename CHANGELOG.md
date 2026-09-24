@@ -169,6 +169,17 @@ for changed defaults.
   `TerrainShapeOptions` applies in units of the landform's relief.
 - The coast is generated at `seaLevelMetres`, and `verticalScale`
   stretches heights about sea level.
+- **Mountains stand as high as real ones on real map sizes.** Relief was
+  capped at a quarter of a range's width, so on a 6 km map alpine peaks
+  reached 700 to 1,050 m and read as green domes. Each landform now has
+  its own steepness allowance (alpine and fjords 0.55, archipelago and
+  volcanic islands 0.4, continental 0.35, mesa desert 0.3), range belts
+  stand on a massif that stream power carves, lie within the land rather
+  than along its shores, and keep steep river profiles. Glacial troughs
+  are over-deepened without lowering the ridges beside them. At 512 x 512
+  and 12 m, alpine maps now reach p99 heights of 1,500 m and more with
+  snowy peaks on every seed, fjords 1,100 m and more, and continental
+  maps peak between 900 and 1,400 m.
 - Terrain deep under opaque water skips its shading, since the water
   hides it; the terrain pass is about 5 % faster in the fixed test scene.
 - Generated maps are ringed by sea by default (`edges: "coast"`), for

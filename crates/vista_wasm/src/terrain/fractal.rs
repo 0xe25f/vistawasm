@@ -12,8 +12,9 @@ use crate::terrain::heightmap::{update_stats, HeightMap, TerrainAux};
 use crate::terrain::landforms::Landform;
 use crate::terrain::noise::{noise_seed, simplex, simplex_d};
 use crate::terrain::stream_power::{
-  plane_valley_floors, resample, stream_power, stream_power_coarse_to_fine, StreamPowerOptions,
-  AREA_EXPONENT, CREST_PASSES, SETTLING_ITERATIONS,
+  nth_value, plane_valley_floors, positive_p99, resample, stream_power,
+  stream_power_coarse_to_fine, StreamPowerOptions, AREA_EXPONENT, CREST_PASSES,
+  RANGE_AREA_EXPONENT, SETTLING_ITERATIONS,
 };
 use crate::terrain::tectonics::{tectonic_base, Tectonics, COAST_RIM, COAST_RIM_MIN};
 
@@ -134,6 +135,7 @@ pub fn generate_fractal_heightmap_base_with_progress(
       glacial: 0.0,
       snowline: f64::INFINITY,
       threshold_slope,
+      area_exponent: AREA_EXPONENT,
       target_relief: 0.0,
       settling_iterations: SETTLING_ITERATIONS,
       crest_passes: CREST_PASSES,
@@ -144,30 +146,24 @@ pub fn generate_fractal_heightmap_base_with_progress(
   // Ranges reach the steady state between uplift and erosion, standing on
   // the lowlands: anywhere without uplift is their base level.
   let mountain_relief = landform.mountain_relief as f64;
+  // The belt's block is carved with the ranges: real ranges rise from
+  // high ground, and their valleys are cut into it.
   let mut mountains: Vec<f64> = base
     .uplift
     .iter()
-    .map(|u| {
-      if *u > 0.02 {
-        *u as f64 * mountain_relief
+    .zip(&base.massif)
+    .map(|(u, block)| {
+      let u = *u + *block * landform.massif;
+
+      if u > 0.02 {
+        u as f64 * mountain_relief
       } else {
         0.0
       }
     })
     .collect();
   let uplift: Vec<f64> = mountains.iter().map(|m| m * 0.1).collect();
-  let target_relief = {
-    let mut raised: Vec<f64> = mountains.iter().copied().filter(|m| *m > 0.0).collect();
-    let index = raised.len() * 99 / 100;
-
-    if index < raised.len() {
-      *raised
-        .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
-        .1
-    } else {
-      0.0
-    }
-  };
+  let target_relief = positive_p99(&mountains);
 
   if target_relief > 0.0 {
     let snowline = landform.lowland_relief as f64 * 0.5 + 0.3 * mountain_relief;
@@ -185,11 +181,23 @@ pub fn generate_fractal_heightmap_base_with_progress(
         glacial: landform.glacial as f64,
         snowline: snowline.max(1.0),
         threshold_slope,
+        area_exponent: RANGE_AREA_EXPONENT,
         target_relief,
         settling_iterations: SETTLING_ITERATIONS,
         crest_passes: CREST_PASSES,
       },
     );
+  }
+  // Holding hillslopes at the threshold cuts the solved ranges well below
+  // the relief the landform allows; raise them part of the way back. This
+  // keeps every ridge and valley, steepening the hillslopes by at most a
+  // quarter.
+  if target_relief > 0.0 {
+    let scale = (0.8 * target_relief / positive_p99(&mountains).max(1.0)).clamp(1.0, 1.25);
+
+    for mountain in &mut mountains {
+      *mountain *= scale;
+    }
   }
 
   for (height, mountain) in coarse.iter_mut().zip(&mountains) {
@@ -218,7 +226,6 @@ pub fn generate_fractal_heightmap_base_with_progress(
   }
 
   progress("drainage", 1.0);
-
   // Stage C: full-resolution detail.
   progress("detail", 0.0);
   let mut heights = add_detail(options, &landform, &base, &coarse);
@@ -632,9 +639,7 @@ fn relevel_sea(heights: &mut [f64], land_fraction: f32) {
 
   let mut sorted = heights.to_vec();
   let index = ((sorted.len() as f32 * (1.0 - land_fraction)) as usize).min(sorted.len() - 1);
-  let shift = *sorted
-    .select_nth_unstable_by(index, |a, b| a.total_cmp(b))
-    .1;
+  let shift = nth_value(&mut sorted, index);
 
   for height in heights.iter_mut() {
     *height -= shift;

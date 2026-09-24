@@ -59,8 +59,11 @@ detail, then erosion. It runs in four stages:
     `landform.landFraction` of the map is land. With `edges: "coast"`
     they first sink into the sea over a rim at the border (see
     [Map edges](#map-edges)). Mountain ranges are an
-    uplift field of warped ridged noise, confined to part of the land and
-    faded in from the coast.
+    uplift field of warped ridged noise, confined to a belt within the land
+    and faded in from the coast. `"continental"`, `"alpine"` and
+    `"fjords"` belts also stand on a broad massif that rises from the
+    coast, so their valleys lie high, as in real mountain ranges; stream
+    power carves the massif together with the ranges.
 2. **Drainage** (`terrain/stream_power.rs`, coarse grid). An implicit
     stream-power solver (Braun and Willett, 2013) carves the ranges until
     erosion balances uplift, which leaves a dendritic valley network with
@@ -135,7 +138,13 @@ whether ice carves the valleys.
 Features have a real size in metres, so a larger map holds more of them.
 On a small map, continents shrink to at most 1.5 times the map's width and
 ranges to at most 0.6 times, and relief shrinks with them, so a small map
-still holds a coherent coast and range.
+still holds a coherent coast and range. Each landform's ranges stand at
+most a set fraction of their width (see
+[`docs/options-reference.md`](options-reference.md#landformkind)): on a
+512 x 512 map at 12 m, alpine ranges rise to 1,500 to 2,000 m with snowy
+peaks, and fjord walls to 1,100 to 1,700 m. On a map that small and ringed
+by sea, an alpine map forms one high massif, cut by glacial valleys and
+cirque lakes, rather than several separate ranges.
 
 ![Continental landform](images/landform-continental.jpg)
 

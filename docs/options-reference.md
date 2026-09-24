@@ -371,8 +371,13 @@ must be greater than 0.
 | `"fjords"` | 75 % | up to 1600 m | Flooded U-shaped glacial valleys. |
 | `"volcanicIsland"` | 30 % | a 1500 m cone | Crater lake, radial gullies and a reef shelf. |
 
-Relief shrinks on maps too small to hold a full range: ranges stand at most
-a quarter of their wavelength, which is at most 0.6 times the map's width.
+Relief shrinks on maps too small to hold a full range. A range stands at
+most a set fraction of its wavelength (which is itself at most 0.6 times
+the map's width): 0.55 for `"alpine"` and `"fjords"`, 0.4 for
+`"archipelago"` and `"volcanicIsland"`, 0.35 for `"continental"` and 0.3
+for `"mesaDesert"`. On a 512 x 512 map at 12 m (6.1 km across), alpine
+ranges reach 1,500 to 2,000 m, fjords 1,100 to 1,700 m, and continental
+ranges 900 to 1,400 m.
 
 ### `NoiseOptions`
 
@@ -406,7 +411,7 @@ follow `quality`.
 | `rainAmount` | `number?` | `0.02` × landform rain | Rain per iteration, 0 to 1. |
 | `evaporation` | `number?` | `0.5` | Water loss per iteration, 0 to 1. |
 | `sedimentCapacity` | `number?` | `0.04` | How much sediment water can carry, 0 to 1. |
-| `talusAngleDegrees` | `number?` | the landform's (30 to 44) | Slope above which thermal erosion moves material, 1 to 89. |
+| `talusAngleDegrees` | `number?` | the landform's (30 to 47) | Slope above which thermal erosion moves material, 1 to 89. |
 | `quality` | `"preview" \| "balanced" \| "high" \| "offline"?` | `"preview"` | Default iterations 60/30, 120/60, 200/100 or 400/200 (hydraulic/thermal); caps 120, 240, 400 or 5000. |
 
 Erosion runs as GPU compute passes on browser builds (CPU fallback on any
