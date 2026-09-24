@@ -36,6 +36,8 @@ pub struct Tectonics {
   pub land: Vec<bool>,
   /// The noise seed shared by later stages.
   pub seed: u64,
+  /// Where a volcanic island's summit stands, in coarse grid samples.
+  pub summit: (f32, f32),
 }
 
 /// `1 - (1 - t)^2` on [0, 1]: rises with slope 2 from zero, so coasts
@@ -170,6 +172,12 @@ pub fn tectonic_base(
   let volcanic = kind == LandformKind::VolcanicIsland;
   // The radius of a round island with the requested land fraction.
   let island_radius = (landform.land_fraction * extent * extent / std::f32::consts::PI).sqrt();
+  // A volcanic island's summit sits off centre, and its cone is stretched
+  // along a seeded direction, so islands differ from seed to seed.
+  let unit = |stream: u64| (noise_seed(seed, stream) as f32 / u32::MAX as f32) * 2.0 - 1.0;
+  let summit = (unit(9) * extent * 0.12, unit(10) * extent * 0.12);
+  let stretch_angle = unit(11) * std::f32::consts::PI;
+  let stretch = 1.0 + 0.3 * (unit(12) * 0.5 + 0.5);
 
   let continent_seed = noise_seed(seed, 1);
   let continent_warp_x = noise_seed(seed, 2);
@@ -199,7 +207,11 @@ pub fn tectonic_base(
       let mut continent = fbm(continent_seed, wx, wy, 3, 0.5, 2.0);
 
       if volcanic {
-        let r = (x * x + y * y).sqrt();
+        let (sx, sy) = (x - summit.0, y - summit.1);
+        let (sin, cos) = stretch_angle.sin_cos();
+        let along = (sx * cos + sy * sin) / stretch;
+        let across = -sx * sin + sy * cos;
+        let r = (along * along + across * across).sqrt();
         continent = continent * 0.12 + 1.0 - r / half;
         let profile = (1.0 - r / (island_radius * 1.05)).clamp(0.0, 1.0);
         let lumps = 1.0
@@ -323,6 +335,7 @@ pub fn tectonic_base(
     uplift,
     land,
     seed,
+    summit: ((summit.0 + half) / spacing, (summit.1 + half) / spacing),
   }
 }
 

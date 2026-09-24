@@ -102,7 +102,7 @@ impl Landform {
       },
       LandformKind::Archipelago => Self {
         land_fraction: 0.35,
-        continent_wavelength: 14_000.0,
+        continent_wavelength: 5_000.0,
         range_wavelength: 8_000.0,
         range_coverage: 0.45,
         sea_floor: -120.0,

@@ -201,7 +201,7 @@ pub fn generate_fractal_heightmap_base_with_progress(
   let drainage_area = coarse_drainage_area(base.size, spacing_coarse, &coarse);
 
   if options.landform == LandformKind::VolcanicIsland {
-    carve_caldera(&mut coarse, base.size, &landform);
+    carve_caldera(&mut coarse, base.size, base.summit, &landform);
   }
 
   progress("drainage", 1.0);
@@ -576,15 +576,14 @@ fn coarse_drainage_area(size: u32, spacing: f64, heights: &[f64]) -> Vec<f32> {
 /// Sink a flat-floored caldera into the summit of a volcanic cone. The
 /// floor lies below the lowest point of the rim, so the caldera holds a
 /// crater lake instead of draining through a gully that notches the rim.
-fn carve_caldera(heights: &mut [f64], size: u32, landform: &Landform) {
+fn carve_caldera(heights: &mut [f64], size: u32, summit: (f32, f32), landform: &Landform) {
   let n = size as usize;
-  let centre = (n - 1) as f32 * 0.5;
   let radius =
     ((landform.land_fraction / std::f32::consts::PI).sqrt() * (n - 1) as f32 * 0.22).max(2.0);
   let depth = (landform.mountain_relief * 0.1) as f64;
   let distance = |i: usize| {
-    let dx = (i % n) as f32 - centre;
-    let dy = (i / n) as f32 - centre;
+    let dx = (i % n) as f32 - summit.0;
+    let dy = (i / n) as f32 - summit.1;
     (dx * dx + dy * dy).sqrt() / radius
   };
   let rim = (0..n * n)
