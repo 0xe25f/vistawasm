@@ -381,6 +381,19 @@ pub fn build_centred_mesh_rows(
   // Grid step, in samples, between a vertex and its outward neighbour.
   let step =
     |grid: i64| (band_sample_offset(grid + grid.signum()) - band_sample_offset(grid)).abs();
+  // Where vertices are further apart than the samples, one sample's normal
+  // would alias, and interpolated along the long, thin triangles of the
+  // outer bands it streaks down slopes. So those normals average the
+  // slope over the vertex's own step in each direction: a box filter,
+  // separable because the grid is. Per row: `slope_z` holds prefix sums
+  // along x of the height difference across the row step, and `level`
+  // those of the mean height over it.
+  let columns = width as usize;
+  let (mut up, mut down) = (vec![0.0f32; columns], vec![0.0f32; columns]);
+  let (mut slope_z, mut level) = (vec![0.0f64; columns + 1], vec![0.0f64; columns + 1]);
+  let mean = |sums: &[f64], first: usize, last: usize| {
+    (sums[last + 1] - sums[first]) / (last + 1 - first) as f64
+  };
 
   for sz in rows.start..rows.end.min(samples_per_side) {
     let grid_dz = sz as i64 - half_span;
@@ -388,6 +401,33 @@ pub fn build_centred_mesh_rows(
       .max(-reach)
       .min(height as i64 - 1 + reach);
     let sample_z = offset_z.max(0).min(height as i64 - 1) as u32;
+    let row_step = step(grid_dz).max(1) as usize;
+
+    if offset_z == sample_z as i64 {
+      let row = |r: i64| {
+        let r = r.clamp(0, height as i64 - 1) as usize * columns;
+        &map.heights[r..r + columns]
+      };
+      up.fill(0.0);
+      down.fill(0.0);
+
+      for k in 1..=row_step as i64 {
+        let (above, below) = (row(offset_z + k), row(offset_z - k));
+
+        for x in 0..columns {
+          up[x] += above[x];
+          down[x] += below[x];
+        }
+      }
+
+      let centre_row = row(offset_z);
+
+      for x in 0..columns {
+        slope_z[x + 1] = slope_z[x] + f64::from(up[x] - down[x]) / row_step as f64;
+        level[x + 1] =
+          level[x] + f64::from(up[x] + down[x] + centre_row[x]) / (2 * row_step + 1) as f64;
+      }
+    }
 
     for sx in 0..samples_per_side {
       let grid_dx = sx as i64 - half_span;
@@ -398,34 +438,50 @@ pub fn build_centred_mesh_rows(
       let index = (sample_z * width + sample_x) as usize;
       let world_x = (offset_x as f32 - half_width) * metres_per_sample;
       let world_z = (offset_z as f32 - half_height) * metres_per_sample;
-
-      if offset_x == sample_x as i64 && offset_z == sample_z as i64 {
-        out.push(TerrainVertex::new(
-          [world_x, map.heights[index], world_z],
-          normals[index],
-          &surface[index],
-        ));
-        continue;
-      }
-
+      let inside = offset_x == sample_x as i64 && offset_z == sample_z as i64;
+      let steps = (step(grid_dx).max(1), step(grid_dz).max(1));
+      let ground = |x: f32, z: f32| skirt_ground(map, x, z);
       // Beyond the footprint the vertex keeps its true position on the
       // skirt, rather than collapsing onto the border.
-      let spacing = step(grid_dx).max(step(grid_dz)).max(1) as f32 * metres_per_sample * 0.5;
-      let ground = |x: f32, z: f32| skirt_ground(map, x, z);
-      let height_here = ground(world_x, world_z);
-      let normal = crate::maths::normalise([
-        ground(world_x - spacing, world_z) - ground(world_x + spacing, world_z),
-        2.0 * spacing,
-        ground(world_x, world_z - spacing) - ground(world_x, world_z + spacing),
-      ]);
-      out.push(TerrainVertex::new(
-        [world_x, height_here, world_z],
-        normal,
-        &skirt_surface(
+      let height_here = if inside {
+        map.heights[index]
+      } else {
+        ground(world_x, world_z)
+      };
+      let normal = if inside && steps == (1, 1) {
+        normals[index]
+      } else if inside {
+        let (x, run, last) = (sample_x as usize, steps.0 as usize, columns - 1);
+        let across = mean(&slope_z, x.saturating_sub(run / 2), (x + run / 2).min(last))
+          / (row_step + 1) as f64;
+        let along = (mean(&level, (x + 1).min(last), (x + run).min(last))
+          - mean(&level, x.saturating_sub(run), x.saturating_sub(1)))
+          / (run + 1) as f64;
+        crate::maths::normalise([-along as f32, metres_per_sample, -across as f32])
+      } else {
+        let (x, z) = (
+          steps.0 as f32 * metres_per_sample,
+          steps.1 as f32 * metres_per_sample,
+        );
+        crate::maths::normalise([
+          (ground(world_x - x, world_z) - ground(world_x + x, world_z)) / x,
+          2.0,
+          (ground(world_x, world_z - z) - ground(world_x, world_z + z)) / z,
+        ])
+      };
+      let surface = if inside {
+        surface[index]
+      } else {
+        skirt_surface(
           &surface[index],
           outside_distance(map, world_x, world_z),
           height_here - map.metadata.sea_level_metres,
-        ),
+        )
+      };
+      out.push(TerrainVertex::new(
+        [world_x, height_here, world_z],
+        normal,
+        &surface,
       ));
     }
   }
@@ -532,30 +588,30 @@ fn outside_distance(map: &HeightMap, x: f32, z: f32) -> f32 {
 }
 
 /// The surface of a skirt vertex: the nearest edge sample's, turning to
-/// rock over the first 300 m, and to sand from the waterline down. No
+/// rock over the first 300 m, and to sand from the waterline down. Snow
+/// lying at the edge stays, so a frozen map does not end in bare rock. No
 /// trees or rivers grow on it.
 fn skirt_surface(edge: &SurfaceSample, distance: f32, above_sea: f32) -> SurfaceSample {
-  use crate::terrain::biomes::{MAT_ROCK, MAT_SAND};
+  use crate::terrain::biomes::{MAT_ROCK, MAT_SAND, MAT_SNOW};
 
   let rock = (distance / 300.0).clamp(0.0, 1.0);
   let sand = ((3.0 - above_sea) / 5.0).clamp(0.0, 1.0);
-  let mut materials = [0.0f32; MATERIAL_COUNT];
-
-  for (weight, byte) in materials.iter_mut().zip(edge.materials) {
-    *weight = byte as f32 * (1.0 - rock);
-  }
-
-  materials[MAT_ROCK] += 255.0 * rock;
+  let bare = 255.0 - edge.materials[MAT_SNOW] as f32;
+  let mut materials = edge.materials.map(f32::from);
 
   for (index, weight) in materials.iter_mut().enumerate() {
-    *weight = *weight * (1.0 - sand) + if index == MAT_SAND { 255.0 * sand } else { 0.0 };
+    if index != MAT_SNOW {
+      *weight *= (1.0 - rock) * (1.0 - sand);
+    }
   }
+
+  materials[MAT_ROCK] += bare * rock * (1.0 - sand);
+  materials[MAT_SAND] += bare * sand;
 
   SurfaceSample {
     materials: materials.map(|weight| weight.round() as u8),
     forest: 0,
     river: 0,
-    permanent_snow: (edge.permanent_snow as f32 * (1.0 - rock)) as u8,
     ..*edge
   }
 }
@@ -956,6 +1012,76 @@ mod tests {
 
     let (x, z) = (5.0 * 3.0 - 37.5, 5.0 * 4.0 - 37.5);
     assert!((skirt_ground(&map, x, z) - map.heights[4 * 16 + 3]).abs() < 1e-3);
+  }
+
+  #[test]
+  fn distant_vertices_take_normals_across_their_own_step() {
+    let metadata = TerrainMetadata {
+      metres_per_sample: 10.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(256, 256, 0.0, metadata);
+
+    // Ribs 4 samples apart: a single sample's normal tilts steeply, but
+    // across a 4-sample step the ground is level.
+    for (index, height) in map.heights.iter_mut().enumerate() {
+      *height = 10.0 * ((index % 256) as f32 * std::f32::consts::FRAC_PI_2).sin();
+    }
+
+    let normals = crate::terrain::normals::generate_normals(&map);
+    let surface = vec![SurfaceSample::default(); map.heights.len()];
+    let mesh = build_terrain_mesh_centred(&map, &normals, &surface, 40.0, 128.0, 129);
+    let row = 64 * 129;
+    // Grid step 2 from the centre: sample 42, one sample apart.
+    let near = decode_normal(mesh.vertices[row + 66].normal);
+    // Grid step 50: sample 120, in the band 4 samples apart.
+    let far = decode_normal(mesh.vertices[row + 114].normal);
+
+    assert!(near[1] < 0.9, "{near:?}");
+    assert!(far[1] > 0.999, "{far:?}");
+    assert_eq!(mesh.vertices[row + 114].position[0], (120.0 - 127.5) * 10.0);
+
+    // On a plane the filter changes nothing: a far vertex, 4 samples from
+    // its neighbours in x and 2 in z, keeps the plane's normal.
+    for (index, height) in map.heights.iter_mut().enumerate() {
+      *height = 3.0 * (index % 256) as f32 - 2.0 * (index / 256) as f32;
+    }
+
+    let normals = crate::terrain::normals::generate_normals(&map);
+    let mesh = build_terrain_mesh_centred(&map, &normals, &surface, 20.0, 100.0, 129);
+    let vertex = &mesh.vertices[(64 + 40) * 129 + 64 + 60];
+    let expected = crate::maths::normalise([-0.3, 1.0, 0.2]);
+    let normal = decode_normal(vertex.normal);
+    let dot: f32 = (0..3).map(|k| normal[k] * expected[k]).sum();
+    assert!(dot > 0.9999, "{normal:?}");
+  }
+
+  #[test]
+  fn skirt_turns_to_rock_and_sand_under_the_snow_it_keeps() {
+    use crate::terrain::biomes::{MAT_LUSH_GRASS, MAT_ROCK, MAT_SAND, MAT_SNOW};
+
+    let mut edge = SurfaceSample {
+      permanent_snow: 90,
+      forest: 200,
+      ..SurfaceSample::default()
+    };
+    edge.materials[MAT_LUSH_GRASS] = 155;
+    edge.materials[MAT_SNOW] = 100;
+
+    let near = skirt_surface(&edge, 0.0, 50.0);
+    assert_eq!(near.materials, edge.materials);
+    assert_eq!(near.forest, 0);
+
+    let rocky = skirt_surface(&edge, 300.0, 50.0);
+    assert_eq!(rocky.materials[MAT_ROCK], 155);
+    assert_eq!(rocky.materials[MAT_LUSH_GRASS], 0);
+    assert_eq!(rocky.materials[MAT_SNOW], 100);
+    assert_eq!(rocky.permanent_snow, 90);
+
+    let shore = skirt_surface(&edge, 300.0, -2.0);
+    assert_eq!(shore.materials[MAT_SAND], 155);
+    assert_eq!(shore.materials[MAT_ROCK], 0);
+    assert_eq!(shore.materials[MAT_SNOW], 100);
   }
 
   #[test]

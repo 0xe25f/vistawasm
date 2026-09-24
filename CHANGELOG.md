@@ -250,9 +250,17 @@ for changed defaults.
   cliff, then a flat, pale sheet of shore and foam instead of sea, and
   smeared streaks along the border. Every terrain now continues as a
   skirt that falls from its edge into deep sea over 1.5 km, with its own
-  rock and sand; mesh vertices beyond the edge keep their true places
+  rock and sand under any snow lying at the edge; mesh vertices beyond
+  the edge keep their true places
   instead of collapsing onto the border, and the water takes its depth
   from the skirt.
+- **Snow streaked down distant slopes.** Mesh vertices further apart than
+  the height samples took the normal of a single sample, which aliased
+  and was smeared along the long triangles of the outer mesh bands. Their
+  normals now average the slope over each vertex's own spacing. Snow
+  also turns from top-down to triplanar texturing smoothly as slopes
+  steepen, with no seam, and distant rock, ice and steep snow keep
+  triplanar texturing instead of a single top-down sample.
 - **Raindrops on the lens were cut off** along straight edges. Each pixel
   only looked at the drop of its own screen cell, so drops that overhung
   their cell were sliced flat. Drops are now simulated on the CPU and

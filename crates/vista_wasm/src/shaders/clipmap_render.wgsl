@@ -133,16 +133,79 @@ fn sample_planar(
   return MaterialSample(srgb_to_linear(a.rgb), a.a, n.rg * 2.0 - 1.0, n.b, n.a);
 }
 
-// A single far-scale, top-down sample: the low-detail path for distant
-// terrain.
+// Projection weights for the three world planes (x: ZY, y: XZ, z: XY).
+// Rock and glacier ice take triplanar weights from the geometric normal,
+// as they cover steep slopes, and so does snow as the slope steepens past
+// normal.y 0.9 to 0.7, with no seam where the projection changes. The rest
+// project from above. Near-zero weights are dropped, so flat ground takes
+// one sample, not three.
+fn projection_weights(material: i32, normal: vec3<f32>) -> vec3<f32> {
+  var steep = select(0.0, 1.0, material == MAT_ROCK || material == MAT_ICE);
+
+  if (material == MAT_SNOW) {
+    steep = 1.0 - smoothstep(0.7, 0.9, normal.y);
+  }
+
+  let sharp = pow(abs(normal), vec3<f32>(4.0));
+  let triplanar = sharp / max(sharp.x + sharp.y + sharp.z, 0.0001);
+  let weights = max(mix(vec3<f32>(0.0, 1.0, 0.0), triplanar, steep) - 0.02, vec3<f32>(0.0));
+  return weights / max(weights.x + weights.y + weights.z, 0.0001);
+}
+
+// One material sample at a scale (`inv` is 1 / metres per tile), on the
+// planes of `weights`. Texture gradients are explicit, so skipping planes
+// is safe in any control flow.
+fn sample_projected(
+  material: i32,
+  position: vec3<f32>,
+  ddx_p: vec3<f32>,
+  ddy_p: vec3<f32>,
+  weights: vec3<f32>,
+  inv: f32,
+  offset: vec2<f32>
+) -> MaterialSample {
+  var result = MaterialSample(vec3<f32>(0.0), 0.0, vec2<f32>(0.0), 0.0, 0.0);
+
+  for (var axis = 0; axis < 3; axis = axis + 1) {
+    let w = weights[axis];
+
+    if (w > 0.0) {
+      var uv = position.xz;
+      var du = ddx_p.xz;
+      var dv = ddy_p.xz;
+
+      if (axis == 0) {
+        uv = position.zy;
+        du = ddx_p.zy;
+        dv = ddy_p.zy;
+      } else if (axis == 2) {
+        uv = position.xy;
+        du = ddx_p.xy;
+        dv = ddy_p.xy;
+      }
+
+      let s = sample_planar(material, uv * inv + offset, du * inv, dv * inv);
+      result.albedo = result.albedo + s.albedo * w;
+      result.height = result.height + s.height * w;
+      result.detail = result.detail + s.detail * w;
+      result.occlusion = result.occlusion + s.occlusion * w;
+      result.roughness = result.roughness + s.roughness * w;
+    }
+  }
+
+  return result;
+}
+
+// A single far-scale sample: the low-detail path for distant terrain.
 fn sample_material_far(
   material: i32,
   position: vec3<f32>,
   ddx_p: vec3<f32>,
-  ddy_p: vec3<f32>
+  ddy_p: vec3<f32>,
+  normal: vec3<f32>
 ) -> MaterialSample {
   let far_inv = 1.0 / (material_scale(material) * max(frame.surface.z, 0.01) * 5.3);
-  return sample_planar(material, position.xz * far_inv + vec2<f32>(0.37, 0.61), ddx_p.xz * far_inv, ddy_p.xz * far_inv);
+  return sample_projected(material, position, ddx_p, ddy_p, projection_weights(material, normal), far_inv, vec2<f32>(0.37, 0.61));
 }
 
 // Two scales, cross-faded with distance, so close-up detail never tiles
@@ -155,44 +218,12 @@ fn sample_material(
   normal: vec3<f32>,
   far_blend: f32
 ) -> MaterialSample {
-  let scale = material_scale(material) * max(frame.surface.z, 0.01);
-
-  // Triplanar projection weighted by the geometric normal, for rock and
-  // glacier ice, which cover steep slopes, and for snow clinging to them.
-  if (material == MAT_ROCK || material == MAT_ICE || (material == MAT_SNOW && normal.y < 0.8)) {
-    var weights = pow(abs(normal), vec3<f32>(4.0));
-    weights = weights / max(weights.x + weights.y + weights.z, 0.0001);
-    let inv = 1.0 / scale;
-    let x = sample_planar(material, position.zy * inv, ddx_p.zy * inv, ddy_p.zy * inv);
-    let y = sample_planar(material, position.xz * inv, ddx_p.xz * inv, ddy_p.xz * inv);
-    let z = sample_planar(material, position.xy * inv, ddx_p.xy * inv, ddy_p.xy * inv);
-    var result: MaterialSample;
-    result.albedo = x.albedo * weights.x + y.albedo * weights.y + z.albedo * weights.z;
-    result.height = x.height * weights.x + y.height * weights.y + z.height * weights.z;
-    result.detail = x.detail * (weights.x + weights.z) + y.detail * weights.y;
-    result.occlusion = x.occlusion * weights.x + y.occlusion * weights.y + z.occlusion * weights.z;
-    result.roughness = x.roughness * weights.x + y.roughness * weights.y + z.roughness * weights.z;
-
-    if (far_blend > 0.01) {
-      let far_inv = inv / 5.7;
-      let far = sample_planar(material, position.xz * far_inv + vec2<f32>(0.31, 0.73), ddx_p.xz * far_inv, ddy_p.xz * far_inv);
-      result.albedo = mix(result.albedo, far.albedo, far_blend * 0.6);
-    }
-
-    return result;
-  }
-
-  let inv = 1.0 / scale;
-  var near = sample_planar(material, position.xz * inv, ddx_p.xz * inv, ddy_p.xz * inv);
+  let inv = 1.0 / (material_scale(material) * max(frame.surface.z, 0.01));
+  let weights = projection_weights(material, normal);
+  var near = sample_projected(material, position, ddx_p, ddy_p, weights, inv, vec2<f32>(0.0));
 
   if (far_blend > 0.01) {
-    let far_inv = inv / 5.3;
-    let far = sample_planar(
-      material,
-      position.xz * far_inv + vec2<f32>(0.37, 0.61),
-      ddx_p.xz * far_inv,
-      ddy_p.xz * far_inv
-    );
+    let far = sample_projected(material, position, ddx_p, ddy_p, weights, inv / 5.3, vec2<f32>(0.37, 0.61));
     near.albedo = mix(near.albedo, far.albedo, far_blend * 0.65);
     near.detail = mix(near.detail, far.detail, far_blend * 0.5);
     near.height = mix(near.height, far.height, far_blend * 0.5);
@@ -381,7 +412,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   for (var k = 0; k < 3; k = k + 1) {
     if (top_weight[k] > 0.02) {
       if (low_detail) {
-        samples[k] = sample_material_far(top[k], position, ddx_p, ddy_p);
+        samples[k] = sample_material_far(top[k], position, ddx_p, ddy_p, geometric_normal);
       } else {
         samples[k] = sample_material(top[k], position, ddx_p, ddy_p, geometric_normal, far_blend);
       }

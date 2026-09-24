@@ -208,7 +208,8 @@ so the world never ends in a wall:
 - Beyond that the sea floor keeps sloping gently down, so the open ocean
     reads as deep water with a real coast on the skirt.
 - The skirt turns to rock over its first 300 m, and to sand below the
-    waterline. No trees or grass grow on it.
+    waterline. Snow lying at the edge stays on it, so a frozen map ends
+    in snow, not bare rock. No trees or grass grow on it.
 
 With `edges: "coast"` the skirt meets sea along the border. With
 `edges: "open"`, or an imported map whose land reaches its edge, the land

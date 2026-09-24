@@ -179,9 +179,10 @@ Each terrain vertex is 36 bytes:
     shadow map, texel-snapped to stop shimmering.
 5. **Opaque pass** into a linear `rgba16float` target plus depth:
     - terrain (`shaders/clipmap_render.wgsl`), texture-splatting the three
-      strongest of ten materials with height blending, triplanar rock and
-      ice, detail normals, climate tinting, wetness, puddles, snow, and
-      glacier crevasses;
+      strongest of ten materials with height blending, triplanar rock,
+      ice and steep snow (one projection path, blending smoothly from
+      top-down as slopes steepen), detail normals, climate tinting,
+      wetness, puddles, snow, and glacier crevasses;
     - tree meshes and impostors (`shaders/trees.wgsl`) via indirect draws;
     - grass (`shaders/grass_instances.wgsl`), alpha-tested.
 6. **Cloud pass** (`shaders/atmosphere.wgsl`, `cloud_main`) raymarches the
@@ -248,6 +249,13 @@ never develop the T-junction cracks that a classic multi-tier clipmap
 needs skirts or index stitching to hide — the tradeoff is that it is one
 LOD strategy applied uniformly in a square/radial pattern around the
 camera, not independently controllable rings.
+
+Spacing grows separately along x and z, so away from the diagonals the
+outer cells are long and thin. A vertex's normal is therefore the slope
+averaged over its own spacing in each direction (a separable box filter,
+from per-row prefix sums), not the normal of the one sample it sits on,
+which would alias and streak down slopes. Vertex heights stay exact, so
+the mesh matches the height texture that water, shadows and trees use.
 
 `EngineCore::install_terrain` computes normals and material weights for the
 *whole* heightmap once per generated/loaded terrain
