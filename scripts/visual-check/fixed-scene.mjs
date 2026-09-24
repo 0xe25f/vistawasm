@@ -50,7 +50,8 @@ const scenes = {
       state: "rain",
       autoCycle: false,
       transitionSeconds: 0.1,
-      lensDrops: true
+      lensDrops: true,
+      lensDropCount: 120
     }
   }
 };

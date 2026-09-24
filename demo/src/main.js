@@ -119,6 +119,9 @@ const inputs = {
   weatherWindScale: input("weatherWindScale"),
   weatherPrecipitation: input("weatherPrecipitation"),
   weatherLensDrops: input("weatherLensDrops"),
+  weatherLensDropCount: input("weatherLensDropCount"),
+  weatherLensDropMin: input("weatherLensDropMin"),
+  weatherLensDropMax: input("weatherLensDropMax"),
   weatherDuration: input("weatherDuration"),
   weatherEffectClouds: input("weatherEffectClouds"),
   weatherEffectMist: input("weatherEffectMist"),
@@ -452,6 +455,9 @@ function applyWeather() {
     windScale: readNumber(inputs.weatherWindScale, 1),
     precipitationScale: readNumber(inputs.weatherPrecipitation, 1),
     lensDrops: inputs.weatherLensDrops.checked,
+    lensDropCount: readNumber(inputs.weatherLensDropCount, 60),
+    lensDropMinSize: readNumber(inputs.weatherLensDropMin, 0.8) / 100,
+    lensDropMaxSize: readNumber(inputs.weatherLensDropMax, 5) / 100,
     stateDurationSeconds: readNumber(inputs.weatherDuration, 240),
     effects: {
       clouds: inputs.weatherEffectClouds.checked,
@@ -1037,6 +1043,41 @@ function wireLiveControls() {
   }
 
   inputs.weatherState.addEventListener("change", applyWeather);
+
+  // The drop controls only mean something with drops on, and the smallest
+  // size never passes the largest: dragging one past the other moves both.
+  const lensDropControls = [
+    inputs.weatherLensDropCount,
+    inputs.weatherLensDropMin,
+    inputs.weatherLensDropMax
+  ];
+  const syncLensDropControls = () => {
+    for (const control of lensDropControls) {
+      control.disabled = !inputs.weatherLensDrops.checked;
+    }
+  };
+  const keepOrdered = (moved, other, larger) => {
+    const value = Number(moved.value);
+
+    if (larger ? value < Number(other.value) : value > Number(other.value)) {
+      other.value = moved.value;
+      other.dispatchEvent(new Event("input"));
+    }
+  };
+
+  inputs.weatherLensDrops.addEventListener("input", syncLensDropControls);
+  inputs.weatherLensDropMin.addEventListener("input", () =>
+    keepOrdered(inputs.weatherLensDropMin, inputs.weatherLensDropMax, false)
+  );
+  inputs.weatherLensDropMax.addEventListener("input", () =>
+    keepOrdered(inputs.weatherLensDropMax, inputs.weatherLensDropMin, true)
+  );
+
+  for (const control of lensDropControls) {
+    control.addEventListener("input", applyWeather);
+  }
+
+  syncLensDropControls();
 
   for (const element of [
     inputs.terrainShadows,

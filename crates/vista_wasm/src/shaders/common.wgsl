@@ -76,7 +76,7 @@ struct FrameUniforms {
   // x: rain shafts, yz: latest lightning strike (x, z), w: how many times
   // taller than the ordinary cloud layer the slab is stretched for towers.
   clouds4: vec4<f32>,
-  // xy: cirrus wind offset in metres, z: 1 when raindrops land on the lens,
+  // xy: cirrus wind offset in metres, z: 1 while drops are on the lens,
   // w: precipitation heaviness (1 = full rain or snow, more = downpour).
   weather3: vec4<f32>,
   // The previous frame's view-projection, for reusing its clouds.

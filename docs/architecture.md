@@ -211,8 +211,11 @@ Each terrain vertex is 36 bytes:
     the scene is rendered below the canvas resolution or lens drops are on.
     Steps 5 to 8 then draw into an off-screen image at the render scale,
     and this pass upscales it to the canvas with contrast-adaptive
-    sharpening, refracting it through raindrops on the lens. At full
-    resolution without lens drops there is no extra pass.
+    sharpening, refracting it through raindrops on the lens. The drops
+    are simulated on the CPU (`lens_drops.rs`) and uploaded with a screen
+    tile grid in two storage buffers bound to this pass only; each pixel
+    tests the drops of its own tile. At full resolution without drops on
+    the lens there is no extra pass.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
 declares the one `FrameUniforms` struct (784 bytes), the shared world

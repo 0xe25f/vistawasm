@@ -112,7 +112,7 @@ struct TerrainShadowParams {
 }
 
 /// Weather values the shaders need for one frame.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameWeather {
   /// Rain intensity.
   pub rain: f32,
@@ -132,8 +132,8 @@ pub struct FrameWeather {
   pub lightning_position: [f32; 2],
   /// How far precipitation exceeds full intensity (1 or more).
   pub heaviness: f32,
-  /// Whether raindrops land on the lens.
-  pub lens_drops: bool,
+  /// Raindrops on the lens (see [`crate::lens_drops::LensDrops::packed`]).
+  pub lens_drops: Vec<[f32; 4]>,
   /// Low drifting snow, 0 to 1.
   pub blowing_snow: f32,
 }
@@ -417,12 +417,29 @@ impl GpuTimer {
   }
 }
 
-/// The finished frame, drawn off-screen so the lens-drop pass can read it.
+/// The finished frame, drawn off-screen so the lens-drop pass can read it,
+/// with the lens drops and their screen tiles.
 struct LensTarget {
   view: wgpu::TextureView,
   width: u32,
   height: u32,
   bind_group: wgpu::BindGroup,
+  drops: wgpu::Buffer,
+  bins: wgpu::Buffer,
+}
+
+/// A read-only storage buffer read by fragment shaders.
+fn storage_buffer_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+  wgpu::BindGroupLayoutEntry {
+    binding,
+    visibility: wgpu::ShaderStages::FRAGMENT,
+    ty: wgpu::BindingType::Buffer {
+      ty: wgpu::BufferBindingType::Storage { read_only: true },
+      has_dynamic_offset: false,
+      min_binding_size: None,
+    },
+    count: None,
+  }
 }
 
 /// Terrain sun-shadow texture and the inputs it was baked from.
@@ -677,7 +694,11 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
     ),
     lens: layout(
       "VistaWASM lens layout",
-      &[texture_entry(3, Dim::D2, filterable, fragment)],
+      &[
+        texture_entry(3, Dim::D2, filterable, fragment),
+        storage_buffer_entry(6),
+        storage_buffer_entry(7),
+      ],
     ),
     cloud: layout(
       "VistaWASM cloud layout",
@@ -2528,7 +2549,7 @@ impl GpuContext {
     u.weather3 = [
       self.cirrus_offset[0],
       self.cirrus_offset[1],
-      flag(weather.lens_drops),
+      flag(!weather.lens_drops.is_empty()),
       weather.heaviness.max(1.0),
     ];
     u.cold = [weather.blowing_snow.clamp(0.0, 1.0), 0.0, 0.0, 0.0];
@@ -2709,19 +2730,44 @@ impl GpuContext {
       self.config.format,
       wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
     ));
+    let buffer = |label, words: usize| {
+      self.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (words * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+      })
+    };
+    let drops = buffer(
+      "VistaWASM lens drops",
+      crate::lens_drops::MAX_LENS_DROPS * 4,
+    );
+    let bins = buffer("VistaWASM lens tiles", crate::lens_drops::BIN_WORDS);
     let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("VistaWASM lens bind group"),
       layout: &self.layouts.lens,
-      entries: &[wgpu::BindGroupEntry {
-        binding: 3,
-        resource: wgpu::BindingResource::TextureView(&view),
-      }],
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 3,
+          resource: wgpu::BindingResource::TextureView(&view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 6,
+          resource: drops.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 7,
+          resource: bins.as_entire_binding(),
+        },
+      ],
     });
     self.lens_target = Some(LensTarget {
       view,
       width: self.width,
       height: self.height,
       bind_group,
+      drops,
+      bins,
     });
   }
 
@@ -2753,11 +2799,23 @@ impl GpuContext {
     // refract it, the frame is drawn off-screen first and a final pass
     // upscales it (adding the drops); otherwise it goes straight to the
     // canvas with no extra pass.
-    let lens_drops = params.weather.lens_drops && params.weather.rain > 0.001;
-    let present = lens_drops || self.render_scale < 0.999;
+    let drops = &params.weather.lens_drops;
+    let present = !drops.is_empty() || self.render_scale < 0.999;
 
     if present {
       self.ensure_lens_target();
+    }
+
+    // The drops and the tiles they cover, written only while there are
+    // drops; the shader skips them otherwise.
+    if let (Some(target), false) = (&self.lens_target, drops.is_empty()) {
+      let bins = crate::lens_drops::bin(drops, self.canvas_width, self.canvas_height);
+      self
+        .queue
+        .write_buffer(&target.drops, 0, bytemuck::cast_slice(drops));
+      self
+        .queue
+        .write_buffer(&target.bins, 0, bytemuck::cast_slice(&bins));
     }
     self.update_uniforms(params, time, dt);
     let shadow_frame = tree_shadow_frame(

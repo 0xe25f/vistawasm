@@ -1376,6 +1376,15 @@ pub struct WeatherOptions {
   /// Raindrops that land on the camera lens, bead, and run down the
   /// screen while it rains.
   pub lens_drops: bool,
+  /// Drops on the lens at once in full rain, 0 to 512. It scales with the
+  /// rain's intensity.
+  pub lens_drop_count: u32,
+  /// Smallest lens drop diameter, as a fraction of the canvas height,
+  /// 0.002 to 0.2.
+  pub lens_drop_min_size: f32,
+  /// Largest lens drop diameter, as a fraction of the canvas height,
+  /// 0.002 to 0.2, and at least `lens_drop_min_size`.
+  pub lens_drop_max_size: f32,
   /// Which systems the weather drives.
   pub effects: WeatherEffects,
 }
@@ -1394,6 +1403,9 @@ impl Default for WeatherOptions {
       wind_scale: 1.0,
       precipitation_scale: 1.0,
       lens_drops: false,
+      lens_drop_count: 60,
+      lens_drop_min_size: 0.008,
+      lens_drop_max_size: 0.05,
       effects: WeatherEffects::default(),
     }
   }

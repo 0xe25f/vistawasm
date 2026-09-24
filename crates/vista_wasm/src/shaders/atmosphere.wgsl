@@ -26,6 +26,13 @@
 @group(3) @binding(2) var cloud_texture_low: texture_2d<f32>;
 // The finished frame, read by the lens-drop pass only.
 @group(3) @binding(3) var lens_source: texture_2d<f32>;
+// Raindrops on the lens (see `lens_drops.rs`): xy centre and z radius in
+// screen heights, w a bead's fade, or 2 plus a running drop's sideways
+// direction mapped to 0 to 1. The bins hold the tile grid's columns and
+// rows, then per tile its first list index shifted up 8 bits plus its drop
+// count, then the list of drop indices. Read by the lens-drop pass only.
+@group(3) @binding(6) var<storage, read> lens_drops: array<vec4<f32>>;
+@group(3) @binding(7) var<storage, read> lens_bins: array<u32>;
 // The previous frame's clouds, and this frame's quarter-size march, read
 // by the cloud pass when reusing clouds.
 @group(3) @binding(4) var cloud_history: texture_2d<f32>;
@@ -730,6 +737,8 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 // the frame through raindrops on the lens: small beads that sit still and
 // evaporate, and larger drops that run down the screen, each showing the
 // scene behind it flipped and magnified, with a darker rim and a glint.
+// The drops are simulated on the CPU and binned into screen tiles; each
+// pixel tests only its own tile's drops.
 @fragment
 fn present_main(in: VertexOut) -> @location(0) vec4<f32> {
   let size = frame.output.xy;
@@ -737,39 +746,41 @@ fn present_main(in: VertexOut) -> @location(0) vec4<f32> {
   var bend = vec2<f32>(0.0);
   var rim = 0.0;
   var glint = 0.0;
-  let rain = frame.weather.x * frame.weather3.w * frame.weather3.z;
 
-  if (rain > 0.001) {
-    let t = time_seconds();
-    // Square cells measured in screen heights, so drops stay round.
+  // Uniform: 1 only while drops are on the lens.
+  if (frame.weather3.z > 0.5) {
+    // Screen heights, so drops stay round on any aspect ratio.
     let screen = pixel / size.y;
+    let columns = lens_bins[0];
+    let rows = lens_bins[1];
+    let column = min(u32(screen.x * size.y / size.x * f32(columns)), columns - 1u);
+    let row = min(u32(screen.y * f32(rows)), rows - 1u);
+    let entry = lens_bins[2u + row * columns + column];
+    let first = 2u + columns * rows + (entry >> 8u);
 
-    for (var layer = 0; layer < 2; layer = layer + 1) {
-      let running = layer == 1;
-      let cells = select(16.0, 7.0, running);
-      var p = screen * cells;
-      let column = floor(p.x);
-      let column_hash = hash12(vec2<f32>(column, f32(layer) * 13.1));
-      // Running drops slide down their column at their own speed.
-      let slide = select(0.0, t * (0.35 + column_hash * 0.6), running);
-      p.y = p.y - slide;
-      let cell = floor(p);
-      let h = hash12(cell + f32(layer) * 41.7);
-      let life = select(4.0 + h * 5.0, 1.0e6, running);
-      let age = fract(t / life + h * 7.3);
-      let present = step(h, saturate(rain * select(0.55, 0.3, running)));
-      let centre = cell + vec2<f32>(0.2 + 0.6 * hash12(cell + 3.7), 0.2 + 0.6 * hash12(cell + 8.9));
-      // Beads appear quickly and shrink away as they evaporate.
-      let grow = smoothstep(0.0, 0.05, age) * (1.0 - smoothstep(0.7, 1.0, age));
-      let radius = (0.12 + 0.2 * hash12(cell + 5.3)) * grow * select(1.0, 1.3, running);
-      var d = p - centre;
-      // Running drops are a little taller than wide.
-      d.y = d.y * select(1.0, 0.8, running);
-      let r = length(d) / max(radius, 0.0001);
-      let inside = (1.0 - smoothstep(0.85, 1.0, r)) * present;
-      let normal = d / max(radius, 0.0001);
-      // Offset in screen heights, converted to pixels below.
-      bend = bend - normal * radius / cells * 1.6 * inside;
+    // Every drop that reaches this tile is binned into it, so each drop is
+    // drawn whole, never cut at a tile's edge.
+    for (var k = 0u; k < (entry & 255u); k = k + 1u) {
+      let drop = lens_drops[lens_bins[first + k]];
+      let radius = max(drop.z, 0.00001);
+      var d = screen - drop.xy;
+      var fade = drop.w;
+
+      if (drop.w >= 2.0) {
+        // Running drops are longer along their path: squeeze the offset
+        // along the direction of travel.
+        let side = (drop.w - 2.0) / 0.999 * 2.0 - 1.0;
+        let path = vec2<f32>(side, sqrt(max(1.0 - side * side, 0.0)));
+        d = d - path * dot(d, path) * 0.2;
+        fade = 1.0;
+      }
+
+      let r = length(d) / radius;
+      let inside = (1.0 - smoothstep(0.85, 1.0, r)) * fade;
+      let normal = d / radius;
+      // Offset in screen heights, converted to pixels below: the drop is a
+      // lens that shows the scene behind it flipped and magnified.
+      bend = bend - normal * radius * 1.6 * inside;
       rim = max(rim, smoothstep(0.55, 1.0, r) * inside);
       glint = max(glint, (1.0 - smoothstep(0.0, 0.25, length(normal - vec2<f32>(-0.35, -0.4)))) * inside);
     }

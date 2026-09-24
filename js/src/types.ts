@@ -559,6 +559,12 @@ export interface WeatherOptions {
   precipitationScale?: number;
   /** Raindrops that land on the lens and run down the screen. Defaults to `false`. */
   lensDrops?: boolean;
+  /** Drops on the lens at once in full rain, 0 to 512. Scales with rain intensity. Defaults to 60. */
+  lensDropCount?: number;
+  /** Smallest lens drop diameter as a fraction of the canvas height, 0.002 to 0.2. Defaults to 0.008. */
+  lensDropMinSize?: number;
+  /** Largest lens drop diameter as a fraction of the canvas height, 0.002 to 0.2. Defaults to 0.05. */
+  lensDropMaxSize?: number;
   effects?: WeatherEffects;
 }
 

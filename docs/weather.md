@@ -162,11 +162,52 @@ the rain rather than glowing, and there are no sharp shadows or sun glints.
 engine.setWeather({ enabled: true, state: "rain", lensDrops: true });
 ```
 
-With `lensDrops`, raindrops land on the camera lens while it rains: small
-beads that sit and evaporate, and larger drops that run down the screen.
-Each drop refracts the scene behind it. It is off by default, since it
-suits a filmed or "camera" look rather than a first-person eye. It adds
-one full-screen pass, and only while it is raining.
+With `lensDrops`, raindrops land on the camera lens while it rains. Each
+drop refracts the scene behind it, flipped and magnified, with a darker
+rim and a glint. It is off by default, since it suits a filmed or
+"camera" look rather than a first-person eye. It adds one full-screen
+pass, and only while drops are on the lens.
+
+Three options shape the drops:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `lensDropCount` | `60` | Drops on the lens at once in full rain, 0 to 512. Light rain has fewer. |
+| `lensDropMinSize` | `0.008` | Smallest drop diameter, as a fraction of the canvas height. |
+| `lensDropMaxSize` | `0.05` | Largest drop diameter, as a fraction of the canvas height. |
+
+Sizes are fractions of the canvas height, so drops look the same at
+1080p, at 4K and on a phone, whatever the device pixel ratio. Most drops
+are small, as real drop populations are. Behaviour follows size, as it
+does on glass:
+
+- drops in the smaller 60 % of the size range are beads: they stay put
+    and evaporate, shrinking away over 4 to 9 seconds;
+- larger drops run down the screen, faster the larger they are, with a
+    slight sideways wander. A running drop swallows the beads it touches
+    and grows (never past `lensDropMaxSize`), and leaves a trail of tiny
+    beads behind it.
+
+When the rain stops, no new drops land, and the ones on the lens run off
+or evaporate within about ten seconds.
+
+```ts
+// A downpour on a wide lens: many drops, some large enough to run.
+engine.setWeather({
+  enabled: true,
+  state: "storm",
+  lensDrops: true,
+  lensDropCount: 250,
+  lensDropMinSize: 0.01,
+  lensDropMaxSize: 0.08
+});
+```
+
+The drops are simulated on the CPU (`lens_drops.rs`), at most 512 of
+them, and sorted into a grid of screen tiles each frame; each pixel tests
+only the drops of its own tile, and every drop is listed in every tile
+it reaches, so drops are always drawn whole. The simulation and binning
+take well under 0.1 ms a frame.
 
 ## Performance
 

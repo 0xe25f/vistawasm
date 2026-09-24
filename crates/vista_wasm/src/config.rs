@@ -441,6 +441,32 @@ pub fn validate_weather(weather: &WeatherOptions) -> VistaResult<()> {
     0.0,
     2.0,
   )?;
+  validate_range(
+    "weather.lensDropCount",
+    weather.lens_drop_count,
+    0,
+    crate::lens_drops::MAX_LENS_DROPS as u32,
+  )?;
+  validate_unit_range(
+    "weather.lensDropMinSize",
+    weather.lens_drop_min_size,
+    0.002,
+    0.2,
+  )?;
+  validate_unit_range(
+    "weather.lensDropMaxSize",
+    weather.lens_drop_max_size,
+    0.002,
+    0.2,
+  )?;
+
+  if weather.lens_drop_min_size > weather.lens_drop_max_size {
+    return Err(VistaError::options(format!(
+      "weather.lensDropMinSize ({}) must not be larger than weather.lensDropMaxSize ({}).",
+      weather.lens_drop_min_size, weather.lens_drop_max_size
+    )));
+  }
+
   Ok(())
 }
 
@@ -673,6 +699,44 @@ mod tests {
     for name in ["cliff", "coast", "open"] {
       assert!(message.contains(name), "{message}");
     }
+  }
+
+  #[test]
+  fn rejects_lens_drop_settings_out_of_range() {
+    let valid = WeatherOptions::default();
+    assert!(validate_weather(&valid).is_ok());
+
+    for bad in [
+      WeatherOptions {
+        lens_drop_count: 513,
+        ..valid.clone()
+      },
+      WeatherOptions {
+        lens_drop_min_size: 0.001,
+        ..valid.clone()
+      },
+      WeatherOptions {
+        lens_drop_max_size: 0.25,
+        ..valid.clone()
+      },
+      WeatherOptions {
+        lens_drop_max_size: f32::NAN,
+        ..valid.clone()
+      },
+    ] {
+      assert!(validate_weather(&bad).is_err());
+    }
+
+    let swapped = WeatherOptions {
+      lens_drop_min_size: 0.06,
+      lens_drop_max_size: 0.02,
+      ..valid
+    };
+    let message = validate_weather(&swapped).unwrap_err().to_string();
+    assert!(
+      message.contains("0.06") && message.contains("0.02"),
+      "{message}"
+    );
   }
 
   #[test]

@@ -272,6 +272,9 @@ Passed to `engine.setWeather()`. Every field is optional. See
 | `windScale` | `number` | `1` | `0` to `4`. |
 | `precipitationScale` | `number` | `1` | `0` to `2`. Above `1`, rain becomes a downpour: more and longer streaks and a grey veil that cuts visibility. |
 | `lensDrops` | `boolean` | `false` | Raindrops land on the lens and run down the screen while it rains. Adds one full-screen pass. |
+| `lensDropCount` | `number` | `60` | Drops on the lens at once in full rain, an integer from `0` to `512`. It scales with the rain's intensity. |
+| `lensDropMinSize` | `number` | `0.008` | Smallest drop diameter as a fraction of the canvas height, `0.002` to `0.2` (0.008 is about 9 px at 1080p). |
+| `lensDropMaxSize` | `number` | `0.05` | Largest drop diameter as a fraction of the canvas height, `0.002` to `0.2`, and at least `lensDropMinSize`. |
 | `effects` | `WeatherEffects` | all `true` | `clouds`, `mist`, `wind`, `water`, `precipitation`, `ground`, `lightning`. |
 
 `engine.getWeather()` returns the blended `WeatherState` (`from`, `to`,

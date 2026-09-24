@@ -9,6 +9,7 @@ pub mod config;
 pub mod dem;
 pub mod engine;
 pub mod errors;
+pub mod lens_drops;
 pub mod maths;
 pub mod pacing;
 pub mod render;

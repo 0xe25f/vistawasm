@@ -144,6 +144,12 @@ for changed defaults.
 - **Demo.** A climate temperature slider with an automatic setting, the
   temperature under the camera in the biome readout, and a biome colour
   legend for the biomes debug view.
+- **Lens drop controls.** `WeatherOptions.lensDropCount`,
+  `lensDropMinSize` and `lensDropMaxSize` set how many drops are on the
+  lens in full rain and how large they are, as fractions of the canvas
+  height. Small drops bead and evaporate; large ones run down the screen,
+  swallow the beads they touch and leave trails. The demo's weather
+  section has matching sliders.
 - **Map edges.** `FractalTerrainOptions.edges`: `"coast"` (the default)
   rings the land with sea along a natural, wandering coastline, and
   `"open"` lets the land run to the map edge for tiling several maps. The
@@ -220,6 +226,10 @@ for changed defaults.
 
 ### Fixed
 
+- **Raindrops on the lens were cut off** along straight edges. Each pixel
+  only looked at the drop of its own screen cell, so drops that overhung
+  their cell were sliced flat. Drops are now simulated on the CPU and
+  binned into every screen tile they reach, so they are always whole.
 - **Terrain hitches while moving.** The camera-centred terrain mesh was
   rebuilt, reallocated, and re-uploaded (16 MB) in a single frame whenever
   the camera drifted 12 samples. It now streams: the next mesh starts at

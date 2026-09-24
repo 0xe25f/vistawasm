@@ -63,6 +63,8 @@ pub struct EngineCore {
   /// Time of the previous frame in milliseconds, for the weather clock.
   last_frame_ms: Option<f64>,
   frame_clock: crate::pacing::FrameClock,
+  /// Raindrops on the lens.
+  lens_drops: crate::lens_drops::LensDrops,
   resolution: crate::pacing::ResolutionController,
   frame_seconds: f32,
   debug_view: DebugView,
@@ -179,6 +181,7 @@ impl EngineCore {
       mist: config.mist,
       quality: config.quality,
       biomes: config.biomes,
+      lens_drops: crate::lens_drops::LensDrops::new(config.weather.seed_offset),
       weather: WeatherSystem::new(config.weather),
       shadows: config.shadows,
       surface_options: config.surface,
@@ -233,6 +236,7 @@ impl EngineCore {
       mist: config.mist,
       quality: config.quality,
       biomes: config.biomes,
+      lens_drops: crate::lens_drops::LensDrops::new(config.weather.seed_offset),
       weather: WeatherSystem::new(config.weather),
       shadows: config.shadows,
       surface_options: config.surface,
@@ -671,6 +675,24 @@ impl EngineCore {
     } else {
       self.stats.weather = None;
     }
+
+    // Drops land while it rains and keep running off or evaporating after.
+    let options = self.weather.options();
+    let intensity = if options.enabled && options.lens_drops && options.effects.precipitation {
+      self.weather.state().rain * self.weather.precipitation_heaviness().max(1.0)
+    } else {
+      0.0
+    };
+    self.lens_drops.advance(
+      dt,
+      intensity,
+      self.render_width as f32 / self.render_height.max(1) as f32,
+      &crate::lens_drops::LensDropSettings {
+        count: options.lens_drop_count,
+        min_size: options.lens_drop_min_size,
+        max_size: options.lens_drop_max_size,
+      },
+    );
 
     // Native builds have no GPU mesh to measure, so report a theoretical
     // estimate based on the configured clipmap level budget. Browser
@@ -1187,7 +1209,7 @@ impl EngineCore {
         wind: weather.wind,
         lightning_position: weather.lightning_position,
         heaviness: weather.heaviness.max(1.0),
-        lens_drops: weather.lens_drops,
+        lens_drops: self.lens_drops.packed(),
         blowing_snow: weather.blowing_snow,
       },
       sea_ice: crate::render::gpu::SeaIce {
