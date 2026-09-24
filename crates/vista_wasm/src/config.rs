@@ -343,6 +343,10 @@ pub fn validate_biomes(biomes: &BiomeOptions) -> VistaResult<()> {
     validate_finite("biomes.snowLineMetres", snow_line)?;
   }
 
+  if let Some(celsius) = biomes.mean_temperature_celsius {
+    validate_unit_range("biomes.meanTemperatureCelsius", celsius, -30.0, 35.0)?;
+  }
+
   Ok(())
 }
 
@@ -915,6 +919,23 @@ mod tests {
     assert!(validate_biomes(&biomes).is_err());
 
     assert!(validate_biomes(&BiomeOptions::default()).is_ok());
+
+    for celsius in [f32::NAN, f32::INFINITY, -30.5, 35.5] {
+      let biomes = BiomeOptions {
+        mean_temperature_celsius: Some(celsius),
+        ..BiomeOptions::default()
+      };
+      let error = validate_biomes(&biomes).unwrap_err().to_string();
+      assert!(error.contains("meanTemperatureCelsius"), "{error}");
+    }
+
+    for celsius in [-30.0, 0.0, 35.0] {
+      let biomes = BiomeOptions {
+        mean_temperature_celsius: Some(celsius),
+        ..BiomeOptions::default()
+      };
+      assert!(validate_biomes(&biomes).is_ok());
+    }
   }
 
   #[test]

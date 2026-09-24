@@ -21,6 +21,7 @@ use crate::terrain::clipmap::build_clipmap_levels;
 use crate::terrain::fractal::Progress;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::generate_fractal_heightmap_with_progress;
+use crate::terrain::glaciers::{restore_glaciers, shape_glaciers};
 use crate::terrain::HeightMap;
 use crate::weather::WeatherSystem;
 
@@ -74,6 +75,8 @@ pub struct EngineCore {
   /// River options the current carving was built with, or `None` when no
   /// rivers are carved.
   applied_rivers: Option<RiverOptions>,
+  /// Original heights of the samples raised into glacier surfaces.
+  glaciers: Vec<(usize, f32)>,
   /// Cached per-sample normals for the active terrain, computed once when
   /// the terrain is installed and reused by every LOD mesh rebuild so the
   /// camera can recentre the mesh without repeating a full-heightmap pass.
@@ -184,6 +187,7 @@ impl EngineCore {
       surface: Vec::new(),
       rivers: RiverNetwork::default(),
       applied_rivers: None,
+      glaciers: Vec::new(),
     })
   }
 
@@ -236,6 +240,7 @@ impl EngineCore {
       surface: Vec::new(),
       rivers: RiverNetwork::default(),
       applied_rivers: None,
+      glaciers: Vec::new(),
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
       mesh_stream: None,
@@ -393,6 +398,8 @@ impl EngineCore {
   }
 
   /// Replace biome controls and re-bake terrain shading, trees, and grass.
+  /// Glaciers reshape the ground they cover, so the terrain (and the rivers
+  /// carved into it) is rebuilt too.
   pub fn set_biomes(&mut self, biomes: BiomeOptions) -> VistaResult<()> {
     self.ensure_live()?;
 
@@ -401,13 +408,27 @@ impl EngineCore {
     }
 
     self.biomes = biomes;
-    self.rebake_surface();
+    self.rebuild_world();
     Ok(())
   }
 
   /// Return the biome at a world-space position, or `None` when there is
   /// no terrain or the position is outside it.
   pub fn biome_at(&self, world_x: f32, world_z: f32) -> Option<BiomeKind> {
+    self
+      .surface_at(world_x, world_z)
+      .map(|sample| sample.biome_kind())
+  }
+
+  /// Return the mean annual temperature in °C at a world-space position,
+  /// or `None` when there is no terrain or the position is outside it.
+  pub fn celsius_at(&self, world_x: f32, world_z: f32) -> Option<f32> {
+    self
+      .surface_at(world_x, world_z)
+      .map(|sample| sample.celsius())
+  }
+
+  fn surface_at(&self, world_x: f32, world_z: f32) -> Option<&SurfaceSample> {
     let terrain = self.terrain.as_ref()?;
     let metres_per_sample = terrain.metadata.metres_per_sample.max(0.001);
     let sample_x = world_x / metres_per_sample + (terrain.metadata.width as f32 - 1.0) * 0.5;
@@ -425,10 +446,7 @@ impl EngineCore {
 
     let x = (sample_x.round() as u32).min(terrain.metadata.width - 1);
     let z = (sample_z.round() as u32).min(terrain.metadata.height - 1);
-    self
-      .surface
-      .get((z * terrain.metadata.width + x) as usize)
-      .map(|sample| sample.biome_kind())
+    self.surface.get((z * terrain.metadata.width + x) as usize)
   }
 
   /// Replace flora controls.
@@ -743,6 +761,7 @@ impl EngineCore {
     self.surface = Vec::new();
     self.rivers = RiverNetwork::default();
     self.applied_rivers = None;
+    self.glaciers = Vec::new();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -761,6 +780,7 @@ impl EngineCore {
     // The previous terrain's carving belongs to a different heightmap.
     self.rivers = RiverNetwork::default();
     self.applied_rivers = None;
+    self.glaciers = Vec::new();
     self.terrain = Some(map);
     self.active_terrain_id = Some(id);
 
@@ -789,13 +809,18 @@ impl EngineCore {
     }
   }
 
-  /// Re-extract rivers (restoring any previous carving first), then re-bake
-  /// surface shading and every terrain-dependent layer.
+  /// Re-shape glaciers and re-extract rivers (restoring any previous
+  /// shaping and carving first), then re-bake surface shading and every
+  /// terrain-dependent layer.
   fn rebuild_world(&mut self) {
     let wanted = self.wanted_rivers(&self.water);
 
     if let Some(terrain) = self.terrain.as_mut() {
+      // Undo in the reverse order of shaping: rivers were carved into the
+      // glacier surface.
       restore_carving(terrain, &self.rivers.carved);
+      restore_glaciers(terrain, &self.glaciers);
+      self.glaciers = shape_glaciers(terrain, &self.biomes);
       self.rivers = match &wanted {
         Some(options) => build_river_network(terrain, options),
         None => RiverNetwork {
@@ -805,6 +830,7 @@ impl EngineCore {
       };
     } else {
       self.rivers = RiverNetwork::default();
+      self.glaciers = Vec::new();
     }
 
     self.applied_rivers = wanted;
@@ -1518,6 +1544,56 @@ mod tests {
     water.rivers.enabled = false;
     engine.set_water(water).unwrap();
     assert_eq!(engine.export_heightmap().unwrap(), uncarved);
+  }
+
+  #[test]
+  fn a_cold_climate_and_back_restores_the_terrain_exactly() {
+    let mut engine = generated_engine();
+    let original = engine.export_heightmap().unwrap();
+    engine
+      .set_biomes(BiomeOptions {
+        mean_temperature_celsius: Some(-20.0),
+        ..BiomeOptions::default()
+      })
+      .unwrap();
+
+    assert!(!engine.glaciers.is_empty());
+    assert_ne!(engine.export_heightmap().unwrap(), original);
+
+    engine.set_biomes(BiomeOptions::default()).unwrap();
+    assert_eq!(engine.export_heightmap().unwrap(), original);
+
+    engine
+      .set_biomes(BiomeOptions {
+        mean_temperature_celsius: Some(-20.0),
+        ..BiomeOptions::default()
+      })
+      .unwrap();
+    engine
+      .set_biomes(BiomeOptions {
+        enabled: false,
+        mean_temperature_celsius: Some(-20.0),
+        ..BiomeOptions::default()
+      })
+      .unwrap();
+    assert!(engine.glaciers.is_empty());
+    assert_eq!(engine.export_heightmap().unwrap(), original);
+  }
+
+  #[test]
+  fn temperature_at_matches_the_surface_sample() {
+    let mut engine = EngineCore::new_for_tests(VistaEngineOptions::default()).unwrap();
+    assert_eq!(engine.celsius_at(0.0, 0.0), None);
+
+    engine = generated_engine();
+    let celsius = engine.celsius_at(0.0, 0.0).unwrap();
+    let terrain = engine.terrain.as_ref().unwrap();
+    let centre = (terrain.metadata.width / 2) as usize;
+    let sample = engine.surface[centre * terrain.metadata.width as usize + centre];
+
+    assert_eq!(celsius, sample.celsius());
+    assert!(engine.celsius_at(1.0e7, 0.0).is_none());
+    assert!(engine.celsius_at(f32::NAN, 0.0).is_none());
   }
 
   #[test]

@@ -312,6 +312,18 @@ class VistaEngineWrapper implements VistaEngine {
     return this.call(() => this.raw.biomeAt(x, z)) as BiomeKind | undefined;
   }
 
+  public temperatureAt(x: number, z: number): number | null {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      throw new TypeError("temperatureAt() expects finite x and z world positions in metres.");
+    }
+
+    if (this.pendingCall) {
+      return null;
+    }
+
+    return this.call(() => this.raw.temperatureAt(x, z)) ?? null;
+  }
+
   public setDebugView(debugView: DebugView): void {
     if (this.pendingCall) {
       return;

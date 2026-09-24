@@ -1,6 +1,6 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { createVistaEngine, initialiseVistaWasm } from "../src/index";
-import type { VistaEngine, VistaWasmGeneratedModule } from "../src/types";
+import type { BiomeKind, BiomeOptions, VistaEngine, VistaWasmGeneratedModule } from "../src/types";
 
 // A stand-in for the generated WASM engine that records every call, so the
 // wrapper's validation and packing can be tested without a GPU.
@@ -119,6 +119,25 @@ describe("replaceTexture", () => {
     expect(() => engine.replaceTexture("sky" as "flora", 0, texels)).toThrow(TypeError);
     expect(() => engine.replaceTexture("flora", -1, texels)).toThrow(TypeError);
     expect(() => engine.replaceTexture("flora", 0, [] as unknown as Uint8Array)).toThrow(TypeError);
+  });
+});
+
+describe("temperatureAt", () => {
+  it("is typed as a number or null, and the cold biome is a biome", () => {
+    expectTypeOf(engine.temperatureAt).returns.toEqualTypeOf<number | null>();
+    expectTypeOf<"iceArctic">().toMatchTypeOf<BiomeKind>();
+    expectTypeOf<BiomeOptions["meanTemperatureCelsius"]>().toEqualTypeOf<number | undefined>();
+  });
+
+  it("returns null when the engine reports no terrain", () => {
+    expect(engine.temperatureAt(10, -20)).toBeNull();
+    expect(lastCall("temperatureAt")).toEqual([10, -20]);
+  });
+
+  it("rejects positions that are not finite numbers", () => {
+    expect(() => engine.temperatureAt(Number.NaN, 0)).toThrow(TypeError);
+    expect(() => engine.temperatureAt(0, Number.POSITIVE_INFINITY)).toThrow(TypeError);
+    expect(() => engine.temperatureAt("1" as unknown as number, 0)).toThrow(TypeError);
   });
 });
 

@@ -72,6 +72,7 @@ export interface VistaWasmRawEngine {
   setRenderQuality(quality: unknown): void;
   setBiomes(biomes: unknown): void;
   biomeAt(x: number, z: number): unknown;
+  temperatureAt(x: number, z: number): number | undefined;
   setDebugView(debugView: unknown): void;
   renderOnce(): unknown;
   resize(width: number, height: number, devicePixelRatio?: number): void;
@@ -651,7 +652,8 @@ export type BiomeKind =
   | "ocean"
   | "alpineTransition"
   | "lowerSnowyPeaks"
-  | "upperSnowyPeaks";
+  | "upperSnowyPeaks"
+  | "iceArctic";
 
 /**
  * Climate-driven biome controls. Every field is optional.
@@ -673,6 +675,12 @@ export interface BiomeOptions {
   beachHeightMetres?: number;
   /** Snow line in metres. Defaults to 80% of the way from sea level to the highest peak. */
   snowLineMetres?: number;
+  /**
+   * Mean annual temperature at sea level in °C, from -30 to 35. Unset
+   * keeps the default climate. Below about -2 °C lowlands freeze into
+   * ice sheets; around 15 °C only the highest summits hold ice.
+   */
+  meanTemperatureCelsius?: number;
 }
 
 /**
@@ -1004,6 +1012,8 @@ export interface VistaEngine {
   setRenderQuality(quality: RenderQualityOptions): void;
   setBiomes(biomes: BiomeOptions): void;
   biomeAt(x: number, z: number): BiomeKind | undefined;
+  /** Mean annual temperature in °C at a world position, or null off the terrain. */
+  temperatureAt(x: number, z: number): number | null;
   setDebugView(debugView: DebugView): void;
   /** Replace weather controls. Changing `state` blends to the new weather. */
   setWeather(weather: WeatherOptions): void;

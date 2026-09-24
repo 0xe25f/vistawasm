@@ -5,6 +5,7 @@ pub mod clipmap;
 pub mod drainage;
 pub mod erosion;
 pub mod fractal;
+pub mod glaciers;
 pub mod heightmap;
 pub mod landforms;
 pub mod materials;

@@ -1168,11 +1168,13 @@ pub enum BiomeKind {
   LowerSnowyPeaks = 16,
   /// Permanent snow and ice on the highest ground.
   UpperSnowyPeaks = 17,
+  /// Glaciers, ice sheets, and the tundra fringe where the ice thins.
+  IceArctic = 18,
 }
 
 impl BiomeKind {
   /// Every biome, in `repr(u8)` order.
-  pub const ALL: [BiomeKind; 18] = [
+  pub const ALL: [BiomeKind; 19] = [
     Self::GrassyMeadows,
     Self::OuterThicket,
     Self::OuterForest,
@@ -1191,6 +1193,7 @@ impl BiomeKind {
     Self::AlpineTransition,
     Self::LowerSnowyPeaks,
     Self::UpperSnowyPeaks,
+    Self::IceArctic,
   ];
 
   /// Convert a stored biome index back to a biome.
@@ -1244,6 +1247,10 @@ pub struct BiomeOptions {
   /// Optional snow line in metres. Defaults to 80% of the way from sea
   /// level to the highest peak.
   pub snow_line_metres: Option<f32>,
+  /// Mean annual temperature at sea level in °C, from -30 to 35. When
+  /// unset, the climate follows `temperature_bias` alone and only the
+  /// highest summits of a map hold ice.
+  pub mean_temperature_celsius: Option<f32>,
 }
 
 impl Default for BiomeOptions {
@@ -1257,6 +1264,7 @@ impl Default for BiomeOptions {
       volcanism: default_volcanism(),
       beach_height_metres: default_beach_height(),
       snow_line_metres: None,
+      mean_temperature_celsius: None,
     }
   }
 }

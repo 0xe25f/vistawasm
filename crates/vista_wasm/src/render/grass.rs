@@ -347,7 +347,7 @@ mod tests {
     let options = grass_options();
     let bare_materials = vec![
       SurfaceSample {
-        materials: [0, 0, 0, 0, 255, 0, 0, 0],
+        materials: [0, 0, 0, 0, 255, 0, 0, 0, 0, 0],
         ..SurfaceSample::default()
       };
       (map.metadata.width * map.metadata.height) as usize

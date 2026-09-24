@@ -3,9 +3,17 @@
 //! Every terrain sample is classified into one of the [`BiomeKind`]s from
 //! its height, slope, and two seeded, low-frequency climate fields
 //! (temperature and moisture), plus a handful of volcanic hotspots placed
-//! on the highest peaks. The same pass also produces the eight surface
+//! on the highest peaks. The same pass also produces the ten surface
 //! material weights the terrain shader blends between, so ground textures,
 //! tree species, and grass colour all agree with each other.
+//!
+//! Every sample also gets a mean annual temperature in °C. With
+//! `meanTemperatureCelsius` set, it is that sea-level mean plus a little
+//! climate noise, cooled by 6.5 °C per 1000 m of altitude, and drives every
+//! biome, including glaciers and tundra. Without it, the climate works as
+//! it always has, and the °C value (15 °C at sea level, just below freezing
+//! on the highest summit) is reported and drives the weather, but forms no
+//! ice: the highest summits carry the snowy peak biomes instead.
 //!
 //! Climate noise is evaluated on a coarse grid (it only varies over
 //! kilometres) and bilinearly interpolated, which keeps the full-resolution
@@ -32,11 +40,26 @@ pub const MAT_SNOW: usize = 5;
 pub const MAT_MUD: usize = 6;
 /// Basalt and volcanic ash.
 pub const MAT_VOLCANIC: usize = 7;
+/// Glacier ice.
+pub const MAT_ICE: usize = 8;
+/// Tundra moss, lichen, and stones.
+pub const MAT_TUNDRA: usize = 9;
 
 /// Number of surface materials.
-pub const MATERIAL_COUNT: usize = 8;
+pub const MATERIAL_COUNT: usize = 10;
 
-/// Compact per-sample surface description, 16 bytes.
+/// Temperature unit (0 to 1) to °C, and back. The same mapping is used by
+/// the surface texture the shaders read.
+pub fn unit_to_celsius(unit: f32) -> f32 {
+  unit * 65.0 - 30.0
+}
+
+/// °C to the 0 to 1 temperature unit, unclamped.
+pub fn celsius_to_unit(celsius: f32) -> f32 {
+  (celsius + 30.0) / 65.0
+}
+
+/// Compact per-sample surface description, 20 bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SurfaceSample {
   /// Material weights in `MAT_*` order, summing to roughly 255.
@@ -55,8 +78,11 @@ pub struct SurfaceSample {
   pub forest: u8,
   /// Whether a river runs through this sample (0 or 255).
   pub river: u8,
-  /// Reserved.
-  pub reserved: u8,
+  /// Snow that never melts, from 0 to 255: 255 on glacier, up to 160 on
+  /// tundra. On cold sea next to land it marks snow-covered fast ice.
+  pub permanent_snow: u8,
+  /// Mean annual temperature in hundredths of a °C.
+  pub celsius_hundredths: i16,
 }
 
 impl SurfaceSample {
@@ -78,6 +104,26 @@ impl SurfaceSample {
   /// Temperature as a 0 to 1 float.
   pub fn temperature_unit(&self) -> f32 {
     self.temperature as f32 / 255.0
+  }
+
+  /// Mean annual temperature in °C.
+  pub fn celsius(&self) -> f32 {
+    self.celsius_hundredths as f32 / 100.0
+  }
+
+  /// Permanent snow as a 0 to 1 float.
+  pub fn permanent_snow_unit(&self) -> f32 {
+    self.permanent_snow as f32 / 255.0
+  }
+
+  /// Whether this sample is glacier ice rather than tundra.
+  pub fn is_glacier(&self) -> bool {
+    self.biome == BiomeKind::IceArctic as u8 && self.permanent_snow == 255
+  }
+
+  /// Whether this sample is the tundra fringe of the ice.
+  pub fn is_tundra(&self) -> bool {
+    self.biome == BiomeKind::IceArctic as u8 && self.permanent_snow < 255
   }
 }
 
@@ -124,6 +170,8 @@ struct ClimateGrid {
   step: f32,
   temperature: Vec<f32>,
   moisture: Vec<f32>,
+  /// Raw temperature noise in roughly -1 to 1, for the °C climate.
+  noise: Vec<f32>,
 }
 
 impl ClimateGrid {
@@ -140,6 +188,7 @@ impl ClimateGrid {
     let seed = options.seed_offset;
     let mut temperature = Vec::with_capacity((width * height) as usize);
     let mut moisture = Vec::with_capacity((width * height) as usize);
+    let mut noise = Vec::with_capacity((width * height) as usize);
 
     for gy in 0..height {
       for gx in 0..width {
@@ -154,6 +203,7 @@ impl ClimateGrid {
           world_y * 1.3 + warp_x,
           4,
         );
+        noise.push(t);
 
         if options.enabled {
           temperature.push(0.56 + t * 0.62 + options.temperature_bias.clamp(-1.0, 1.0) * 0.4);
@@ -171,10 +221,11 @@ impl ClimateGrid {
       step: step.max(0.0001),
       temperature,
       moisture,
+      noise,
     }
   }
 
-  fn sample(&self, x: u32, y: u32) -> (f32, f32) {
+  fn sample(&self, x: u32, y: u32) -> (f32, f32, f32) {
     let fx = (x as f32 / self.step).min((self.width - 1) as f32);
     let fy = (y as f32 / self.step).min((self.height - 1) as f32);
     let x0 = fx.floor() as u32;
@@ -190,8 +241,146 @@ impl ClimateGrid {
       top * (1.0 - ty) + bottom * ty
     };
 
-    (bilinear(&self.temperature), bilinear(&self.moisture))
+    (
+      bilinear(&self.temperature),
+      bilinear(&self.moisture),
+      bilinear(&self.noise),
+    )
   }
+}
+
+/// Sea-level mean temperature, in °C, of a map without
+/// `meanTemperatureCelsius`: a temperate climate.
+pub const DEFAULT_SEA_LEVEL_CELSIUS: f32 = 15.0;
+
+/// Cooling from sea level to the highest summit of a map without
+/// `meanTemperatureCelsius`, in °C. The summit ends up a little below
+/// freezing, where the snowy peak biomes are.
+const DEFAULT_RELIEF_COOLING_CELSIUS: f32 = 19.0;
+
+/// Real atmospheric lapse rate, in °C per metre.
+const LAPSE_RATE_PER_METRE: f32 = 0.0065;
+
+/// Climate noise amplitude in °C.
+const CLIMATE_NOISE_CELSIUS: f32 = 4.0;
+
+/// The sea-level mean temperature in °C before climate noise, including
+/// `temperatureBias`.
+pub fn sea_level_celsius(options: &BiomeOptions) -> f32 {
+  let bias = if options.enabled {
+    options.temperature_bias.clamp(-1.0, 1.0) * 0.4 * 65.0
+  } else {
+    0.0
+  };
+
+  options
+    .mean_temperature_celsius
+    .unwrap_or(DEFAULT_SEA_LEVEL_CELSIUS)
+    + bias
+}
+
+/// Local mean temperature in °C. `above_sea` is the altitude in metres,
+/// `rel` the same altitude as a fraction of the map's relief, and `relief`
+/// the height of the highest point above sea level.
+fn local_celsius(options: &BiomeOptions, noise: f32, above_sea: f32, rel: f32, relief: f32) -> f32 {
+  let sea_level = sea_level_celsius(options) + noise * CLIMATE_NOISE_CELSIUS;
+
+  if options.mean_temperature_celsius.is_some() {
+    sea_level - above_sea.max(0.0) * LAPSE_RATE_PER_METRE
+  } else {
+    // Low islands and hills are not cooled all the way: they are not
+    // alpine.
+    let hills = smoothstep((relief - 150.0) / 450.0);
+    sea_level - rel.clamp(0.0, 1.0) * DEFAULT_RELIEF_COOLING_CELSIUS * hills
+  }
+}
+
+/// How the cold shapes a sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ColdGround {
+  /// Too warm for ice or tundra.
+  None,
+  /// Glacier ice.
+  Glacier,
+  /// Tundra: moss and lichen where the ice thins.
+  Tundra,
+  /// Cold enough for ice but too steep to hold it: rock with snow.
+  Cliff,
+}
+
+/// The ice and tundra rules. Ice flows off slopes steeper than about 35
+/// degrees unless it is very cold, and nothing holds above 50 degrees.
+fn cold_ground(celsius: f32, slope_degrees: f32) -> ColdGround {
+  if celsius < -2.0 {
+    if slope_degrees < 35.0 || (celsius < -6.0 && slope_degrees < 50.0) {
+      ColdGround::Glacier
+    } else if slope_degrees < 50.0 {
+      ColdGround::Tundra
+    } else {
+      ColdGround::Cliff
+    }
+  } else if celsius < 3.0 && slope_degrees < 50.0 {
+    ColdGround::Tundra
+  } else {
+    ColdGround::None
+  }
+}
+
+/// How strongly the cold may act here, from 0 to 1. Only a climate
+/// temperature brings ice and tundra: without one, the highest summits
+/// carry the snowy peak biomes instead.
+fn cold_gate(options: &BiomeOptions) -> f32 {
+  if options.enabled && options.mean_temperature_celsius.is_some() {
+    1.0
+  } else {
+    0.0
+  }
+}
+
+fn slope_degrees(normal: Vec3) -> f32 {
+  normal[1].clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// Sea level and the relief used for relative altitude.
+fn relief(map: &HeightMap) -> (f32, f32) {
+  let sea = map.metadata.sea_level_metres;
+  (sea, (map.metadata.max_height_metres - sea).max(50.0))
+}
+
+/// Mark the samples that hold glacier ice, without classifying the rest
+/// of the surface. Used to shape glaciers before the full classification.
+pub fn glacier_mask(map: &HeightMap, normals: &[Vec3], options: &BiomeOptions) -> Vec<bool> {
+  let width = map.metadata.width;
+  let height = map.metadata.height;
+  let count = (width as usize) * (height as usize);
+
+  if count == 0 || normals.len() != count || !options.enabled {
+    return vec![false; count];
+  }
+
+  let (sea, range) = relief(map);
+  let climate = ClimateGrid::new(map, options);
+  let mut mask = vec![false; count];
+
+  for y in 0..height {
+    for x in 0..width {
+      let index = (y * width + x) as usize;
+      let h = map.heights[index];
+      let rel = ((h - sea) / range).clamp(0.0, 1.0);
+
+      let slope = slope_degrees(normals[index]);
+
+      if map.no_data[index] || h < sea - 0.3 || cold_gate(options) <= 0.0 {
+        continue;
+      }
+
+      let (_, _, noise) = climate.sample(x, y);
+      let celsius = local_celsius(options, noise, h - sea, rel, range);
+      mask[index] = cold_ground(celsius, slope) == ColdGround::Glacier;
+    }
+  }
+
+  mask
 }
 
 /// Find volcanic hotspots on the highest, well-separated peaks.
@@ -329,8 +518,7 @@ pub fn classify_surface(
     return vec![SurfaceSample::default(); count];
   }
 
-  let sea = map.metadata.sea_level_metres;
-  let range = (map.metadata.max_height_metres - sea).max(50.0);
+  let (sea, range) = relief(map);
   let climate = ClimateGrid::new(map, options);
   let volcanoes = find_volcanoes(map, options);
   let snow_line = snow_line_metres(map, options);
@@ -351,9 +539,22 @@ pub fn classify_surface(
       let steep = (1.0 - normal[1]).clamp(0.0, 1.0);
       let rel = ((h - sea) / range).clamp(0.0, 1.0);
       let above_sea = h - sea;
-      let (base_temperature, base_moisture) = climate.sample(x, y);
+      let (base_temperature, base_moisture, noise) = climate.sample(x, y);
       let lowland = (1.0 - rel).powi(3);
-      let temperature = (base_temperature - rel * 0.62).clamp(0.0, 1.0);
+      // The sea surface is at sea level, whatever the depth of the bed.
+      let celsius = local_celsius(options, noise, above_sea, rel, range);
+      let temperature = if options.enabled && options.mean_temperature_celsius.is_some() {
+        celsius_to_unit(celsius).clamp(0.0, 1.0)
+      } else {
+        (base_temperature - rel * 0.62).clamp(0.0, 1.0)
+      };
+      let slope = slope_degrees(normal);
+      let gate = cold_gate(options);
+      let cold = if h < sea - 0.3 || gate <= 0.0 {
+        ColdGround::None
+      } else {
+        cold_ground(celsius, slope)
+      };
       // A little high-frequency jitter keeps biome borders organic rather
       // than following the smooth climate contours exactly.
       let jitter = hash_noise(detail_seed, x as i32 / 3, y as i32 / 3) * 0.035
@@ -403,6 +604,17 @@ pub fn classify_surface(
         BiomeKind::CalderaVolcanic
       } else if volcano_factor > 0.45 {
         BiomeKind::OuterVolcanic
+      } else if matches!(cold, ColdGround::Glacier | ColdGround::Tundra) {
+        BiomeKind::IceArctic
+      } else if cold == ColdGround::Cliff {
+        // Cold rock too steep for ice keeps the mountain bands.
+        if snowy && h >= upper_snow_line {
+          BiomeKind::UpperSnowyPeaks
+        } else if snowy && h >= snow_line_here {
+          BiomeKind::LowerSnowyPeaks
+        } else {
+          BiomeKind::MountainProper
+        }
       } else if above_sea < beach * 1.6 && steep > 0.22 {
         BiomeKind::CoastalRocky
       } else if above_sea < beach * 1.6 && !(moisture > 0.72 && temperature > 0.45 && steep < 0.05)
@@ -458,6 +670,14 @@ pub fn classify_surface(
       } else {
         0.0
       };
+      let snow_holds = 1.0 - smoothstep((steep - 0.3) / 0.25);
+      let mut snow = snow;
+
+      // Wherever it is below freezing all year, snow lies on anything flat
+      // enough to hold it, whatever the height.
+      if h >= sea - 0.3 {
+        snow = snow.max(gate * smoothstep((-2.0 - celsius) / 6.0) * snow_holds);
+      }
       let mountain = smoothstep((rel - 0.5) / 0.25);
       let mut rock = smoothstep((steep - 0.16) / 0.26) * 0.95 + mountain * 0.35 * (1.0 - snow);
 
@@ -518,6 +738,19 @@ pub fn classify_surface(
       weights[MAT_MUD] = mud;
       weights[MAT_VOLCANIC] = volcanic;
 
+      if gate > 0.0 && h >= sea - 0.3 {
+        apply_cold_materials(
+          &mut weights,
+          ColdMaterials {
+            gate,
+            celsius,
+            slope,
+            glacier: cold == ColdGround::Glacier && biome == BiomeKind::IceArctic,
+            detail: value_noise(detail_seed ^ 0x1ce, x as f32 * 0.07, y as f32 * 0.07),
+          },
+        );
+      }
+
       let total: f32 = weights.iter().sum::<f32>().max(0.0001);
       let mut materials = [0u8; MATERIAL_COUNT];
 
@@ -525,7 +758,20 @@ pub fn classify_surface(
         *slot = ((weight / total) * 255.0).round().clamp(0.0, 255.0) as u8;
       }
 
-      let forest = forest_density(biome, moisture) * (1.0 - rock.min(1.0)) * (1.0 - snow);
+      let glacier = biome == BiomeKind::IceArctic && cold == ColdGround::Glacier;
+      let forest = if glacier {
+        0.0
+      } else {
+        forest_density(biome, moisture) * (1.0 - rock.min(1.0)) * (1.0 - snow.min(1.0))
+      };
+      let permanent_snow = if glacier {
+        1.0
+      } else if biome == BiomeKind::IceArctic {
+        // Tundra keeps patches of old snow the colder it gets, up to 160.
+        smoothstep((3.0 - celsius) / 5.0) * (160.0 / 255.0)
+      } else {
+        0.0
+      };
 
       samples.push(SurfaceSample {
         materials,
@@ -536,12 +782,153 @@ pub fn classify_surface(
         biome: biome as u8,
         forest: unit_to_byte(forest),
         river: if is_river { 255 } else { 0 },
-        reserved: 0,
+        permanent_snow: unit_to_byte(permanent_snow),
+        celsius_hundredths: (celsius * 100.0).round().clamp(-32_000.0, 32_000.0) as i16,
       });
     }
   }
 
+  mark_fast_ice(map, &mut samples);
   samples
+}
+
+/// Inputs for [`apply_cold_materials`].
+struct ColdMaterials {
+  gate: f32,
+  celsius: f32,
+  slope: f32,
+  glacier: bool,
+  /// Value noise in -1 to 1 that breaks up snow and stone patches.
+  detail: f32,
+}
+
+/// Blend glacier ice and tundra into the material weights. Soft edges on
+/// temperature and slope keep the borders natural; `cold.glacier` makes
+/// sure every sample classified as glacier is mostly ice or snow.
+fn apply_cold_materials(weights: &mut [f32; MATERIAL_COUNT], cold: ColdMaterials) {
+  let slope_limit = 35.0 + 15.0 * smoothstep((-4.0 - cold.celsius) / 4.0);
+  let mut ice = smoothstep((-1.0 - cold.celsius) / 2.0)
+    * (1.0 - smoothstep((cold.slope - slope_limit + 3.0) / 6.0))
+    * cold.gate;
+
+  if cold.glacier {
+    ice = ice.max(0.85);
+  }
+
+  let tundra = (1.0 - smoothstep((cold.celsius - 3.0) / 2.5))
+    * (1.0 - smoothstep((cold.slope - 47.0) / 6.0))
+    * cold.gate
+    * (1.0 - ice);
+
+  if tundra > 0.0 {
+    // Moss and lichen replace grass and forest litter; stones break
+    // through where the ground is poor.
+    let cover = weights[MAT_LUSH_GRASS] + weights[MAT_DRY_GRASS] + weights[MAT_FOREST_FLOOR];
+
+    for slot in [MAT_LUSH_GRASS, MAT_DRY_GRASS, MAT_FOREST_FLOOR] {
+      weights[slot] *= 1.0 - tundra;
+    }
+
+    let stony = smoothstep((cold.detail - 0.1) / 0.5) * 0.35;
+    weights[MAT_TUNDRA] = cover * tundra * (1.0 - stony);
+    weights[MAT_ROCK] += cover * tundra * stony;
+  }
+
+  if ice > 0.0 {
+    for weight in weights.iter_mut() {
+      *weight *= 1.0 - ice;
+    }
+
+    // Fresh snow lies on the ice: deeper where it is colder and flatter,
+    // scoured to bare blue ice in patches and on steeper ice falls.
+    let depth = (0.2 + 0.45 * smoothstep((-6.0 - cold.celsius) / 14.0) + cold.detail * 0.25)
+      * (1.0 - smoothstep((cold.slope - 8.0) / 20.0) * 0.6);
+    let depth = depth.clamp(0.1, 0.85);
+    weights[MAT_SNOW] += ice * depth;
+    weights[MAT_ICE] = ice * (1.0 - depth);
+  }
+}
+
+/// Fast ice: on sea colder than -10 °C, within 200 m of land, the sea ice
+/// is frozen to the shore and snow-covered. Marked with permanent snow on
+/// the ocean samples so the water shader can draw it.
+fn mark_fast_ice(map: &HeightMap, samples: &mut [SurfaceSample]) {
+  let width = map.metadata.width as usize;
+  let height = map.metadata.height as usize;
+  let ocean = BiomeKind::Ocean as u8;
+
+  if width == 0
+    || samples.len() != width * height
+    || !samples
+      .iter()
+      .any(|sample| sample.biome == ocean && sample.celsius() < -10.0)
+  {
+    return;
+  }
+
+  // Two-pass chamfer distance to land, in metres.
+  let metres = map.metadata.metres_per_sample.max(0.001);
+  let diagonal = metres * std::f32::consts::SQRT_2;
+  let mut distance: Vec<f32> = samples
+    .iter()
+    .map(|sample| if sample.biome == ocean { f32::MAX } else { 0.0 })
+    .collect();
+
+  for y in 0..height {
+    for x in 0..width {
+      let index = y * width + x;
+      let mut best = distance[index];
+
+      if x > 0 {
+        best = best.min(distance[index - 1] + metres);
+      }
+
+      if y > 0 {
+        best = best.min(distance[index - width] + metres);
+
+        if x > 0 {
+          best = best.min(distance[index - width - 1] + diagonal);
+        }
+
+        if x + 1 < width {
+          best = best.min(distance[index - width + 1] + diagonal);
+        }
+      }
+
+      distance[index] = best;
+    }
+  }
+
+  for y in (0..height).rev() {
+    for x in (0..width).rev() {
+      let index = y * width + x;
+      let mut best = distance[index];
+
+      if x + 1 < width {
+        best = best.min(distance[index + 1] + metres);
+      }
+
+      if y + 1 < height {
+        best = best.min(distance[index + width] + metres);
+
+        if x + 1 < width {
+          best = best.min(distance[index + width + 1] + diagonal);
+        }
+
+        if x > 0 {
+          best = best.min(distance[index + width - 1] + diagonal);
+        }
+      }
+
+      distance[index] = best;
+    }
+  }
+
+  for (sample, distance) in samples.iter_mut().zip(distance) {
+    if sample.biome == ocean && sample.celsius() < -10.0 && distance <= 200.0 {
+      sample.permanent_snow = 255;
+    }
+  }
 }
 
 /// Base tree cover likelihood for a biome.
@@ -565,6 +952,8 @@ pub fn forest_density(biome: BiomeKind, moisture: f32) -> f32 {
     BiomeKind::AlpineTransition => 0.06,
     BiomeKind::LowerSnowyPeaks => 0.0,
     BiomeKind::UpperSnowyPeaks => 0.0,
+    // Dwarf shrubs on the tundra, at a tenth of a forest's density.
+    BiomeKind::IceArctic => 0.1,
   };
 
   (base * (0.75 + moisture * 0.5)).clamp(0.0, 1.0)
@@ -596,6 +985,7 @@ pub fn biome_debug_colour(biome: BiomeKind) -> [f32; 3] {
     BiomeKind::AlpineTransition => [0.6, 0.5, 0.62],
     BiomeKind::LowerSnowyPeaks => [0.62, 0.78, 0.95],
     BiomeKind::UpperSnowyPeaks => [0.97, 0.99, 1.0],
+    BiomeKind::IceArctic => [0.75, 0.92, 1.0],
   }
 }
 
@@ -818,6 +1208,160 @@ mod tests {
       .any(|sample| sample.biome_kind() == BiomeKind::CalderaVolcanic));
   }
 
+  fn flat_land(size: u32, elevation: f32) -> HeightMap {
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 20.0,
+      sea_level_metres: 0.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(size, size, elevation, metadata);
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    map
+  }
+
+  fn climate(celsius: Option<f32>) -> BiomeOptions {
+    BiomeOptions {
+      mean_temperature_celsius: celsius,
+      volcanism: 0.0,
+      ..BiomeOptions::default()
+    }
+  }
+
+  #[test]
+  fn a_frozen_climate_is_an_ice_sheet() {
+    let map = flat_land(64, 100.0);
+    let samples = classify(&map, &climate(Some(-15.0)));
+    let ice = samples
+      .iter()
+      .filter(|sample| sample.biome_kind() == BiomeKind::IceArctic)
+      .count();
+
+    assert!(ice * 10 >= samples.len() * 9, "{ice} of {}", samples.len());
+    assert!(samples.iter().all(|sample| sample.celsius() < -8.0));
+  }
+
+  #[test]
+  fn glacier_samples_hold_permanent_snow_and_ice() {
+    let map = flat_land(32, 100.0);
+    let samples = classify(&map, &climate(Some(-15.0)));
+    let glacier: Vec<_> = samples
+      .iter()
+      .filter(|sample| sample.is_glacier())
+      .collect();
+
+    assert!(!glacier.is_empty());
+
+    for sample in glacier {
+      assert_eq!(sample.permanent_snow, 255);
+      assert_eq!(sample.forest, 0);
+      let frozen = sample.materials[MAT_ICE] as u32 + sample.materials[MAT_SNOW] as u32;
+      assert!(frozen > 200, "ice and snow {frozen}");
+    }
+  }
+
+  /// A broad dome with a gently rounded summit.
+  fn dome_map(peak: f32) -> HeightMap {
+    let size = 128;
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 100.0,
+      sea_level_metres: 0.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(size, size, 0.0, metadata);
+
+    for y in 0..size {
+      for x in 0..size {
+        let dx = x as f32 - 64.0;
+        let dy = y as f32 - 64.0;
+        let h = peak * (-(dx * dx + dy * dy) / (30.0 * 30.0)).exp() - 20.0;
+        let _ = map.set_height(x, y, h);
+      }
+    }
+
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    map
+  }
+
+  #[test]
+  fn a_mild_climate_keeps_its_snowy_peaks_and_forms_no_ice() {
+    let map = dome_map(3_000.0);
+    let samples = classify(&map, &climate(None));
+
+    assert!(samples
+      .iter()
+      .all(|sample| sample.biome_kind() != BiomeKind::IceArctic && sample.permanent_snow == 0));
+    assert_eq!(
+      samples[128 * 64 + 64].biome_kind(),
+      BiomeKind::UpperSnowyPeaks
+    );
+    // Summits are just below freezing, the lowlands temperate.
+    assert!(samples[128 * 2 + 2].celsius() > 8.0);
+    assert!(samples[128 * 64 + 64].celsius() < 0.0);
+
+    // At 15 °C with a real lapse rate, only the upper slopes of a 3000 m
+    // peak are cold enough for tundra (below 3 °C) or ice.
+    let temperate = classify(&map, &climate(Some(15.0)));
+
+    for (sample, height) in temperate.iter().zip(&map.heights) {
+      if sample.biome_kind() == BiomeKind::IceArctic {
+        assert!(
+          sample.celsius() <= 3.0 && *height > 1_000.0,
+          "ice at {height} m, {} °C",
+          sample.celsius()
+        );
+      }
+    }
+
+    assert!(temperate
+      .iter()
+      .any(|sample| sample.biome_kind() == BiomeKind::IceArctic));
+  }
+
+  #[test]
+  fn a_hot_climate_has_no_ice() {
+    let map = ramp_map(128, 3_000.0);
+    let samples = classify(&map, &climate(Some(30.0)));
+
+    assert!(samples
+      .iter()
+      .all(|sample| sample.biome_kind() != BiomeKind::IceArctic));
+  }
+
+  #[test]
+  fn temperature_falls_with_altitude_at_the_lapse_rate() {
+    let map = ramp_map(128, 3_000.0);
+    // Climate regions far larger than the map keep the noise constant.
+    let options = BiomeOptions {
+      climate_scale_metres: 1.0e8,
+      ..climate(Some(15.0))
+    };
+    let samples = classify(&map, &options);
+    let row = 64 * 128;
+    let low = (samples[row + 20].celsius(), map.heights[row + 20]);
+    let high = (samples[row + 120].celsius(), map.heights[row + 120]);
+    let rate = (low.0 - high.0) / (high.1 - low.1) * 1_000.0;
+
+    assert!((rate - 6.5).abs() < 0.5, "lapse rate {rate}");
+  }
+
+  #[test]
+  fn cold_sea_next_to_land_is_fast_ice() {
+    let map = ramp_map(64, 400.0);
+    let samples = classify(&map, &climate(Some(-18.0)));
+    let row = 32 * 64;
+
+    // The ramp crosses sea level about a tenth of the way along.
+    assert_eq!(samples[row].biome_kind(), BiomeKind::Ocean);
+    assert_eq!(samples[row + 2].permanent_snow, 255);
+
+    let mild = classify(&map, &climate(Some(5.0)));
+    assert_eq!(mild[row + 2].permanent_snow, 0);
+  }
+
   #[test]
   fn disabled_biomes_stay_temperate() {
     let map = ramp_map(64, 1_500.0);
@@ -834,6 +1378,7 @@ mod tests {
         | BiomeKind::SavannahExpanse
         | BiomeKind::OuterVolcanic
         | BiomeKind::CalderaVolcanic
+        | BiomeKind::IceArctic
     )));
   }
 }

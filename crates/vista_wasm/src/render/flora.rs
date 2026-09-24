@@ -99,6 +99,8 @@ pub fn choose_species(biome: BiomeKind, temperature: f32, roll: f32) -> Option<T
     BiomeKind::InnerJungle => &[(Jungle, 0.85), (Palm, 0.15)],
     BiomeKind::SwampWetlands => &[(Cypress, 0.8), (Shrub, 0.2)],
     BiomeKind::AlpineTransition => &[(Shrub, 0.75), (Spruce, 0.25)],
+    // Only dwarf shrubs survive on the tundra; nothing grows on the ice.
+    BiomeKind::IceArctic => &[(Shrub, 1.0)],
     BiomeKind::CalderaVolcanic
     | BiomeKind::Ocean
     | BiomeKind::LowerSnowyPeaks
@@ -316,8 +318,7 @@ fn candidate_at(
   let rotation_roll = unit_from_hash(hash_noise(seed ^ 0x2468_ace0, x as i32, y as i32));
   // Trees at the forest edge and on poor ground grow smaller.
   let vigour = 0.8 + cover.min(1.0) * 0.2;
-
-  Some(TreeInstance {
+  let mut tree = TreeInstance {
     position: [
       x as f32 * metres_per_sample,
       elevation,
@@ -329,7 +330,17 @@ fn candidate_at(
     species: species as u32,
     dryness: ((sample.temperature_unit() - 0.45) * 1.5 + (0.5 - sample.moisture_unit()) * 1.5)
       .clamp(0.0, 1.0),
-  })
+  };
+
+  // Tundra shrubs are dwarf willow and birch: knee to waist high, and
+  // brown rather than green for most of the year.
+  if sample.is_tundra() && rule.is_none() {
+    tree.scale = 0.35 + scale_roll * 0.25;
+    tree.tint = 0.15 + tint_roll * 0.2;
+    tree.dryness = 0.75;
+  }
+
+  Some(tree)
 }
 
 pub(crate) fn unit_from_hash(value: f32) -> f32 {

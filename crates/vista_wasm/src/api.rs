@@ -214,6 +214,13 @@ impl VistaEngine {
     }
   }
 
+  /// Return the mean annual temperature in °C at a world position, or
+  /// `undefined` outside the terrain.
+  #[wasm_bindgen(js_name = temperatureAt)]
+  pub fn temperature_at(&self, x: f32, z: f32) -> Result<Option<f32>, JsValue> {
+    Ok(self.core_ref()?.celsius_at(x, z))
+  }
+
   /// Replace render quality controls.
   #[wasm_bindgen(js_name = setRenderQuality)]
   pub fn set_render_quality(&mut self, quality: JsValue) -> Result<(), JsValue> {
