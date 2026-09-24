@@ -23,7 +23,7 @@
 
 use crate::terrain::drainage::{
   accumulate, accumulate_into, edge_or_sea_outlet, neighbours, priority_flood, stack_order,
-  StackOrder, NO_RECEIVER,
+  total_order_bits, StackOrder, NO_RECEIVER,
 };
 
 /// Drainage-area exponent `m` of the stream-power law.
@@ -38,8 +38,17 @@ const HILLTOP_SLOPE_FRACTION: f64 = 0.8;
 /// The slope at which the glacial `n = 2` law erodes as fast as `n = 1`.
 const GLACIAL_REFERENCE_SLOPE: f64 = 0.35;
 
-/// Diffusion passes over the crests after the last iteration.
-const FINAL_SMOOTHING: u32 = 24;
+/// Iterations that reroute every time, while the network forms.
+pub const SETTLING_ITERATIONS: u32 = 5;
+/// After settling, routing is refreshed every this many iterations.
+const REROUTE_INTERVAL: u32 = 5;
+
+/// Diffusion passes over the crests after the last iteration, for a
+/// solve from scratch.
+pub const CREST_PASSES: u32 = 24;
+/// Crest passes for the full-size refinement, whose crests were already
+/// rounded at half size.
+const FINE_CREST_PASSES: u32 = 8;
 
 /// Cells draining at most this many cells count as crests.
 const CREST_CELLS: f32 = 8.0;
@@ -71,6 +80,12 @@ pub struct StreamPowerOptions {
   /// The 99th percentile of land height to rescale to, in metres, or 0
   /// to keep the raw steady-state heights.
   pub target_relief: f64,
+  /// Diffusion passes over the crests after the last iteration.
+  pub crest_passes: u32,
+  /// Iterations that reroute every time before rerouting slows to every
+  /// [`REROUTE_INTERVAL`]. A solve starting from a settled network needs
+  /// fewer.
+  pub settling_iterations: u32,
 }
 
 /// Erode `heights` (metres relative to sea level, row-major, `size` per
@@ -94,11 +109,16 @@ pub fn stream_power(
   let cell_area = (spacing * spacing) as f32;
 
   // Fill depressions once. Every later step keeps each cell above its
-  // receiver, so no new depressions can form.
-  let flood = priority_flood(size, size, heights, EPSILON, |i| outlet[i as usize]);
-  heights.copy_from_slice(&flood.filled);
-
-  let mut receiver = flood.receiver;
+  // receiver, so no new depressions can form. A surface that already
+  // drains (such as one upsampled from a solved grid) needs no filling;
+  // the first routing pass then finds every receiver.
+  let mut receiver = if has_pits(size, heights, &outlet) {
+    let flood = priority_flood(size, size, heights, EPSILON, |i| outlet[i as usize]);
+    heights.copy_from_slice(&flood.filled);
+    flood.receiver
+  } else {
+    vec![NO_RECEIVER; count]
+  };
   let mut area = vec![cell_area; count];
   let mut order: Vec<u32> = Vec::with_capacity(count);
   let mut stacker = StackOrder::default();
@@ -115,11 +135,16 @@ pub fn stream_power(
     .collect();
 
   for iteration in 0..options.iterations.max(1) {
-    let routing_seed = crate::maths::hash_u64(options.seed ^ ((iteration as u64) << 32));
-    stochastic_descent(size, heights, &outlet, &mut receiver, routing_seed);
-    stacker.order(&receiver, &mut order);
-    area.fill(cell_area);
-    accumulate_into(&order, &receiver, &mut area);
+    // Routing settles within the first iterations. After that it is
+    // refreshed every few iterations: in between, every step keeps each
+    // cell above its receiver, so the old routing stays valid and acyclic.
+    if iteration < options.settling_iterations || iteration % REROUTE_INTERVAL == 0 {
+      let routing_seed = crate::maths::hash_u64(options.seed ^ ((iteration as u64) << 32));
+      stochastic_descent(size, heights, &outlet, &mut receiver, routing_seed);
+      stacker.order(&receiver, &mut order);
+      area.fill(cell_area);
+      accumulate_into(&order, &receiver, &mut area);
+    }
 
     for index in &order {
       let i = *index as usize;
@@ -200,7 +225,7 @@ pub fn stream_power(
     .collect();
   let mut update = vec![0.0f64; crest.len()];
 
-  for _ in 0..FINAL_SMOOTHING {
+  for _ in 0..options.crest_passes {
     for (slot, i) in update.iter_mut().zip(&crest) {
       let i = *i;
       let laplacian =
@@ -223,6 +248,95 @@ pub fn stream_power(
   );
 
   area
+}
+
+/// Grids at least this many samples across solve most iterations at half
+/// size first (see [`stream_power_coarse_to_fine`]).
+const COARSE_TO_FINE_MIN_SIZE: u32 = 128;
+/// Iterations kept for the full-size grid in coarse-to-fine solves.
+const FINE_ITERATIONS: u32 = 4;
+
+/// [`stream_power`] solved coarse to fine: all but [`FINE_ITERATIONS`] of
+/// the iterations run on a half-size grid, where each costs a quarter as
+/// much and the steady state settles just the same, and the rest refine
+/// the upsampled result at full size. Small grids are solved directly.
+pub fn stream_power_coarse_to_fine(
+  size: u32,
+  spacing: f64,
+  heights: &mut [f64],
+  uplift: &[f64],
+  options: &StreamPowerOptions,
+) -> Vec<f32> {
+  if size < COARSE_TO_FINE_MIN_SIZE || options.iterations <= FINE_ITERATIONS {
+    return stream_power(size, spacing, heights, uplift, options);
+  }
+
+  let half = size.div_ceil(2);
+  let half_spacing = spacing * (size - 1) as f64 / (half - 1) as f64;
+  let mut coarse = resample(heights, size, half);
+  // Uplift is a rate per iteration, so it scales with the cell size to
+  // keep hillslope drops (and so slopes) the same.
+  let coarse_uplift: Vec<f64> = resample(uplift, size, half)
+    .iter()
+    .map(|u| u * half_spacing / spacing)
+    .collect();
+  stream_power(
+    half,
+    half_spacing,
+    &mut coarse,
+    &coarse_uplift,
+    &StreamPowerOptions {
+      iterations: options.iterations - FINE_ITERATIONS,
+      ..*options
+    },
+  );
+
+  // Keep the sea and the base level exactly where they were.
+  for (height, refined) in heights.iter_mut().zip(resample(&coarse, half, size)) {
+    if *height > 0.0 {
+      *height = refined.max(1e-3);
+    }
+  }
+
+  stream_power(
+    size,
+    spacing,
+    heights,
+    uplift,
+    &StreamPowerOptions {
+      iterations: FINE_ITERATIONS,
+      // The upsampled network is already settled.
+      settling_iterations: 1,
+      crest_passes: FINE_CREST_PASSES,
+      ..*options
+    },
+  )
+}
+
+/// Bilinearly resample a square grid of `from` samples per side onto one
+/// of `to` samples per side spanning the same extent.
+pub fn resample(values: &[f64], from: u32, to: u32) -> Vec<f64> {
+  let (from, to) = (from as usize, to as usize);
+  let scale = (from - 1) as f64 / (to - 1) as f64;
+  let mut out = Vec::with_capacity(to * to);
+
+  for y in 0..to {
+    let fy = y as f64 * scale;
+    let y0 = (fy as usize).min(from - 2);
+    let ty = fy - y0 as f64;
+
+    for x in 0..to {
+      let fx = x as f64 * scale;
+      let x0 = (fx as usize).min(from - 2);
+      let tx = fx - x0 as f64;
+      let at = |xx: usize, yy: usize| values[yy * from + xx];
+      let top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx;
+      let bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+      out.push(top + (bottom - top) * ty);
+    }
+  }
+
+  out
 }
 
 /// Keep every cell between `EPSILON` and `max_slope` above its receiver,
@@ -322,24 +436,20 @@ fn stochastic_descent(
       continue;
     }
 
-    let mut candidates = [(0u32, 0.0f64); 8];
-    let mut found = 0;
-    let mut total = 0.0;
+    // Uphill neighbours get zero weight; computing all eight without
+    // branching is faster than skipping them.
     let here = heights[i];
+    let mut weights = [0.0f64; 8];
+    let mut total = 0.0;
 
-    for (step, inverse) in offsets {
+    for (slot, (step, inverse)) in offsets.iter().enumerate() {
       let j = (i as isize + step) as usize;
-      let drop = (here - heights[j]) * inverse;
-
-      if drop > 0.0 {
-        let weight = drop * drop;
-        candidates[found] = (j as u32, weight);
-        found += 1;
-        total += weight;
-      }
+      let drop = ((here - heights[j]) * inverse).max(0.0);
+      weights[slot] = drop * drop;
+      total += weights[slot];
     }
 
-    if found == 0 {
+    if total <= 0.0 {
       continue;
     }
 
@@ -349,17 +459,44 @@ fn stochastic_descent(
     hash = hash.wrapping_mul(0x85eb_ca6b);
     hash ^= hash >> 13;
     let mut pick = hash as f64 * (total / u32::MAX as f64);
-    receiver[i] = candidates[found - 1].0;
+    let mut chosen = 7;
 
-    for (neighbour, weight) in &candidates[..found] {
-      if pick < *weight {
-        receiver[i] = *neighbour;
-        break;
+    for (slot, weight) in weights.iter().enumerate() {
+      if *weight > 0.0 {
+        chosen = slot;
+
+        if pick < *weight {
+          break;
+        }
+
+        pick -= weight;
       }
-
-      pick -= weight;
     }
+
+    receiver[i] = (i as isize + offsets[chosen].0) as u32;
   }
+}
+
+/// Whether any non-outlet cell has no strictly lower neighbour. Every
+/// edge cell is an outlet, so interior cells need no bounds checks.
+fn has_pits(size: u32, heights: &[f64], outlet: &[bool]) -> bool {
+  let n = size as usize;
+
+  (0..heights.len()).any(|i| {
+    !outlet[i]
+      && [
+        i - 1,
+        i + 1,
+        i - n,
+        i + n,
+        i - n - 1,
+        i - n + 1,
+        i + n - 1,
+        i + n + 1,
+      ]
+      .iter()
+      .all(|j| heights[*j] >= heights[i])
+  })
 }
 
 /// How glaciated a cell at `height` is, 0 to 1.
@@ -376,6 +513,14 @@ fn glacial_weight(height: f64, options: &StreamPowerOptions) -> f64 {
 /// The mean height of the 3 x 3 block around `index`: glaciers erode
 /// against a wider base than a single receiver, which widens valleys.
 fn mean_around(size: u32, heights: &[f64], index: usize) -> f64 {
+  let n = size as usize;
+  let (x, y) = (index % n, index / n);
+
+  if x > 0 && y > 0 && x + 1 < n && y + 1 < n {
+    let row = |i: usize| heights[i - 1] + heights[i] + heights[i + 1];
+    return (row(index - n) + row(index) + row(index + n)) / 9.0;
+  }
+
   let mut sum = heights[index];
   let mut count = 1.0;
 
@@ -575,10 +720,8 @@ impl PartialOrd for FloorCell {
 
 impl Ord for FloorCell {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    self
-      .floor
-      .total_cmp(&other.floor)
-      .then_with(|| other.index.cmp(&self.index))
+    // Integer keys order like `f64::total_cmp`, and compare faster.
+    (total_order_bits(self.floor), other.index).cmp(&(total_order_bits(other.floor), self.index))
   }
 }
 
@@ -620,6 +763,8 @@ mod tests {
       snowline: 1e9,
       threshold_slope: 0.8,
       target_relief: 0.0,
+      settling_iterations: SETTLING_ITERATIONS,
+      crest_passes: CREST_PASSES,
     }
   }
 

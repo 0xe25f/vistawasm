@@ -5,7 +5,6 @@
 //! `terrain/stream_power.rs`, and the terrain tests all route water the
 //! same way, so the routing lives here once.
 
-use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 /// Marks a cell that drains nowhere (an outlet, or not yet routed).
@@ -23,28 +22,39 @@ pub const OFFSETS: [(i32, i32); 8] = [
   (1, 1),
 ];
 
-#[derive(Clone, Copy, PartialEq)]
+/// A priority-flood heap entry. `BinaryHeap` pops the largest entry, so
+/// both fields are inverted: the lowest level pops first, and ties go to
+/// the lowest index, keeping the flood fully deterministic. The level is
+/// stored as its total-order bit pattern, since integer comparisons are
+/// much cheaper than `f64::total_cmp`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct FloodCell {
-  level: f64,
-  index: u32,
+  inverted_level: u64,
+  inverted_index: u32,
 }
 
-impl Eq for FloodCell {}
+/// `value`'s bits rearranged so unsigned comparison gives the same order
+/// as `f64::total_cmp`.
+pub(crate) fn total_order_bits(value: f64) -> u64 {
+  let bits = value.to_bits();
 
-impl Ord for FloodCell {
-  fn cmp(&self, other: &Self) -> Ordering {
-    // Reverse so `BinaryHeap` pops the lowest level first; ties break on
-    // index to keep the flood fully deterministic.
-    other
-      .level
-      .total_cmp(&self.level)
-      .then_with(|| other.index.cmp(&self.index))
+  if bits >> 63 == 1 {
+    !bits
+  } else {
+    bits | (1 << 63)
   }
 }
 
-impl PartialOrd for FloodCell {
-  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    Some(self.cmp(other))
+impl FloodCell {
+  fn new(level: f64, index: u32) -> Self {
+    Self {
+      inverted_level: !total_order_bits(level),
+      inverted_index: !index,
+    }
+  }
+
+  fn index(&self) -> u32 {
+    !self.inverted_index
   }
 }
 
@@ -98,17 +108,16 @@ pub fn priority_flood(
   for index in 0..count as u32 {
     if is_outlet(index) {
       visited[index as usize] = true;
-      heap.push(FloodCell {
-        level: filled[index as usize],
-        index,
-      });
+      heap.push(FloodCell::new(filled[index as usize], index));
     }
   }
 
   while let Some(cell) = heap.pop() {
-    order.push(cell.index);
+    let index = cell.index();
+    let level = filled[index as usize];
+    order.push(index);
 
-    for neighbour in neighbours(width, height, cell.index) {
+    for neighbour in neighbours(width, height, index) {
       let n = neighbour as usize;
 
       if visited[n] {
@@ -116,12 +125,9 @@ pub fn priority_flood(
       }
 
       visited[n] = true;
-      filled[n] = heights[n].max(cell.level + epsilon);
-      receiver[n] = cell.index;
-      heap.push(FloodCell {
-        level: filled[n],
-        index: neighbour,
-      });
+      filled[n] = heights[n].max(level + epsilon);
+      receiver[n] = index;
+      heap.push(FloodCell::new(filled[n], neighbour));
     }
   }
 
@@ -178,6 +184,50 @@ pub fn steepest_receivers(width: u32, height: u32, surface: &[f64], receiver: &m
   }
 }
 
+/// Route every non-outlet cell to its steepest downhill neighbour (D8),
+/// or return `None` if some cell has no lower neighbour. On a surface
+/// with no depressions this gives the same receivers as
+/// [`priority_flood`] followed by [`steepest_receivers`], without the
+/// flood.
+pub fn steepest_if_drained(
+  width: u32,
+  height: u32,
+  heights: &[f64],
+  is_outlet: impl Fn(u32) -> bool,
+) -> Option<Vec<u32>> {
+  let mut receiver = vec![NO_RECEIVER; heights.len()];
+
+  for index in 0..heights.len() as u32 {
+    if is_outlet(index) {
+      continue;
+    }
+
+    let i = index as usize;
+    let mut best = NO_RECEIVER;
+    let mut best_drop = 0.0;
+
+    for neighbour in neighbours(width, height, index) {
+      let n = neighbour as usize;
+      let dx = (neighbour % width) as f64 - (index % width) as f64;
+      let dy = (neighbour / width) as f64 - (index / width) as f64;
+      let drop = (heights[i] - heights[n]) / (dx * dx + dy * dy).sqrt();
+
+      if drop > best_drop {
+        best_drop = drop;
+        best = neighbour;
+      }
+    }
+
+    if best == NO_RECEIVER {
+      return None;
+    }
+
+    receiver[i] = best;
+  }
+
+  Some(receiver)
+}
+
 /// Order cells so every cell comes after its receiver (the "stack" of
 /// Braun and Willett, 2013), walking up the receiver trees from the
 /// outlets. Cells whose receiver chain never reaches an outlet are left
@@ -192,57 +242,44 @@ pub fn stack_order(receiver: &[u32]) -> Vec<u32> {
 /// grid many times.
 #[derive(Default)]
 pub struct StackOrder {
-  start: Vec<u32>,
-  fill: Vec<u32>,
+  /// Donors of each cell, in eight fixed slots per cell.
   donors: Vec<u32>,
+  /// How many slots of each cell are used.
+  counts: Vec<u8>,
 }
 
 impl StackOrder {
-  /// Write the stack order of `receiver` into `order`.
+  /// Write the stack order of `receiver` into `order`. Every receiver
+  /// must be one of its cell's eight neighbours, so no cell has more than
+  /// eight donors.
   pub fn order(&mut self, receiver: &[u32], order: &mut Vec<u32>) {
     let count = receiver.len();
-    // Donor lists as a compact adjacency (counting sort by receiver).
-    self.start.clear();
-    self.start.resize(count + 1, 0);
-
-    for r in receiver {
-      if *r != NO_RECEIVER {
-        self.start[*r as usize + 1] += 1;
-      }
-    }
-
-    for i in 0..count {
-      self.start[i + 1] += self.start[i];
-    }
-
-    self.fill.clear();
-    self.fill.extend_from_slice(&self.start);
-    self.donors.clear();
-    self.donors.resize(self.start[count] as usize, 0);
+    self.counts.clear();
+    self.counts.resize(count, 0);
+    self.donors.resize(count * 8, 0);
+    order.clear();
 
     for (index, r) in receiver.iter().enumerate() {
-      if *r != NO_RECEIVER {
-        self.donors[self.fill[*r as usize] as usize] = index as u32;
-        self.fill[*r as usize] += 1;
+      if *r == NO_RECEIVER {
+        order.push(index as u32);
+      } else {
+        let r = *r as usize;
+        let slot = self.counts[r] as usize;
+        self.donors[r * 8 + slot] = index as u32;
+        self.counts[r] += 1;
       }
     }
 
     // Breadth-first from the outlets, using `order` itself as the queue.
-    order.clear();
-    order.extend(
-      receiver
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| **r == NO_RECEIVER)
-        .map(|(index, _)| index as u32),
-    );
     let mut head = 0;
 
     while head < order.len() {
       let c = order[head] as usize;
       head += 1;
-      let (first, last) = (self.start[c] as usize, self.start[c + 1] as usize);
-      order.extend_from_slice(&self.donors[first..last]);
+
+      for slot in 0..self.counts[c] as usize {
+        order.push(self.donors[c * 8 + slot]);
+      }
     }
   }
 }

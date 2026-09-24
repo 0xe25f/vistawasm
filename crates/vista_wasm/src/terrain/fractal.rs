@@ -5,13 +5,17 @@ use vista_types::{FractalTerrainOptions, LandformKind, NoiseKind, TerrainMetadat
 use crate::errors::VistaResult;
 use crate::maths::{hash_u64, lerp};
 use crate::terrain::drainage::{
-  accumulate, edge_or_sea_outlet, neighbours, priority_flood, stack_order, steepest_receivers,
+  accumulate, edge_or_sea_outlet, neighbours, priority_flood, stack_order, steepest_if_drained,
+  steepest_receivers,
 };
 use crate::terrain::erosion::apply_erosion;
 use crate::terrain::heightmap::{update_stats, HeightMap, TerrainAux};
 use crate::terrain::landforms::Landform;
 use crate::terrain::noise::{noise_seed, simplex, simplex_d};
-use crate::terrain::stream_power::{plane_valley_floors, stream_power, StreamPowerOptions};
+use crate::terrain::stream_power::{
+  plane_valley_floors, resample, stream_power, stream_power_coarse_to_fine, StreamPowerOptions,
+  AREA_EXPONENT, CREST_PASSES, SETTLING_ITERATIONS,
+};
 use crate::terrain::tectonics::{tectonic_base, Tectonics};
 
 const GENERATOR_VERSION: &str = "vistawasm-fractal-0.2.0";
@@ -111,12 +115,10 @@ pub fn generate_fractal_heightmap_base_with_progress(
   // Lowlands erode for a limited time, so big rivers open broad vales
   // while the plains between them keep their gentle relief.
   let mut coarse = std::mem::take(&mut base.lowland);
-  let no_uplift = vec![0.0; coarse.len()];
-  stream_power(
+  erode_lowlands(
     base.size,
     spacing_coarse,
     &mut coarse,
-    &no_uplift,
     &StreamPowerOptions {
       iterations: LOWLAND_ITERATIONS,
       seed: options.seed,
@@ -127,6 +129,8 @@ pub fn generate_fractal_heightmap_base_with_progress(
       snowline: f64::INFINITY,
       threshold_slope,
       target_relief: 0.0,
+      settling_iterations: SETTLING_ITERATIONS,
+      crest_passes: CREST_PASSES,
     },
   );
   progress("drainage", 0.3);
@@ -161,7 +165,7 @@ pub fn generate_fractal_heightmap_base_with_progress(
 
   if target_relief > 0.0 {
     let snowline = landform.lowland_relief as f64 * 0.5 + 0.3 * mountain_relief;
-    stream_power(
+    stream_power_coarse_to_fine(
       base.size,
       spacing_coarse,
       &mut mountains,
@@ -176,6 +180,8 @@ pub fn generate_fractal_heightmap_base_with_progress(
         snowline: snowline.max(1.0),
         threshold_slope,
         target_relief,
+        settling_iterations: SETTLING_ITERATIONS,
+        crest_passes: CREST_PASSES,
       },
     );
   }
@@ -197,8 +203,9 @@ pub fn generate_fractal_heightmap_base_with_progress(
   smooth_land(base.size as usize, &mut coarse, COARSE_SMOOTHING);
   relevel_sea(&mut coarse, landform.land_fraction);
   breach_thin_land(base.size as usize, &mut coarse);
-  // Drainage area of the finished surface, for erosion and later stages.
-  let drainage_area = coarse_drainage_area(base.size, spacing_coarse, &coarse);
+  // Kept for erosion and later stages. Floors, smoothing and breaching
+  // barely move the drainage network, so it is not routed again.
+  let drainage_area = area;
 
   if options.landform == LandformKind::VolcanicIsland {
     carve_caldera(&mut coarse, base.size, base.summit, &landform);
@@ -450,6 +457,40 @@ pub fn remove_small_pits(map: &mut HeightMap, min_samples: usize) {
   }
 }
 
+/// Erode the lowlands. They are gentle, and later get floors, smoothing
+/// and detail, so grids of 128 samples or more erode at half size, a
+/// quarter of the work, and are upsampled. The coast and sea floor stay
+/// exactly as stage A left them.
+fn erode_lowlands(size: u32, spacing: f64, heights: &mut [f64], options: &StreamPowerOptions) {
+  if size < 128 {
+    stream_power(size, spacing, heights, &vec![0.0; heights.len()], options);
+    return;
+  }
+
+  let half = size.div_ceil(2);
+  let scale = (size - 1) as f64 / (half - 1) as f64;
+  let mut coarse = resample(heights, size, half);
+  let rate = options.rate.map(|rate| {
+    // Cells cover `scale^2` times the area, so the same drainage area is
+    // fewer cells; scale the rate to erode just as fast.
+    rate * (scale * scale).powf(AREA_EXPONENT)
+  });
+  let no_uplift = vec![0.0; coarse.len()];
+  stream_power(
+    half,
+    spacing * scale,
+    &mut coarse,
+    &no_uplift,
+    &StreamPowerOptions { rate, ..*options },
+  );
+
+  for (height, eroded) in heights.iter_mut().zip(resample(&coarse, half, size)) {
+    if *height > 0.0 {
+      *height = eroded.max(0.5);
+    }
+  }
+}
+
 /// Diffusion passes over the land at the end of stage B.
 const COARSE_SMOOTHING: u32 = 4;
 
@@ -492,43 +533,42 @@ fn smooth_land(n: usize, heights: &mut [f64], passes: u32) {
 /// Flooded troughs running beside the coast leave knife-thin barriers
 /// that waves would breach, and whose crests read as rows of summits.
 fn breach_thin_land(n: usize, heights: &mut [f64]) {
-  let sea = |heights: &[f64], x: isize, y: isize| {
-    x < 0
-      || y < 0
-      || x >= n as isize
-      || y >= n as isize
-      || heights[y as usize * n + x as usize] <= 0.0
-  };
+  let mut sea: Vec<bool> = heights.iter().map(|h| *h <= 0.0).collect();
 
   for _ in 0..2 {
-    let snapshot = heights.to_vec();
+    let mut drowned = Vec::new();
 
     for y in 0..n as isize {
       for x in 0..n as isize {
-        let i = y as usize * n + x as usize;
-
-        if snapshot[i] <= 0.0 {
+        if sea[y as usize * n + x as usize] {
           continue;
         }
 
-        let thin = [(1, 0), (0, 1), (1, 1), (1, -1)].iter().any(|(dx, dy)| {
-          let near =
-            |sign: isize| (1..=2).any(|k| sea(&snapshot, x + dx * k * sign, y + dy * k * sign));
-          let outside = |x: isize, y: isize| x < 0 || y < 0 || x >= n as isize || y >= n as isize;
-          // The map edge is not sea for this purpose.
-          let open = |sign: isize| {
-            (1..=2).any(|k| {
-              let (sx, sy) = (x + dx * k * sign, y + dy * k * sign);
-              !outside(sx, sy) && sea(&snapshot, sx, sy)
-            })
-          };
-          near(1) && near(-1) && open(1) && open(-1)
-        });
+        // Sea (not the map edge) within two cells along a line, on both
+        // sides.
+        let open = |dx: isize, dy: isize| {
+          (1..=2).any(|k| {
+            let (sx, sy) = (x + dx * k, y + dy * k);
+            sx >= 0
+              && sy >= 0
+              && sx < n as isize
+              && sy < n as isize
+              && sea[sy as usize * n + sx as usize]
+          })
+        };
+        let thin = [(1, 0), (0, 1), (1, 1), (1, -1)]
+          .iter()
+          .any(|(dx, dy)| open(*dx, *dy) && open(-dx, -dy));
 
         if thin {
-          heights[i] = -1.0;
+          drowned.push(y as usize * n + x as usize);
         }
       }
+    }
+
+    for i in drowned {
+      heights[i] = -1.0;
+      sea[i] = true;
     }
   }
 }
@@ -556,15 +596,13 @@ fn relevel_sea(heights: &mut [f64], land_fraction: f32) {
 /// Upstream drainage area in square metres on a coarse grid, after
 /// filling depressions.
 fn coarse_drainage_area(size: u32, spacing: f64, heights: &[f64]) -> Vec<f32> {
-  let flood = priority_flood(
-    size,
-    size,
-    heights,
-    1e-4,
-    edge_or_sea_outlet(size, size, heights, 0.0),
-  );
-  let mut receiver = flood.receiver;
-  steepest_receivers(size, size, &flood.filled, &mut receiver);
+  let outlet = edge_or_sea_outlet(size, size, heights, 0.0);
+  let receiver = steepest_if_drained(size, size, heights, &outlet).unwrap_or_else(|| {
+    let flood = priority_flood(size, size, heights, 1e-4, &outlet);
+    let mut receiver = flood.receiver;
+    steepest_receivers(size, size, &flood.filled, &mut receiver);
+    receiver
+  });
   let order = stack_order(&receiver);
   accumulate(
     &order,

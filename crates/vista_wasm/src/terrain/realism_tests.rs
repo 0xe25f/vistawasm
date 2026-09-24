@@ -1,6 +1,9 @@
 //! Realism tests for the full CPU generation pipeline: every landform on
 //! seeds 1 to 12, at 256 x 256 samples and 12 m per sample, with
-//! `"high"` erosion.
+//! `"high"` erosion. Every landform on seeds 1 and 2 at 512 x 512 and
+//! 40 m per sample, with `"preview"` erosion, also runs through the same
+//! checks: those maps are wide enough for a full 256-sample coarse grid,
+//! which stage B solves coarse to fine.
 //!
 //! Slopes use central differences. Cells within [`BORDER`] samples of the
 //! map edge are left out: the edge is a boundary condition (an outlet for
@@ -18,6 +21,9 @@ use crate::terrain::landforms::Landform;
 const SIZE: u32 = 256;
 const METRES_PER_SAMPLE: f32 = 12.0;
 const SEEDS: std::ops::RangeInclusive<u64> = 1..=12;
+const WIDE_SIZE: u32 = 512;
+const WIDE_METRES_PER_SAMPLE: f32 = 40.0;
+const WIDE_SEEDS: std::ops::RangeInclusive<u64> = 1..=2;
 const BORDER: usize = 8;
 
 const LANDFORMS: [LandformKind; 7] = [
@@ -44,21 +50,39 @@ fn options(landform: LandformKind, seed: u64) -> FractalTerrainOptions {
   }
 }
 
+fn wide_options(landform: LandformKind, seed: u64) -> FractalTerrainOptions {
+  FractalTerrainOptions {
+    size: WIDE_SIZE,
+    horizontal_scale_metres: WIDE_METRES_PER_SAMPLE,
+    erosion: Some(ErosionOptions {
+      quality: Some(ErosionQuality::Preview),
+      ..ErosionOptions::default()
+    }),
+    ..options(landform, seed)
+  }
+}
+
 struct Sample {
   landform: LandformKind,
   seed: u64,
   map: HeightMap,
 }
 
-/// Every landform and seed, generated once and shared by the tests.
+/// Every landform and seed at both scales, generated once and shared by
+/// the tests.
 fn samples() -> &'static [Sample] {
   static SAMPLES: OnceLock<Vec<Sample>> = OnceLock::new();
 
   SAMPLES.get_or_init(|| {
-    let jobs: Vec<(LandformKind, u64)> = LANDFORMS
+    let mut jobs: Vec<FractalTerrainOptions> = LANDFORMS
       .iter()
-      .flat_map(|landform| SEEDS.map(move |seed| (*landform, seed)))
+      .flat_map(|landform| SEEDS.map(move |seed| options(*landform, seed)))
       .collect();
+    jobs.extend(
+      LANDFORMS
+        .iter()
+        .flat_map(|landform| WIDE_SEEDS.map(move |seed| wide_options(*landform, seed))),
+    );
     let threads = std::thread::available_parallelism()
       .map_or(2, |n| n.get())
       .min(8);
@@ -71,10 +95,10 @@ fn samples() -> &'static [Sample] {
           scope.spawn(move || {
             jobs
               .iter()
-              .map(|(landform, seed)| Sample {
-                landform: *landform,
-                seed: *seed,
-                map: generate_fractal_heightmap(&options(*landform, *seed)).unwrap(),
+              .map(|options| Sample {
+                landform: options.landform,
+                seed: options.seed,
+                map: generate_fractal_heightmap(options).unwrap(),
               })
               .collect::<Vec<_>>()
           })
@@ -158,7 +182,10 @@ fn depressions(map: &HeightMap) -> (Vec<usize>, Vec<usize>, Vec<u32>) {
 }
 
 fn describe(sample: &Sample) -> String {
-  format!("{:?} seed {}", sample.landform, sample.seed)
+  format!(
+    "{:?} seed {} at {} m",
+    sample.landform, sample.seed, sample.map.metadata.metres_per_sample
+  )
 }
 
 /// Collects every failing map so one run reports them all.
@@ -236,7 +263,8 @@ fn peaks_are_few() {
         })
       })
       .count();
-    let area_km2 = cells.len() as f32 * METRES_PER_SAMPLE * METRES_PER_SAMPLE / 1_000_000.0;
+    let spacing = map.metadata.metres_per_sample;
+    let area_km2 = cells.len() as f32 * spacing * spacing / 1_000_000.0;
     let density = peaks as f32 / area_km2;
 
     failures.check(density <= 4.0, || {
@@ -340,7 +368,7 @@ fn lowlands_are_smooth() {
       .sum::<f32>()
       / level.len() as f32;
 
-    failures.check(mean < 0.02 * METRES_PER_SAMPLE, || {
+    failures.check(mean < 0.02 * map.metadata.metres_per_sample, || {
       format!("{}: mean |laplacian| {mean} m", describe(sample))
     });
   }
