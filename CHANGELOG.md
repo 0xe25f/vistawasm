@@ -17,14 +17,14 @@ for changed defaults.
 
 ### Added
 
-- **Biomes.** Eighteen climate-driven biomes: grassy meadows, outer
+- **Biomes.** Nineteen climate-driven biomes: grassy meadows, outer
   thicket, outer and inner forest, mountain foothills, mountain proper,
   outer volcanic, caldera, savannah, coastal beach, coastal rocky, outer
-  and inner jungle, swamp wetlands, ocean, alpine transition, and lower
-  and upper snowy peaks. New `BiomeOptions`,
+  and inner jungle, swamp wetlands, ocean, alpine transition, lower and
+  upper snowy peaks, and ice and arctic. New `BiomeOptions`,
   `setBiomes()`, `biomeAt(x, z)`, and a `"biomes"` debug view.
 - **Procedural textures**, generated on the GPU at start-up with nothing
-  to download: eight terrain materials with height, normal, occlusion, and
+  to download: ten terrain materials with height, normal, occlusion, and
   roughness; bark, leaf, needle, frond, and moss textures; water ripples;
   2D and 3D noise.
 - **Trees.** Eight procedurally modelled species (oak, pine, spruce, palm,
@@ -125,6 +125,25 @@ for changed defaults.
 - **Demo.** A Landform select, an Advanced terrain sub-section for the
   detail noise, an erosion quality select (default `"high"`), and the time
   of each generation phase in the status line.
+- **Ice and arctic biome.** `iceArctic`: glaciers and ice sheets with
+  crevasses and blue ice, a tundra fringe of moss, lichen, dwarf shrubs,
+  and stones, snow that never melts, and sea ice with drifting floes and
+  fast ice on cold coasts. Glaciers fill valleys with smooth ice and are
+  removed exactly when the climate warms.
+- **Climate temperature.** `BiomeOptions.meanTemperatureCelsius` (-30 to
+  35 °C at sea level) drives every biome, cooling 6.5 °C per 1000 m. New
+  `temperatureAt(x, z)` returns the mean temperature in °C at a world
+  position, or `null` off the terrain.
+- **Cold weather.** Rain falls as snow below 0.5 °C at the camera and as
+  sleet up to 2.5 °C; cold climates cycle towards snow and clear spells
+  and always allow snow; gales lift blowing snow off snowy ground; and
+  cold air is crisp and clear.
+- Glacier ice and tundra terrain textures, generated at start-up.
+  `replaceTexture` accepts terrain layers 0 to 9, and `materialTints`
+  accepts 8 or 10 colours.
+- **Demo.** A climate temperature slider with an automatic setting, the
+  temperature under the camera in the biome readout, and a biome colour
+  legend for the biomes debug view.
 
 ### Changed
 
@@ -151,6 +170,14 @@ for changed defaults.
   field and its valid range.
 - The automatic snow line (`BiomeOptions.snowLineMetres` unset) is now at
   least 400 m above sea level, so low hills no longer turn white.
+- Terrain vertices are 36 bytes instead of 40: the normal is
+  octahedron-encoded and the ten material weights are packed into twelve
+  `unorm8` slots, so the streamed terrain mesh uploads faster (see
+  `docs/architecture.md`).
+- `FrameUniforms` grows to 784 bytes, and render shaders gain the surface
+  texture at `@group(1) @binding(12)`.
+- Heavy sleet and snow now darken the sky to a full overcast, as heavy
+  rain does.
 
 - The default `"balanced"` render preset now draws terrain beyond 2 km with
   one texture sample per material, and marches clouds to 60 km (from 90
@@ -250,6 +277,7 @@ for changed defaults.
 
 - `shaders/flora_instances.wgsl`, replaced by `shaders/trees.wgsl`.
 - `shaders/terrain_noise.wgsl`, which nothing used.
+- The unused `shaders/material_masks.wgsl` placeholder.
 
 ### Upgrading from 1.0.0
 

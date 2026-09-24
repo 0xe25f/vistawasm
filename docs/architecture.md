@@ -107,15 +107,49 @@ When the engine is created, and never again:
 
 `EngineCore::install_terrain` → `rebuild_world` → `rebake_surface`:
 
-1. Rivers and lakes are extracted from the drainage network and carved
+1. Glaciers raise the ground they cover towards a smooth ice surface, by
+    at most 40 m (`terrain/glaciers.rs`). Every raised sample is recorded
+    so it can be restored exactly.
+2. Rivers and lakes are extracted from the drainage network and carved
     into the heightmap (reversibly; see [`docs/water.md`](water.md)).
-2. Normals and the biome/surface map are baked
+3. Normals and the biome/surface map are baked
     (`terrain/biomes.rs::classify_surface`).
-3. The LOD terrain mesh, tree and grass instances, river geometry, and a
-    height texture (for water depth) are uploaded.
+4. The LOD terrain mesh, tree and grass instances, river geometry, a
+    height texture (for water depth), and the surface texture are
+    uploaded.
 
-`setBiomes` repeats steps 2–3; changing `WaterOptions.rivers` repeats all
-three. Other setters only change uniforms.
+`setBiomes` and changing `WaterOptions.rivers` restore the carving and
+the glaciers, in that order, and repeat all four steps. Other setters
+only change uniforms.
+
+### The surface texture
+
+`@group(1) @binding(12) surface_texture` is an `rgba8unorm` texture at the
+height texture's resolution, uploaded with the other per-terrain data by
+`GpuContext::upload_surface`. Later work reuses it, so its channels are
+fixed:
+
+| Channel | Contents |
+| --- | --- |
+| r | Temperature unit, `(°C + 30) / 65`: 0 is -30 °C, 1 is 35 °C. |
+| g | Moisture, 0 (arid) to 1 (saturated). |
+| b | Permanent snow, 0 to 1: 1 on glacier, up to 0.63 on tundra. On ocean samples, 1 marks snow-covered fast ice. |
+| a | Biome index (`BiomeKind` as `u8`) / 255. Read it with `textureLoad`: filtering blends indices. |
+
+Shaders sample it with `textureSampleLevel` and the clamp sampler
+(`common.wgsl::surface_at`), which is safe in non-uniform control flow.
+
+### Terrain vertices
+
+Each terrain vertex is 36 bytes:
+
+| Bytes | Attribute | Contents |
+| --- | --- | --- |
+| 0–11 | `float32x3` | Position in terrain metres. |
+| 12–15 | `snorm16x2` | Octahedron-encoded normal (`terrain_mesh::encode_normal`). |
+| 16–27 | `uint32x3` | Twelve `unorm8` material weights, unpacked with `unpack4x8unorm`: lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra, and two reserved slots that are always 0. |
+| 28–31 | `unorm8x4` | Moisture, temperature, volcanic heat, occlusion. |
+| 32–35 | `uint8x4` | Biome index, tree cover, river flag, permanent snow. |
 
 ### Per frame
 
@@ -145,8 +179,9 @@ three. Other setters only change uniforms.
     shadow map, texel-snapped to stop shimmering.
 5. **Opaque pass** into a linear `rgba16float` target plus depth:
     - terrain (`shaders/clipmap_render.wgsl`), texture-splatting the three
-      strongest of eight materials with height blending, triplanar rock,
-      detail normals, climate tinting, wetness, puddles, and snow;
+      strongest of ten materials with height blending, triplanar rock and
+      ice, detail normals, climate tinting, wetness, puddles, snow, and
+      glacier crevasses;
     - tree meshes and impostors (`shaders/trees.wgsl`) via indirect draws;
     - grass (`shaders/grass_instances.wgsl`), alpha-tested.
 6. **Cloud pass** (`shaders/atmosphere.wgsl`, `cloud_main`) raymarches the
@@ -178,7 +213,7 @@ three. Other setters only change uniforms.
     resolution without lens drops there is no extra pass.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (752 bytes), the shared world
+declares the one `FrameUniforms` struct (784 bytes), the shared world
 textures (bind group 1), shadow receivers (bind group 2), the sky model,
 lighting, fog integrals, and every shadow lookup. Because there is exactly
 one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct
@@ -261,7 +296,7 @@ and every sync method that touches the raw engine (`setCamera`, `setSun`,
 `setWeather`, `setShadows`, `setSurface`, `setBiomes`, `setRenderQuality`,
 `setDebugView`, `resize`) checks `pendingCall` first and silently no-ops
 while it is set, rather than throwing or queuing; `biomeAt()` and
-`getWeather()` return `undefined`. The replacement hooks (`setTreeModel`,
+`getWeather()` return `undefined`, and `temperatureAt()` returns `null`. The replacement hooks (`setTreeModel`,
 `setTreeInstances`, `replaceTexture`, and their resets) throw instead, so
 an asset change is never silently dropped.
 `renderOnce()` returns the last real `RenderStats` during that window

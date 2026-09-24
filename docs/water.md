@@ -108,6 +108,31 @@ bounded (tens of milliseconds) regardless of terrain size.
   scaled by `foam`.
 - **Cloud shadows** and fog apply to water like everything else.
 
+## Sea ice
+
+Cold seas freeze. The concentration of ice follows the sea's mean
+temperature: open water above -1.5 °C, full pack ice below -7.5 °C, and
+loose floes in between. Over the terrain the temperature comes from the
+climate (see [`docs/biomes.md`](biomes.md#climate-temperature)); beyond
+it, from the sea-level mean of `BiomeOptions.meanTemperatureCelsius` and
+`temperatureBias`. Where the climate is colder than -10 °C, fast ice is
+frozen solid to the shore for 200 m out.
+
+- **Floes** are cells about 40 m across near the camera, blending into
+    300 m cells in the distance, where small ones would shimmer. They
+    drift with the weather's wind at 2 % of its speed.
+- **Shading.** Floes are snow-white to blue-grey, lit like snow on the
+    ground, with rounded, bevelled rims. The water in the leads between
+    them is dark.
+- **Calm.** Waves, ripples, and foam die down as the concentration rises.
+
+Sea ice only forms on the ocean, not on rivers or lakes. A map whose sea
+never freezes pays nothing for it.
+
+```ts
+engine.setBiomes({ meanTemperatureCelsius: -12 });
+```
+
 ## Interaction with mist
 
 When `MistOptions.riseAboveWater` is enabled, extra mist appears near

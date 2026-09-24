@@ -134,7 +134,8 @@ about it directly:
   `setWeather`, `setShadows`, `setSurface`, `setRenderQuality`,
   `setBiomes`, `setDebugView`, `resize`) silently **no-ops** while an
   async call is in flight, rather than throwing or queuing.
-  `getWeather()` and `biomeAt()` return `undefined`.
+  `getWeather()` and `biomeAt()` return `undefined`, and
+  `temperatureAt()` returns `null`.
 - The replacement hooks (`setTreeModel`, `resetTreeModel`,
   `setTreeInstances`, `replaceTexture`, `resetTextures`) **throw** a
   `VistaWasmError` instead, because silently dropping a one-off asset

@@ -74,6 +74,31 @@ and then moves on to a plausible neighbour: clear skies cloud over,
 overcast turns to rain, storms ease back to rain. The sequence is
 deterministic for a given `seedOffset`.
 
+## Weather in the cold
+
+The weather follows the climate under the camera
+(`engine.temperatureAt()`; see [`docs/biomes.md`](biomes.md#climate-temperature)):
+
+- **Snow, not rain.** Rain falls as snow below 0.5 °C, and as sleet (rain
+    and snow together) between 0.5 and 2.5 °C. The state keeps its name,
+    so `getWeather()` still reports `"rain"`, but its `rain` and `snow`
+    values show what is falling, and the snow settles.
+- **A colder cycle.** Below 0 °C, cycling turns rain and storms into
+    snow and makes clear spells half as likely again. Cold climates always
+    allow snow, whatever `allowSnow` says.
+- **Blowing snow.** When settled or permanent snow covers at least half
+    the ground under the camera and the wind is above 8 m/s, low streaks of
+    snow race along with the wind up to about 2 m above the ground.
+- **Crisp air.** Below 0 °C the air is clearer: haze reaches 40 % further
+    and the Mie haze around the sun is 30 % weaker. This applies whether
+    the weather system is on or not.
+
+```ts
+engine.setBiomes({ meanTemperatureCelsius: -18 });
+// Snow falls, and a gale lifts it off the ice.
+engine.setWeather({ enabled: true, state: "storm" });
+```
+
 ## Choosing what the weather drives
 
 Every effect is on by default. Switch one off and that system keeps its
@@ -157,3 +182,5 @@ zero.
 Storm towers make the cloud slab up to 2.6 times as tall, so storms cost
 more than fair weather; lower `raymarchSteps` or `resolutionScale` if a
 storm is too slow on a weak GPU.
+Blowing snow is drawn in the same layers as falling snow and only while
+it is blowing.

@@ -239,14 +239,20 @@ field is optional. See [`docs/biomes.md`](biomes.md).
 | `volcanism` | `number?` | `0.35` | `0` to `1`. Volcanic regions around high peaks. |
 | `beachHeightMetres` | `number?` | `5` | Height above sea level below which flat ground becomes beach. |
 | `snowLineMetres` | `number?` | 80% of sea-to-peak, at least 400 m above sea | Snow line; lowered further in cold climates. |
+| `meanTemperatureCelsius` | `number?` | unset | Mean annual temperature at sea level in °C, `-30` to `35`. Drives every biome, cooling 6.5 °C per 1000 m. Below about -2 °C lowlands freeze into ice sheets. Unset keeps the classic climate, with no ice. |
 
 `engine.biomeAt(x, z)` returns the biome name at a world position (or
 `undefined` outside the terrain): `"grassyMeadows"`, `"outerThicket"`,
 `"outerForest"`, `"innerForest"`, `"mountainFoothills"`, `"mountainProper"`,
 `"outerVolcanic"`, `"calderaVolcanic"`, `"savannahExpanse"`,
 `"coastalBeach"`, `"coastalRocky"`, `"outerJungle"`, `"innerJungle"`,
-`"swampWetlands"`, `"ocean"`, `"alpineTransition"`, `"lowerSnowyPeaks"`, or
-`"upperSnowyPeaks"`.
+`"swampWetlands"`, `"ocean"`, `"alpineTransition"`, `"lowerSnowyPeaks"`,
+`"upperSnowyPeaks"`, or `"iceArctic"`.
+
+`engine.temperatureAt(x, z)` returns the mean annual temperature in °C at
+a world position, or `null` when there is no terrain or the position is
+outside it. It throws a `TypeError` unless both arguments are finite
+numbers.
 
 ## `WeatherOptions`
 
@@ -260,7 +266,7 @@ Passed to `engine.setWeather()`. Every field is optional. See
 | `autoCycle` | `boolean` | `false` | Move on to new weather over time. |
 | `stateDurationSeconds` | `number` | `240` | Average length of each state when cycling. Must be `> 0`. |
 | `transitionSeconds` | `number` | `30` | Blend time between states. Must be `>= 0`. |
-| `allowSnow` | `boolean` | `false` | Whether cycling may choose snow. |
+| `allowSnow` | `boolean` | `false` | Whether cycling may choose snow. Below 0 °C under the camera, snow is always allowed. |
 | `seedOffset` | `number \| bigint` | `4111` | Seed for the cycle sequence and gusts. |
 | `windDirectionDegrees` | `number` | `70` | Prevailing wind direction. |
 | `windScale` | `number` | `1` | `0` to `4`. |
@@ -302,7 +308,7 @@ Passed to `engine.setSurface()`. Every field is optional.
 | `textures` | `boolean` | `true` | `false` shades each material as a flat colour. |
 | `detailNormals` | `boolean` | `true` | Detail normal maps. |
 | `textureScale` | `number` | `1` | `0.05` to `20`. Larger stretches textures over more ground. |
-| `materialTints` | `[r, g, b][8]` | all `[1, 1, 1]` | Colour multipliers (`0` to `4`) for lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic. |
+| `materialTints` | `[r, g, b][10]` | all `[1, 1, 1]` | Colour multipliers (`0` to `4`) for lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra. A list of the first 8 is also accepted; ice and tundra then stay untinted. |
 
 ## `RenderQualityOptions`
 
