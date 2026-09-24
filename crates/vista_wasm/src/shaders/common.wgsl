@@ -48,7 +48,7 @@ struct FrameUniforms {
   wave_params: vec4<f32>,
   // x: speed, y: directional spread, z: waves enabled, w: unused.
   wave_params2: vec4<f32>,
-  // xy: snapped ocean grid origin, zw: unused.
+  // xy: snapped ocean grid origin, z: 1 when the ocean is drawn, w: unused.
   water_origin: vec4<f32>,
   // x: wind, y: variation, z: tree style, w: grass view distance.
   vegetation: vec4<f32>,
@@ -108,7 +108,8 @@ struct WorldInfo {
   species_tint: array<vec4<f32>, 8>,
   // xy: terrain half extents (metres), zw: metres per height texel.
   terrain: vec4<f32>,
-  // xy: height texture size, z: 1 when a terrain is loaded, w: unused.
+  // xy: height texture size, z: 1 when a terrain is loaded, w: the
+  // terrain's sea level.
   terrain2: vec4<f32>,
   // Per material colour multiplier (rgb).
   material_tints: array<vec4<f32>, 10>,
@@ -321,12 +322,43 @@ fn terrain_height_at(xz: vec2<f32>) -> f32 {
   let h10 = textureLoad(height_texture, i + vec2<i32>(1, 0), 0).r;
   let h01 = textureLoad(height_texture, i + vec2<i32>(0, 1), 0).r;
   let h11 = textureLoad(height_texture, i + vec2<i32>(1, 1), 0).r;
-  var h = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
-  // Outside the terrain footprint the sea floor keeps sloping down, so the
-  // open ocean beyond the map edge reads as deep water.
-  let outside = max(abs(xz) - world.terrain.xy, vec2<f32>(0.0));
-  h = h - length(outside) * 0.08;
-  return h;
+  let h = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  let outside = length(max(abs(xz) - world.terrain.xy, vec2<f32>(0.0)));
+
+  if (outside <= 0.0) {
+    return h;
+  }
+
+  return skirt_height(h, world.terrain2.w, outside, skirt_noise(xz));
+}
+
+// Beyond the terrain footprint the ground continues as a skirt: from the
+// edge height it descends to 60 m below sea level over `SKIRT_METRES`,
+// then keeps falling gently as deep sea floor, so the world never ends in
+// a wall and the ocean beyond it has a real coast and depth. The terrain
+// mesh builds the same skirt on the CPU (`render/terrain_mesh.rs`).
+const SKIRT_METRES: f32 = 1500.0;
+
+fn skirt_height(edge: f32, sea: f32, distance: f32, noise: f32) -> f32 {
+  let foot = min(edge, sea - 60.0);
+
+  if (distance >= SKIRT_METRES) {
+    return foot - (distance - SKIRT_METRES) * 0.08;
+  }
+
+  let s = smoothstep(0.0, 1.0, distance / SKIRT_METRES);
+  return mix(edge, foot, s) + (edge - foot) * 0.6 * noise * s * (1.0 - s);
+}
+
+// Value noise from -1 to 1 with a 700 m wavelength that varies the skirt.
+fn skirt_noise(xz: vec2<f32>) -> f32 {
+  let p = xz / 700.0;
+  let cell = floor(p);
+  let f = p - cell;
+  let u = f * f * (3.0 - 2.0 * f);
+  let top = mix(hash12(cell), hash12(cell + vec2<f32>(1.0, 0.0)), u.x);
+  let bottom = mix(hash12(cell + vec2<f32>(0.0, 1.0)), hash12(cell + vec2<f32>(1.0, 1.0)), u.x);
+  return mix(top, bottom, u.y) * 2.0 - 1.0;
 }
 
 // Whether a world position lies over the loaded terrain.

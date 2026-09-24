@@ -299,6 +299,15 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
 
+  // Sea floor so deep that the water above it is fully opaque (see
+  // `opacity` in `water.wgsl`: from 1.14 x clarity), even in a wave
+  // trough: most of the skirt beyond the map, and the open sea. The water
+  // pass draws over it.
+  if (frame.water_origin.z > 0.5
+    && frame.water_shallow.w - position.y > max(frame.water_params.z, 0.1) * 1.2 + frame.wave_params.x) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+
   // Past the detail distance each material takes one far-scale sample
   // instead of up to eight. Textures there are so minified that the two
   // look the same.

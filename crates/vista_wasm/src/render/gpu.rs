@@ -2123,7 +2123,7 @@ impl GpuContext {
       metres_per_sample * stride as f32,
       metres_per_sample * stride as f32,
     ];
-    self.world_info.terrain2 = [texture_width as f32, texture_height as f32, 1.0, 0.0];
+    self.world_info.terrain2 = [texture_width as f32, texture_height as f32, 1.0, sea];
     self.write_world_info();
     self.rebuild_world_bind_group();
   }
@@ -2482,7 +2482,7 @@ impl GpuContext {
     u.water_origin = [
       (p[0] / OCEAN_SNAP_METRES).round() * OCEAN_SNAP_METRES,
       (p[2] / OCEAN_SNAP_METRES).round() * OCEAN_SNAP_METRES,
-      0.0,
+      flag(self.water_visible),
       0.0,
     ];
 

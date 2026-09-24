@@ -161,8 +161,8 @@ pub const COAST_RIM: f32 = 0.06;
 /// The narrowest coast rim, in metres.
 pub const COAST_RIM_MIN: f32 = 300.0;
 
-/// How much the warp noise widens the coast rim, as a fraction of the
-/// extent.
+/// How far the warp noise moves the coast rim inwards, as a fraction of
+/// the extent.
 pub const COAST_WARP: f32 = 0.04;
 
 /// Drown islands that share no sample with `before`, the land without
@@ -314,10 +314,9 @@ pub fn tectonic_base(
     // The continent field sinks towards its lowest value over a rim along
     // the border, reaching it at the edge, so the land-fraction threshold
     // below puts the sea there and drainage and erosion see it. The warp
-    // noise, at a sixth of the extent, widens the rim by up to
+    // noise, at a sixth of the extent, moves the rim inwards by up to
     // `COAST_WARP`, so the coast wanders in bays and headlands instead of
-    // tracing a rounded square. The falloff is 0 only on the edge itself,
-    // so no two samples tie and the threshold stays exact.
+    // tracing a rounded square.
     let low = raw.iter().copied().fold(f32::INFINITY, f32::min);
     let range = raw.iter().copied().fold(low, f32::max) - low;
     // Islands in an open sea sink whole and keep their shapes, rather than
@@ -327,7 +326,9 @@ pub fn tectonic_base(
     let sparse = landform.land_fraction < 0.5;
     let rim = (extent * COAST_RIM).max(COAST_RIM_MIN);
     let scale = 6.0 / extent;
-    let shift = extent * COAST_WARP;
+    // Land that fills the map leaves too little sea for deep bays, so the
+    // warp's reach shrinks with the landform's share of sea.
+    let shift = extent * COAST_WARP * ((1.0 - landform.land_fraction) / 0.3).clamp(0.1, 1.0);
 
     for gy in 0..n {
       for gx in 0..n {
@@ -342,12 +343,20 @@ pub fn tectonic_base(
           fbm(continent_warp_x, x * scale, y * scale, 2, 0.5, 2.0),
         );
         let border = half - x.abs().max(y.abs());
-        let falloff = smoothstep(0.0, rim + warp * shift, border);
-        raw[i] = if sparse {
+        let start = warp * shift;
+        let falloff = smoothstep(start, start + rim, border);
+        let sunk = if sparse {
           raw[i] - range * (1.0 - falloff)
         } else {
           low + (raw[i] - low) * falloff
         };
+        // Outside the rim the field keeps falling towards the edge, and
+        // fastest over the last three samples, so no two samples tie, the
+        // threshold can put the coast anywhere on the warped line, and
+        // the edge itself is always sea.
+        raw[i] = sunk
+          - range
+            * ((start - border).max(0.0) / shift + 3.0 * (1.0 - border / (3.0 * spacing)).max(0.0));
       }
     }
   }

@@ -331,7 +331,7 @@ impl EngineCore {
     }
 
     progress("finishing", 0.0);
-    crate::terrain::finish_fractal_heightmap(&mut map);
+    crate::terrain::finish_fractal_heightmap(&mut map, options);
     Ok(map)
   }
 

@@ -166,10 +166,13 @@ edge:
     so rivers reach it. Each landform keeps its land fraction; land-filled
     landforms such as `"alpine"`, `"rollingHills"` and `"mesaDesert"` keep
     their inland character, with the coast only a rim at the border. The
-    sea shelves to a quarter of the landform's sea floor at the border
+    sea shelves to a third of the landform's sea floor at the border
     itself.
 - `"open"` lets the land run to the edge, as the generator did before
     1.1.0. Use it when you place several maps side by side.
+
+Past the map's edge, every terrain continues as a skirt that descends
+into the sea; see [Beyond the map edge](#beyond-the-map-edge).
 
 ```ts
 // A map to tile with its neighbours: no coast at the edge.
@@ -183,6 +186,28 @@ await engine.generateFractal({
   edges: "open"
 });
 ```
+
+### Beyond the map edge
+
+Every terrain, generated, DEM or raw, continues past its edge as a skirt,
+so the world never ends in a wall:
+
+- Over the first 1,500 m (`SKIRT_METRES`), the ground falls from the
+    edge's height to 60 m below the terrain's sea level along a smooth
+    curve, varied by gentle noise by up to 15 % of the drop. An edge that
+    is already deeper keeps its depth.
+- Beyond that the sea floor keeps sloping gently down, so the open ocean
+    reads as deep water with a real coast on the skirt.
+- The skirt turns to rock over its first 300 m, and to sand below the
+    waterline. No trees or grass grow on it.
+
+With `edges: "coast"` the skirt meets sea along the border. With
+`edges: "open"`, or an imported map whose land reaches its edge, the land
+slopes down into the sea beyond the edge. The terrain mesh builds the
+skirt 4.5 km out, where the sea floor lies 300 m deep and water hides it
+(unless `WaterOptions.clarityMetres` is above about 260 m). The water
+shader uses the same skirt for its depth, so shallows, surf and foam line
+up with the mesh's shore.
 
 ### Determinism
 

@@ -374,23 +374,189 @@ pub fn build_centred_mesh_rows(
   let half_span = (samples_per_side / 2) as i64;
   let centre_x = centre.0.round() as i64;
   let centre_z = centre.1.round() as i64;
+  // The skirt is built out to `SKIRT_MESH_METRES` beyond the footprint;
+  // vertices further out collapse onto that line, as sea floor deep
+  // enough to be hidden by the water is not worth drawing.
+  let reach = (SKIRT_MESH_METRES / metres_per_sample).ceil() as i64;
+  // Grid step, in samples, between a vertex and its outward neighbour.
+  let step =
+    |grid: i64| (band_sample_offset(grid + grid.signum()) - band_sample_offset(grid)).abs();
 
   for sz in rows.start..rows.end.min(samples_per_side) {
     let grid_dz = sz as i64 - half_span;
-    let sample_z = (centre_z + band_sample_offset(grid_dz)).clamp(0, height as i64 - 1) as u32;
+    let offset_z = (centre_z + band_sample_offset(grid_dz))
+      .max(-reach)
+      .min(height as i64 - 1 + reach);
+    let sample_z = offset_z.max(0).min(height as i64 - 1) as u32;
 
     for sx in 0..samples_per_side {
       let grid_dx = sx as i64 - half_span;
-      let sample_x = (centre_x + band_sample_offset(grid_dx)).clamp(0, width as i64 - 1) as u32;
+      let offset_x = (centre_x + band_sample_offset(grid_dx))
+        .max(-reach)
+        .min(width as i64 - 1 + reach);
+      let sample_x = offset_x.max(0).min(width as i64 - 1) as u32;
       let index = (sample_z * width + sample_x) as usize;
-      let world_x = (sample_x as f32 - half_width) * metres_per_sample;
-      let world_z = (sample_z as f32 - half_height) * metres_per_sample;
+      let world_x = (offset_x as f32 - half_width) * metres_per_sample;
+      let world_z = (offset_z as f32 - half_height) * metres_per_sample;
+
+      if offset_x == sample_x as i64 && offset_z == sample_z as i64 {
+        out.push(TerrainVertex::new(
+          [world_x, map.heights[index], world_z],
+          normals[index],
+          &surface[index],
+        ));
+        continue;
+      }
+
+      // Beyond the footprint the vertex keeps its true position on the
+      // skirt, rather than collapsing onto the border.
+      let spacing = step(grid_dx).max(step(grid_dz)).max(1) as f32 * metres_per_sample * 0.5;
+      let ground = |x: f32, z: f32| skirt_ground(map, x, z);
+      let height_here = ground(world_x, world_z);
+      let normal = crate::maths::normalise([
+        ground(world_x - spacing, world_z) - ground(world_x + spacing, world_z),
+        2.0 * spacing,
+        ground(world_x, world_z - spacing) - ground(world_x, world_z + spacing),
+      ]);
       out.push(TerrainVertex::new(
-        [world_x, map.heights[index], world_z],
-        normals[index],
-        &surface[index],
+        [world_x, height_here, world_z],
+        normal,
+        &skirt_surface(
+          &surface[index],
+          outside_distance(map, world_x, world_z),
+          height_here - map.metadata.sea_level_metres,
+        ),
       ));
     }
+  }
+}
+
+/// How far the skirt beyond the terrain footprint takes to descend from
+/// the edge to [`SKIRT_DEPTH`] below sea level, in metres. `common.wgsl`
+/// declares the same constant.
+pub const SKIRT_METRES: f32 = 1500.0;
+
+/// How far beyond the footprint the terrain mesh builds the skirt, in
+/// metres. The sea floor there lies 300 m deep, so water less clear than
+/// 260 m (`WaterOptions.clarityMetres`) hides everything beyond it.
+pub const SKIRT_MESH_METRES: f32 = SKIRT_METRES + (300.0 - SKIRT_DEPTH) / SKIRT_SLOPE;
+
+/// Depth below sea level at the foot of the skirt, in metres.
+pub const SKIRT_DEPTH: f32 = 60.0;
+
+/// Fall of the sea floor per metre beyond the skirt.
+pub const SKIRT_SLOPE: f32 = 0.08;
+
+/// Wavelength of the skirt's noise, in metres.
+const SKIRT_NOISE_METRES: f32 = 700.0;
+
+/// Height of the skirt `distance` metres beyond the terrain footprint,
+/// where the edge of the terrain stands at `edge`: a smoothstep from the
+/// edge down to [`SKIRT_DEPTH`] below `sea` over [`SKIRT_METRES`], varied
+/// by `noise` (-1 to 1) by up to 15 % of the drop, then the gentle slope
+/// of the deep sea floor. An edge already deeper than the foot keeps its
+/// depth. Mirrors `skirt_height` in `common.wgsl`.
+pub fn skirt_height(edge: f32, sea: f32, distance: f32, noise: f32) -> f32 {
+  let foot = edge.min(sea - SKIRT_DEPTH);
+
+  if distance >= SKIRT_METRES {
+    return foot - (distance - SKIRT_METRES) * SKIRT_SLOPE;
+  }
+
+  let t = distance.max(0.0) / SKIRT_METRES;
+  let s = t * t * (3.0 - 2.0 * t);
+  edge + (foot - edge) * s + (edge - foot) * 0.6 * noise * s * (1.0 - s)
+}
+
+/// `hash12` from `common.wgsl`.
+fn hash12(x: f32, y: f32) -> f32 {
+  let fract = |v: f32| v - v.floor();
+  let (a, b, c) = (fract(x * 0.1031), fract(y * 0.1031), fract(x * 0.1031));
+  let d = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33);
+  let (a, b, c) = (a + d, b + d, c + d);
+  fract((a + b) * c)
+}
+
+/// Smooth value noise from -1 to 1 that varies the skirt. Mirrors
+/// `skirt_noise` in `common.wgsl`.
+pub fn skirt_noise(x: f32, z: f32) -> f32 {
+  let (px, pz) = (x / SKIRT_NOISE_METRES, z / SKIRT_NOISE_METRES);
+  let (cx, cz) = (px.floor(), pz.floor());
+  let smooth = |v: f32| v * v * (3.0 - 2.0 * v);
+  let (u, v) = (smooth(px - cx), smooth(pz - cz));
+  let top = crate::maths::lerp(hash12(cx, cz), hash12(cx + 1.0, cz), u);
+  let bottom = crate::maths::lerp(hash12(cx, cz + 1.0), hash12(cx + 1.0, cz + 1.0), u);
+  crate::maths::lerp(top, bottom, v) * 2.0 - 1.0
+}
+
+/// Ground height at a world position, as `terrain_height_at` in
+/// `common.wgsl` computes it: bilinear inside the footprint, the skirt
+/// beyond it.
+#[inline(never)]
+pub fn skirt_ground(map: &HeightMap, x: f32, z: f32) -> f32 {
+  let width = map.metadata.width as usize;
+  let height = map.metadata.height as usize;
+  let (sx, sz) = world_to_sample_coordinates(map, x, z);
+  let cx = sx.clamp(0.0, width as f32 - 1.001);
+  let cz = sz.clamp(0.0, height as f32 - 1.001);
+  let (x0, z0) = (cx as usize, cz as usize);
+  let (fx, fz) = (cx - x0 as f32, cz - z0 as f32);
+  let at = |x: usize, z: usize| map.heights[z * width + x];
+  let lerp = crate::maths::lerp;
+  let edge = lerp(
+    lerp(at(x0, z0), at(x0 + 1, z0), fx),
+    lerp(at(x0, z0 + 1), at(x0 + 1, z0 + 1), fx),
+    fz,
+  );
+  let distance = outside_distance(map, x, z);
+
+  if distance <= 0.0 {
+    return edge;
+  }
+
+  skirt_height(
+    edge,
+    map.metadata.sea_level_metres,
+    distance,
+    skirt_noise(x, z),
+  )
+}
+
+/// Distance in metres from a world position to the terrain footprint.
+fn outside_distance(map: &HeightMap, x: f32, z: f32) -> f32 {
+  let spacing = map.metadata.metres_per_sample.max(0.001);
+  let half_x = (map.metadata.width as f32 - 1.0) * 0.5 * spacing;
+  let half_z = (map.metadata.height as f32 - 1.0) * 0.5 * spacing;
+  let (dx, dz) = ((x.abs() - half_x).max(0.0), (z.abs() - half_z).max(0.0));
+  (dx * dx + dz * dz).sqrt()
+}
+
+/// The surface of a skirt vertex: the nearest edge sample's, turning to
+/// rock over the first 300 m, and to sand from the waterline down. No
+/// trees or rivers grow on it.
+fn skirt_surface(edge: &SurfaceSample, distance: f32, above_sea: f32) -> SurfaceSample {
+  use crate::terrain::biomes::{MAT_ROCK, MAT_SAND};
+
+  let rock = (distance / 300.0).clamp(0.0, 1.0);
+  let sand = ((3.0 - above_sea) / 5.0).clamp(0.0, 1.0);
+  let mut materials = [0.0f32; MATERIAL_COUNT];
+
+  for (weight, byte) in materials.iter_mut().zip(edge.materials) {
+    *weight = byte as f32 * (1.0 - rock);
+  }
+
+  materials[MAT_ROCK] += 255.0 * rock;
+
+  for (index, weight) in materials.iter_mut().enumerate() {
+    *weight = *weight * (1.0 - sand) + if index == MAT_SAND { 255.0 * sand } else { 0.0 };
+  }
+
+  SurfaceSample {
+    materials: materials.map(|weight| weight.round() as u8),
+    forest: 0,
+    river: 0,
+    permanent_snow: (edge.permanent_snow as f32 * (1.0 - rock)) as u8,
+    ..*edge
   }
 }
 
@@ -664,6 +830,132 @@ mod tests {
       .vertices
       .iter()
       .all(|vertex| vertex.position[0].is_finite() && vertex.position[2].is_finite()));
+  }
+
+  #[test]
+  fn skirt_descends_from_the_edge_into_the_sea() {
+    for edge in [-80.0, -5.0, 0.0, 40.0, 900.0] {
+      assert_eq!(skirt_height(edge, 0.0, 0.0, 0.7), edge);
+      assert!(skirt_height(edge, 0.0, SKIRT_METRES, -1.0) <= -SKIRT_DEPTH);
+      assert!(
+        skirt_height(edge, 0.0, SKIRT_METRES * 3.0, 1.0)
+          < skirt_height(edge, 0.0, SKIRT_METRES, 1.0)
+      );
+
+      let mut previous = edge;
+
+      for step in 1..=400 {
+        let height = skirt_height(edge, 0.0, step as f32 * 10.0, 0.0);
+        assert!(height <= previous, "{edge} at {step}");
+        previous = height;
+      }
+    }
+
+    // Noise moves the skirt by at most 15 % of its drop.
+    let drop = 300.0 + SKIRT_DEPTH;
+    let quiet = skirt_height(300.0, 0.0, SKIRT_METRES * 0.5, 0.0);
+    let noisy = skirt_height(300.0, 0.0, SKIRT_METRES * 0.5, 1.0);
+    assert!((noisy - quiet - 0.15 * drop).abs() < 0.01);
+  }
+
+  #[test]
+  fn skirt_constants_match_the_shader() {
+    let source = include_str!("../shaders/common.wgsl");
+    assert!(source.contains(&format!("const SKIRT_METRES: f32 = {SKIRT_METRES:.1};")));
+    assert!(source.contains(&format!("sea - {SKIRT_DEPTH:.1}")));
+    assert!(source.contains(&format!("* {SKIRT_SLOPE}")));
+    assert!(source.contains(&format!("xz / {SKIRT_NOISE_METRES:.1}")));
+    // The same profile: noise moves the skirt by 15 % of its drop at most.
+    assert!(source.contains("(edge - foot) * 0.6 * noise * s * (1.0 - s)"));
+  }
+
+  #[test]
+  fn skirt_noise_is_smooth_and_in_range() {
+    let mut previous = skirt_noise(-5000.0, 1234.0);
+
+    for step in 1..2000 {
+      let value = skirt_noise(-5000.0 + step as f32 * 5.0, 1234.0);
+      assert!((-1.0..=1.0).contains(&value));
+      assert!((value - previous).abs() < 0.05, "{step}");
+      previous = value;
+    }
+
+    assert_eq!(hash12(3.0, 7.0), hash12(3.0, 7.0));
+    assert_ne!(skirt_noise(0.0, 0.0), skirt_noise(350.0, 350.0));
+  }
+
+  #[test]
+  fn vertices_beyond_the_edge_keep_their_places_on_the_skirt() {
+    let metadata = TerrainMetadata {
+      metres_per_sample: 10.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(64, 64, 0.0, metadata);
+
+    for (index, height) in map.heights.iter_mut().enumerate() {
+      *height = 20.0 + (index % 64) as f32;
+    }
+
+    let (normals, surface) = bake_terrain_shading(&map, &BiomeOptions::default(), None);
+    let mesh = build_terrain_mesh_centred(&map, &normals, &surface, 5.0, 60.0, 129);
+    let half = 31.5 * 10.0;
+    let inside = |p: &[f32; 3]| p[0].abs() <= half + 0.01 && p[2].abs() <= half + 0.01;
+    let edge: Vec<[f32; 3]> = mesh
+      .vertices
+      .iter()
+      .map(|v| v.position)
+      .filter(|p| inside(p) && (p[0].abs() > half - 0.01 || p[2].abs() > half - 0.01))
+      .collect();
+    let outside: Vec<&TerrainVertex> = mesh
+      .vertices
+      .iter()
+      .filter(|v| !inside(&v.position))
+      .collect();
+
+    assert!(!edge.is_empty() && !outside.is_empty());
+
+    for vertex in &outside {
+      let p = vertex.position;
+      assert!(!edge.iter().any(|e| e[0] == p[0] && e[2] == p[2]), "{p:?}");
+      assert!((p[1] - skirt_ground(&map, p[0], p[2])).abs() < 1e-3);
+      assert_eq!(vertex.biome[1], 0, "no trees on the skirt");
+    }
+
+    // Far out, the skirt is sea floor.
+    assert!(outside.iter().any(|v| v.position[1] < -SKIRT_DEPTH));
+    // Every vertex within the skirt's reach is distinct: none collapse
+    // onto the border, only onto the far line of the skirt.
+    let limit = half + SKIRT_MESH_METRES - 0.01;
+    let near: Vec<(u32, u32)> = mesh
+      .vertices
+      .iter()
+      .filter(|v| v.position[0].abs() < limit && v.position[2].abs() < limit)
+      .map(|v| (v.position[0].to_bits(), v.position[2].to_bits()))
+      .collect();
+    let mut positions = near.clone();
+    positions.sort_unstable();
+    positions.dedup();
+    assert_eq!(positions.len(), near.len());
+    assert!(mesh
+      .vertices
+      .iter()
+      .all(|v| v.position[0].abs() <= limit + 10.0 && v.position[2].abs() <= limit + 10.0));
+  }
+
+  #[test]
+  fn skirt_ground_matches_the_heights_inside_the_footprint() {
+    let metadata = TerrainMetadata {
+      metres_per_sample: 5.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(16, 16, 0.0, metadata);
+
+    for (index, height) in map.heights.iter_mut().enumerate() {
+      *height = index as f32;
+    }
+
+    let (x, z) = (5.0 * 3.0 - 37.5, 5.0 * 4.0 - 37.5);
+    assert!((skirt_ground(&map, x, z) - map.heights[4 * 16 + 3]).abs() < 1e-3);
   }
 
   #[test]

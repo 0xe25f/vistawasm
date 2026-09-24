@@ -169,6 +169,8 @@ for changed defaults.
   `TerrainShapeOptions` applies in units of the landform's relief.
 - The coast is generated at `seaLevelMetres`, and `verticalScale`
   stretches heights about sea level.
+- Terrain deep under opaque water skips its shading, since the water
+  hides it; the terrain pass is about 5 % faster in the fixed test scene.
 - Generated maps are ringed by sea by default (`edges: "coast"`), for
   every landform, so land no longer runs into the map edge. Each landform
   keeps its land fraction. `edges: "open"` gives the previous heights bit
@@ -226,6 +228,13 @@ for changed defaults.
 
 ### Fixed
 
+- **The world ended in a wall.** Past the map edge there was a vertical
+  cliff, then a flat, pale sheet of shore and foam instead of sea, and
+  smeared streaks along the border. Every terrain now continues as a
+  skirt that falls from its edge into deep sea over 1.5 km, with its own
+  rock and sand; mesh vertices beyond the edge keep their true places
+  instead of collapsing onto the border, and the water takes its depth
+  from the skirt.
 - **Raindrops on the lens were cut off** along straight edges. Each pixel
   only looked at the drop of its own screen cell, so drops that overhung
   their cell were sliced flat. Drops are now simulated on the CPU and

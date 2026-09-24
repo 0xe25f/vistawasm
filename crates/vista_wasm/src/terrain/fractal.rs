@@ -67,7 +67,7 @@ pub fn generate_fractal_heightmap_with_progress(
   }
 
   progress("finishing", 0.0);
-  finish_fractal_heightmap(&mut map);
+  finish_fractal_heightmap(&mut map, options);
   Ok(map)
 }
 
@@ -224,7 +224,7 @@ pub fn generate_fractal_heightmap_base_with_progress(
   let mut heights = add_detail(options, &landform, &base, &coarse);
 
   if options.edges == TerrainEdges::Coast {
-    shelve_border(size as usize, spacing, &mut heights, &landform);
+    shelve_border(size as usize, spacing, &mut heights, &landform, 0.0);
   }
 
   progress("detail", 1.0);
@@ -277,10 +277,21 @@ pub const MIN_ISLET_SAMPLES: usize = 6;
 /// are levelled by [`remove_minor_summits`].
 pub const MINOR_SUMMIT_FRACTION: f32 = 0.3;
 
-/// Final conditioning after erosion: drown specks of land, level minor
-/// summits, and fill closed depressions smaller than
-/// [`MIN_BASIN_SAMPLES`], then refresh statistics.
-pub fn finish_fractal_heightmap(map: &mut HeightMap) {
+/// Final conditioning after erosion: shelve the border again for coast
+/// edges (erosion slumps coastal land into a thin strip of sea), drown
+/// specks of land, level minor summits, and fill closed depressions
+/// smaller than [`MIN_BASIN_SAMPLES`], then refresh statistics.
+pub fn finish_fractal_heightmap(map: &mut HeightMap, options: &FractalTerrainOptions) {
+  if options.edges == TerrainEdges::Coast {
+    shelve_border(
+      map.metadata.width as usize,
+      map.metadata.metres_per_sample,
+      &mut map.heights,
+      &fractal_landform(options),
+      map.metadata.sea_level_metres,
+    );
+  }
+
   let prominence = map.metadata.metres_per_sample * MINOR_SUMMIT_FRACTION;
   remove_islets(map, MIN_ISLET_SAMPLES);
   remove_minor_summits(map, prominence);
@@ -508,7 +519,7 @@ fn erode_lowlands(size: u32, spacing: f64, heights: &mut [f64], options: &Stream
 /// keeps erosion from filling it back above water, and meets the
 /// renderer's skirt beyond the map with open sea. It is a shelf rather
 /// than a trench, since erosion slumps coastal land into a trench.
-fn shelve_border(size: usize, spacing: f32, heights: &mut [f32], landform: &Landform) {
+fn shelve_border(size: usize, spacing: f32, heights: &mut [f32], landform: &Landform, sea: f32) {
   let extent = (size - 1) as f32 * spacing;
   let band = (extent * COAST_RIM).max(COAST_RIM_MIN) * 0.1;
   let samples = (band / spacing).ceil() as usize + 1;
@@ -523,7 +534,7 @@ fn shelve_border(size: usize, spacing: f32, heights: &mut [f32], landform: &Land
 
       let t = smoothstep_between(0.0, band, edge as f32 * spacing);
       let height = &mut heights[y * size + x];
-      *height = lerp(landform.sea_floor * 0.35, *height, t);
+      *height = lerp(sea + landform.sea_floor * 0.35, *height, t);
     }
   }
 }
