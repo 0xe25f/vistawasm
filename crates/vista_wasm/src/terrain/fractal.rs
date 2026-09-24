@@ -63,6 +63,7 @@ pub fn generate_fractal_heightmap_with_progress(
     apply_erosion(&mut map, erosion, &fractal_landform(options), progress)?;
   }
 
+  progress("finishing", 0.0);
   finish_fractal_heightmap(&mut map);
   Ok(map)
 }

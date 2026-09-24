@@ -265,7 +265,9 @@ impl EngineCore {
 
   /// [`Self::generate_fractal`], reporting `(phase, progress)` as each
   /// generation stage advances. Phases are `"tectonics"`, `"drainage"`,
-  /// `"detail"` and, when erosion is requested, `"erosion"`.
+  /// `"detail"`, `"erosion"` (when erosion is requested) and
+  /// `"finishing"` (conditioning the map and building rivers, flora and
+  /// the terrain mesh).
   pub async fn generate_fractal_with_progress(
     &mut self,
     options: FractalTerrainOptions,
@@ -275,6 +277,7 @@ impl EngineCore {
     self.state = EngineState::LoadingTerrain;
     let map = self.generate_fractal_map(&options, progress).await?;
     let handle = self.install_terrain(map);
+    progress("finishing", 1.0);
     self.state = EngineState::Ready;
     Ok(handle)
   }
@@ -307,6 +310,7 @@ impl EngineCore {
       }
     }
 
+    progress("finishing", 0.0);
     crate::terrain::finish_fractal_heightmap(&mut map);
     Ok(map)
   }

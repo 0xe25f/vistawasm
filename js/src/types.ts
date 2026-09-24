@@ -955,8 +955,10 @@ export interface VistaEventMap {
   /**
    * Terrain generation progress from 0 to 1 within each phase.
    * `generateFractal()` reports `"fractal"` at 0 and 1 around the whole
-   * call, and in between `"tectonics"`, `"drainage"`, `"detail"` and,
-   * when erosion is requested, `"erosion"` (at least every 10 %).
+   * call, and in between `"tectonics"`, `"drainage"`, `"detail"`,
+   * `"erosion"` (when erosion is requested, at least every 10 %) and
+   * `"finishing"` (conditioning the map, then building rivers, flora and
+   * the terrain mesh).
    */
   progress: { phase: string; progress: number };
   warning: { message: string; details?: unknown };
