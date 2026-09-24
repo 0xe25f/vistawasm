@@ -238,7 +238,7 @@ field is optional. See [`docs/biomes.md`](biomes.md).
 | `climateScaleMetres` | `number?` | `7000` | Typical climate region size. Must be `> 0`. |
 | `volcanism` | `number?` | `0.35` | `0` to `1`. Volcanic regions around high peaks. |
 | `beachHeightMetres` | `number?` | `5` | Height above sea level below which flat ground becomes beach. |
-| `snowLineMetres` | `number?` | 80% of sea-to-peak | Snow line; lowered further in cold climates. |
+| `snowLineMetres` | `number?` | 80% of sea-to-peak, at least 400 m above sea | Snow line; lowered further in cold climates. |
 
 `engine.biomeAt(x, z)` returns the biome name at a world position (or
 `undefined` outside the terrain): `"grassyMeadows"`, `"outerThicket"`,
@@ -337,22 +337,44 @@ Passed to `engine.generateFractal(options)`.
 | `seed` | `number \| bigint` | — (required) | Deterministic seed for the terrain. Flora, grass, clouds, mist, biomes, and weather have their own `seedOffset`. |
 | `size` | `512 \| 1024 \| 2048 \| 4096 \| 8192 \| number` | — (required) | Square terrain side length in samples. |
 | `horizontalScaleMetres` | `number` | — (required) | Metres between adjacent samples. |
-| `verticalScale` | `number` | — (required) | Height multiplier applied to the generated `[-1, 1]` noise field. |
-| `baseHeightMetres` | `number?` | `0` | Offset added after scaling. |
-| `seaLevelMetres` | `number?` | `0` | Initial `TerrainMetadata.seaLevelMetres`; independent from `WaterOptions.seaLevelMetres`, which controls the rendered water plane. |
-| `noise` | `NoiseOptions` | see below | |
+| `verticalScale` | `number` | — (required) | Stretches heights about sea level. Must be greater than 0. |
+| `baseHeightMetres` | `number?` | `0` | Offset added after scaling; raises or sinks the whole map, coast included. |
+| `seaLevelMetres` | `number?` | `0` | Where the generated coast sits, and the initial `TerrainMetadata.seaLevelMetres`. Independent from `WaterOptions.seaLevelMetres`, which controls the rendered water plane. |
+| `landform` | `LandformKind?` | `"continental"` | The character of the land. See below and [`docs/terrain-data.md`](terrain-data.md#landforms). Unknown names are rejected with a list of the valid ones. |
+| `noise` | `NoiseOptions` | see below | The detail layer. |
 | `shape` | `TerrainShapeOptions?` | none | |
 | `erosion` | `ErosionOptions?` | none (disabled) | |
 
+`size` must be a power of two from 16 to 8192, and `horizontalScaleMetres`
+must be greater than 0.
+
+### `LandformKind`
+
+| Value | Land | Ranges | Notes |
+| --- | --- | --- | --- |
+| `"continental"` | 70 % | up to 1400 m on 40 % of the land | Mixed plains, hills and ranges. |
+| `"alpine"` | 95 % | up to 2600 m on 85 % of the land | Glacial valleys and lakes. |
+| `"rollingHills"` | 90 % | none | Lowlands up to 250 m; nothing steeper than 30 degrees. |
+| `"archipelago"` | 35 % | up to 600 m | Many islands of varied size. |
+| `"mesaDesert"` | 97 % | up to 420 m | Terraced plateaus, low rain. |
+| `"fjords"` | 75 % | up to 1600 m | Flooded U-shaped glacial valleys. |
+| `"volcanicIsland"` | 30 % | a 1500 m cone | Crater lake, radial gullies and a reef shelf. |
+
+Relief shrinks on maps too small to hold a full range: ranges stand at most
+a quarter of their wavelength, which is at most 0.6 times the map's width.
+
 ### `NoiseOptions`
+
+Controls the detail layer added to the carved land. Detail is strongest on
+steep ground in the ranges and fades out on level ground.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `kind` | `"simplex" \| "ridged" \| "hybrid" \| "island" \| "canyon" \| "cratered" \| "classic"` | `"ridged"` | See [`docs/world-design-guide.md`](world-design-guide.md#2-noise-kinds) for what each produces. |
-| `octaves` | `number` | `7` | Layered noise octave count. |
-| `gain` | `number` | `0.5` | Amplitude multiplier between octaves. |
-| `lacunarity` | `number` | `2.0` | Frequency multiplier between octaves. |
-| `warp` | `number?` | `0` | Domain warp amount. |
+| `kind` | `"simplex" \| "ridged" \| "hybrid" \| "island" \| "canyon" \| "cratered" \| "classic"` | `"ridged"` | Flavour of the detail. `island`, `canyon` and `cratered` also apply their shape masks. See [`docs/world-design-guide.md`](world-design-guide.md#2-noise-kinds). |
+| `octaves` | `number` | `7` | At most this many detail octaves, 1 to 16. Octaves finer than 2.5 samples are skipped. |
+| `gain` | `number` | `0.5` | Amplitude multiplier between octaves, 0 to 1. |
+| `lacunarity` | `number` | `2.0` | Frequency multiplier between octaves; greater than 1. |
+| `warp` | `number?` | `0` | Domain warp of the detail, 0 to 4. |
 
 ### `TerrainShapeOptions`
 
@@ -363,20 +385,22 @@ All fields optional, roughly `0..1` strength dials (see
 ### `ErosionOptions`
 
 Passing `erosion` at all enables erosion; omit it entirely to skip erosion.
+Unset fields take the landform's defaults, and unset iteration counts
+follow `quality`.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `hydraulicIterations` | `number?` | `0` | Rain/transport/deposition passes. |
-| `thermalIterations` | `number?` | `0` | Scree/talus slumping passes. |
-| `rainAmount` | `number?` | `0.02` | Hydraulic aggressiveness. |
-| `evaporation` | `number?` | `0.5` | Hydraulic water loss rate. |
-| `sedimentCapacity` | `number?` | `0.04` | Hydraulic transport capacity. |
-| `talusAngleDegrees` | `number?` | `35` | Slope angle above which thermal erosion moves material. |
-| `quality` | `"preview" \| "balanced" \| "high" \| "offline"?` | `"preview"` | Caps each pass's iterations at 16, 64, 160, or 320, whatever the requested counts. |
+| `hydraulicIterations` | `number?` | from `quality` | Virtual-pipe water iterations, 0 to 5000, capped by `quality`. |
+| `thermalIterations` | `number?` | from `quality` | Talus and soil-creep iterations, 0 to 5000, capped by `quality`. |
+| `rainAmount` | `number?` | `0.02` × landform rain | Rain per iteration, 0 to 1. |
+| `evaporation` | `number?` | `0.5` | Water loss per iteration, 0 to 1. |
+| `sedimentCapacity` | `number?` | `0.04` | How much sediment water can carry, 0 to 1. |
+| `talusAngleDegrees` | `number?` | the landform's (30 to 44) | Slope above which thermal erosion moves material, 1 to 89. |
+| `quality` | `"preview" \| "balanced" \| "high" \| "offline"?` | `"preview"` | Default iterations 60/30, 120/60, 200/100 or 400/200 (hydraulic/thermal); caps 120, 240, 400 or 5000. |
 
 Erosion runs as GPU compute passes on browser builds (CPU fallback on any
 GPU error); native/test builds always use the CPU path — see
-[`docs/architecture.md`](architecture.md#terrain-generation).
+[`docs/terrain-data.md`](terrain-data.md#erosion).
 
 ## `DemLoadOptions`
 

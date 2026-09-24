@@ -287,13 +287,20 @@ pub fn find_volcanoes(map: &HeightMap, options: &BiomeOptions) -> Vec<Volcano> {
   volcanoes
 }
 
-/// Resolve the automatic snow line for a heightmap.
+/// The automatic snow line never sits lower than this above sea level, so
+/// low hills do not whiten just for being the highest ground on the map.
+pub const MIN_AUTOMATIC_SNOW_LINE_METRES: f32 = 400.0;
+
+/// Resolve the automatic snow line for a heightmap: 80 % of the way from
+/// sea level to the highest peak, and at least
+/// [`MIN_AUTOMATIC_SNOW_LINE_METRES`] above sea level.
 pub fn snow_line_metres(map: &HeightMap, options: &BiomeOptions) -> f32 {
   let sea = map.metadata.sea_level_metres;
+  let relative = (map.metadata.max_height_metres - sea).max(1.0) * 0.8;
 
   options
     .snow_line_metres
-    .unwrap_or(sea + (map.metadata.max_height_metres - sea).max(1.0) * 0.8)
+    .unwrap_or(sea + relative.max(MIN_AUTOMATIC_SNOW_LINE_METRES))
 }
 
 /// Classify every heightmap sample into a biome and surface materials.
@@ -547,6 +554,13 @@ mod tests {
   use crate::terrain::heightmap::update_stats;
   use crate::terrain::normals::generate_normals;
   use vista_types::TerrainMetadata;
+
+  #[test]
+  fn low_hills_get_no_automatic_snow_line_below_the_floor() {
+    let options = BiomeOptions::default();
+    assert_eq!(snow_line_metres(&ramp_map(16, 250.0), &options), 400.0);
+    assert_eq!(snow_line_metres(&ramp_map(16, 2000.0), &options), 1600.0);
+  }
 
   fn ramp_map(size: u32, max_height: f32) -> HeightMap {
     let metadata = TerrainMetadata {
