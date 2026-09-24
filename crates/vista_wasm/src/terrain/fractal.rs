@@ -1,9 +1,10 @@
 use vista_types::{FractalTerrainOptions, NoiseKind, TerrainMetadata};
 
 use crate::errors::{VistaError, VistaResult};
-use crate::maths::{clamp_f32, hash_u64, lerp, value_noise};
+use crate::maths::{clamp_f32, hash_u64, lerp};
 use crate::terrain::erosion::apply_erosion;
 use crate::terrain::heightmap::HeightMap;
+use crate::terrain::noise::{noise_seed, simplex};
 
 const GENERATOR_VERSION: &str = "vistawasm-fractal-0.1.0";
 
@@ -107,8 +108,8 @@ fn warp_domain(seed: u64, x: f32, y: f32, warp: f32) -> (f32, f32) {
     return (x, y);
   }
 
-  let dx = value_noise(seed ^ 0xa53a, x * 2.0, y * 2.0) * warp * 0.08;
-  let dy = value_noise(seed ^ 0x5ac3, x * 2.0 + 19.0, y * 2.0 - 7.0) * warp * 0.08;
+  let dx = simplex(noise_seed(seed, 0xa53a), x * 2.0, y * 2.0) * warp * 0.08;
+  let dy = simplex(noise_seed(seed, 0x5ac3), x * 2.0 + 19.0, y * 2.0 - 7.0) * warp * 0.08;
 
   (x + dx, y + dy)
 }
@@ -121,7 +122,11 @@ fn octave_noise(options: &FractalTerrainOptions, x: f32, y: f32) -> f32 {
 
   for octave in 0..options.noise.octaves {
     let seed = hash_u64(options.seed ^ octave as u64);
-    let sample = value_noise(seed, x * frequency * 6.0, y * frequency * 6.0);
+    let sample = simplex(
+      noise_seed(seed, 0),
+      x * frequency * 6.0,
+      y * frequency * 6.0,
+    );
     let shaped = match options.noise.kind {
       NoiseKind::Simplex => sample,
       NoiseKind::Ridged => 1.0 - sample.abs() * 2.0,

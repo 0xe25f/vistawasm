@@ -13,11 +13,9 @@
 //! into the heightmap, and turned into ribbons whose vertices carry the
 //! local flow direction and speed for the animated current.
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
 use vista_types::{RiverOptions, WaterOptions};
 
+use crate::terrain::drainage;
 use crate::terrain::heightmap::HeightMap;
 
 /// CPU mirror of water uniforms used by shaders.
@@ -182,31 +180,6 @@ pub struct RiverNetwork {
   pub river_count: u32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-struct FloodCell {
-  level: f64,
-  index: u32,
-}
-
-impl Eq for FloodCell {}
-
-impl Ord for FloodCell {
-  fn cmp(&self, other: &Self) -> Ordering {
-    // Reverse so `BinaryHeap` pops the lowest level first; ties break on
-    // index to keep the flood fully deterministic.
-    other
-      .level
-      .total_cmp(&self.level)
-      .then_with(|| other.index.cmp(&self.index))
-  }
-}
-
-impl PartialOrd for FloodCell {
-  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    Some(self.cmp(other))
-  }
-}
-
 /// Maximum number of traced river sources.
 const MAX_RIVER_SOURCES: usize = 600;
 
@@ -258,115 +231,30 @@ impl FlowGrid {
     grid
   }
 
-  fn neighbours(&self, index: u32) -> impl Iterator<Item = u32> + '_ {
-    let x = (index % self.width) as i32;
-    let y = (index / self.width) as i32;
-    const OFFSETS: [(i32, i32); 8] = [
-      (-1, 0),
-      (1, 0),
-      (0, -1),
-      (0, 1),
-      (-1, -1),
-      (1, -1),
-      (-1, 1),
-      (1, 1),
-    ];
-
-    OFFSETS.iter().filter_map(move |(dx, dy)| {
-      let nx = x + dx;
-      let ny = y + dy;
-
-      if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
-        None
-      } else {
-        Some(ny as u32 * self.width + nx as u32)
-      }
-    })
+  fn neighbours(&self, index: u32) -> impl Iterator<Item = u32> {
+    drainage::neighbours(self.width, self.height, index)
   }
 
-  /// Priority-flood depression filling (Barnes et al.) that also records,
-  /// for each cell, the cell it drains into and the order cells were
-  /// reached in (which is a valid topological order for accumulation).
+  /// Fill depressions, route each cell to its steepest downhill
+  /// neighbour, and accumulate upstream catchment.
   fn flood(&mut self, sea: f64) {
-    let count = self.filled.len();
-    let mut visited = vec![false; count];
-    let mut heap = BinaryHeap::new();
-    let mut order = Vec::with_capacity(count);
-    // A tiny gradient across filled flats so water always has somewhere
-    // to go; small enough to be invisible on lake surfaces.
-    const EPSILON: f64 = 1e-4;
-
-    for index in 0..count as u32 {
-      let x = index % self.width;
-      let y = index / self.width;
-      let edge = x == 0 || y == 0 || x == self.width - 1 || y == self.height - 1;
-
-      if edge || self.heights[index as usize] <= sea {
-        visited[index as usize] = true;
-        heap.push(FloodCell {
-          level: self.filled[index as usize],
-          index,
-        });
-      }
-    }
-
-    while let Some(cell) = heap.pop() {
-      order.push(cell.index);
-      let neighbours: Vec<u32> = self.neighbours(cell.index).collect();
-
-      for neighbour in neighbours {
-        let n = neighbour as usize;
-
-        if visited[n] {
-          continue;
-        }
-
-        visited[n] = true;
-        self.filled[n] = self.heights[n].max(cell.level + EPSILON);
-        self.receiver[n] = cell.index;
-        heap.push(FloodCell {
-          level: self.filled[n],
-          index: neighbour,
-        });
-      }
-    }
-
-    // Prefer the steepest downhill neighbour where one exists, which
-    // follows valleys more naturally than the flood order alone.
-    for index in 0..count as u32 {
-      let i = index as usize;
-
-      if self.receiver[i] == u32::MAX {
-        continue;
-      }
-
-      let mut best = self.receiver[i];
-      let mut best_drop = 0.0;
-
-      for neighbour in self.neighbours(index) {
-        let n = neighbour as usize;
-        let dx = (neighbour % self.width) as f64 - (index % self.width) as f64;
-        let dy = (neighbour / self.width) as f64 - (index / self.width) as f64;
-        let distance = (dx * dx + dy * dy).sqrt();
-        let drop = (self.filled[i] - self.filled[n]) / distance;
-
-        if drop > best_drop {
-          best_drop = drop;
-          best = neighbour;
-        }
-      }
-
-      self.receiver[i] = best;
-    }
-
-    for index in order.iter().rev() {
-      let i = *index as usize;
-      let receiver = self.receiver[i];
-
-      if receiver != u32::MAX {
-        self.accumulation[receiver as usize] += self.accumulation[i];
-      }
-    }
+    let flood = drainage::priority_flood(
+      self.width,
+      self.height,
+      &self.heights,
+      // A tiny gradient across filled flats so water always has somewhere
+      // to go; small enough to be invisible on lake surfaces.
+      1e-4,
+      drainage::edge_or_sea_outlet(self.width, self.height, &self.heights, sea),
+    );
+    self.filled = flood.filled;
+    self.receiver = flood.receiver;
+    drainage::steepest_receivers(self.width, self.height, &self.filled, &mut self.receiver);
+    self.accumulation = drainage::accumulate(
+      &flood.order,
+      &self.receiver,
+      std::mem::take(&mut self.accumulation),
+    );
   }
 }
 
