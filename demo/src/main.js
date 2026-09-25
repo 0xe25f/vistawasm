@@ -66,6 +66,10 @@ const inputs = {
   riverMeanders: input("riverMeanders"),
   riverSprings: input("riverSprings"),
   riverWaterfalls: input("riverWaterfalls"),
+  riverInflow: input("riverInflow"),
+  riverInflowDischarge: input("riverInflowDischarge"),
+  riverRiparian: input("riverRiparian"),
+  waterReflections: input("waterReflections"),
   biomesEnabled: input("biomesEnabled"),
   biomeTemperature: input("biomeTemperature"),
   biomeMoisture: input("biomeMoisture"),
@@ -171,8 +175,13 @@ const buttons = {
   resetTextures: button("resetTextures"),
   customModel: button("customModel"),
   plantGrove: button("plantGrove"),
-  jumpToWaterfall: button("jumpToWaterfall")
+  jumpToWaterfall: button("jumpToWaterfall"),
+  riverValley: button("riverValley"),
+  jumpToMainRiver: button("jumpToMainRiver")
 };
+
+// Where the "At the camera" inflow enters, in world x and z.
+let inflowAt = [0, 0];
 
 let customModelActive = false;
 let groveActive = false;
@@ -280,6 +289,58 @@ function describeWaterSounds(sounds) {
 
   const { kind, sound } = nearest;
   return `${WATER_SOUND_NAMES[kind]} ${Math.round(sound.distanceMetres)} m away, loudness ${sound.loudness.toFixed(2)}`;
+}
+
+// Put an explicit inflow where the camera stands, kept on the map.
+function placeInflowAtCamera(controls) {
+  const [x, , z] = controls.getCamera().position;
+  const metadata = latestMetadata;
+  const halfX = metadata ? ((metadata.width - 1) * metadata.metresPerSample) / 2 : 0;
+  const halfZ = metadata ? ((metadata.height - 1) * metadata.metresPerSample) / 2 : 0;
+  inflowAt = [Math.max(-halfX, Math.min(halfX, x)), Math.max(-halfZ, Math.min(halfZ, z))];
+}
+
+// Follow the carved ground downhill from the first inflow for about a
+// kilometre, then look down the river from 120 m above it.
+function jumpToMainRiver(controls) {
+  const inflows = engine?.getInflows() ?? [];
+
+  if (inflows.length === 0 || !latestMetadata) {
+    setStatus("No river enters this map. Use open edges and an automatic inflow, or the River valley preset.");
+    return;
+  }
+
+  const step = latestMetadata.metresPerSample;
+  let [x, , z] = inflows[0].position;
+  const path = [[x, z]];
+
+  for (let walked = 0; walked < 1400; walked += step) {
+    let best = null;
+
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const nx = x + dx * step;
+      const nz = z + dz * step;
+      const height = terrainHeightAt(nx, nz);
+
+      if (height !== null && !path.some(([px, pz]) => px === nx && pz === nz) && (!best || height < best.height)) {
+        best = { height, nx, nz };
+      }
+    }
+
+    if (!best) {
+      break;
+    }
+
+    x = best.nx;
+    z = best.nz;
+    path.push([x, z]);
+  }
+
+  const at = path[Math.max(0, path.length - 8)];
+  const ahead = path[path.length - 1];
+  controls.setPosition([at[0], (terrainHeightAt(at[0], at[1]) ?? 0) + 120, at[1]]);
+  controls.lookAt([ahead[0], terrainHeightAt(ahead[0], ahead[1]) ?? 0, ahead[1]]);
+  setStatus(`A river of ${inflows[0].dischargeCubicMetresPerSecond.toFixed(0)} m³/s enters the map here.`);
 }
 
 // Fly to the waterfall nearest the camera and look at it from three times
@@ -408,8 +469,14 @@ function applyWater() {
       snowmelt: readNumber(inputs.riverSnowmelt, 1),
       springs: inputs.riverSprings.checked,
       meanders: readNumber(inputs.riverMeanders, 0.6),
-      waterfalls: inputs.riverWaterfalls.checked
+      waterfalls: inputs.riverWaterfalls.checked,
+      inflow:
+        inputs.riverInflow.value === "camera"
+          ? [{ position: inflowAt, dischargeCubicMetresPerSecond: readNumber(inputs.riverInflowDischarge, 40) }]
+          : inputs.riverInflow.value,
+      riparian: readNumber(inputs.riverRiparian, 1)
     },
+    reflections: inputs.waterReflections.value,
     currentSpeed: readNumber(inputs.currentSpeed, 0.35),
     currentDirectionDegrees: readNumber(inputs.currentDirection, 60),
     clarityMetres: readNumber(inputs.waterClarity, 6),
@@ -1012,7 +1079,10 @@ function wireLiveControls() {
     inputs.riverSnowmelt,
     inputs.riverMeanders,
     inputs.riverSprings,
-    inputs.riverWaterfalls
+    inputs.riverWaterfalls,
+    inputs.riverInflowDischarge,
+    inputs.riverRiparian,
+    inputs.waterReflections
   ]) {
     element.addEventListener("change", applyWater);
   }
@@ -1294,6 +1364,29 @@ async function run() {
   });
 
   buttons.jumpToWaterfall.addEventListener("click", () => jumpToWaterfall(controls));
+  buttons.jumpToMainRiver.addEventListener("click", () => jumpToMainRiver(controls));
+  // A continental map with open edges, 15 km across, where a big river
+  // flows in from beyond the map.
+  buttons.riverValley.addEventListener("click", async () => {
+    inputs.landform.value = "continental";
+    inputs.edges.value = "open";
+    inputs.size.value = "512";
+    inputs.horizontalScale.value = "30";
+    inputs.horizontalScale.dispatchEvent(new Event("input"));
+    inputs.riverInflow.value = "auto";
+    inputs.riverInflowDischarge.disabled = true;
+    await generate();
+    jumpToMainRiver(controls);
+  });
+  inputs.riverInflow.addEventListener("change", () => {
+    inputs.riverInflowDischarge.disabled = inputs.riverInflow.value !== "camera";
+
+    if (inputs.riverInflow.value === "camera") {
+      placeInflowAtCamera(controls);
+    }
+
+    applyWater();
+  });
 
   const observer = new ResizeObserver(() => {
     if (!engine) {
