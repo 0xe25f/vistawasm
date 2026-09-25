@@ -299,6 +299,44 @@ pub fn validate_water(water: &WaterOptions) -> VistaResult<()> {
   validate_non_negative("water.rivers.currentSpeed", water.rivers.current_speed)?;
   validate_unit_range("water.rivers.snowmelt", water.rivers.snowmelt, 0.0, 2.0)?;
   validate_unit_range("water.rivers.meanders", water.rivers.meanders, 0.0, 1.0)?;
+  validate_inflows(&water.rivers.inflow)
+}
+
+/// Most explicit inflows `water.rivers.inflow` may list.
+pub const MAX_INFLOWS: usize = 8;
+
+/// Validate explicit inflows: at most [`MAX_INFLOWS`], finite positions
+/// and 0 to 100,000 m³/s each. Whether a position is on the map is checked
+/// against the terrain (see `EngineCore::set_water`).
+pub fn validate_inflows(inflow: &vista_types::RiverInflows) -> VistaResult<()> {
+  let vista_types::RiverInflows::List(list) = inflow else {
+    return Ok(());
+  };
+
+  if list.len() > MAX_INFLOWS {
+    return Err(VistaError::options(format!(
+      "water.rivers.inflow may list at most {MAX_INFLOWS} inflows, but {} were given.",
+      list.len()
+    )));
+  }
+
+  for (index, entry) in list.iter().enumerate() {
+    validate_finite(
+      &format!("water.rivers.inflow[{index}].position x"),
+      entry.position[0],
+    )?;
+    validate_finite(
+      &format!("water.rivers.inflow[{index}].position z"),
+      entry.position[1],
+    )?;
+    validate_unit_range(
+      &format!("water.rivers.inflow[{index}].dischargeCubicMetresPerSecond"),
+      entry.discharge_cubic_metres_per_second,
+      0.0,
+      100_000.0,
+    )?;
+  }
+
   Ok(())
 }
 
@@ -1005,6 +1043,30 @@ mod tests {
     let mut water = WaterOptions::default();
     water.rivers.meanders = f32::NAN;
     assert!(validate_water(&water).is_err());
+
+    let inflow = |discharge: f32| vista_types::RiverInflow {
+      position: [10.0, -20.0],
+      discharge_cubic_metres_per_second: discharge,
+    };
+    let mut water = WaterOptions::default();
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![inflow(50.0); 9]);
+    let error = validate_water(&water).unwrap_err().to_string();
+    assert!(error.contains("at most 8"), "{error}");
+
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![inflow(-1.0)]);
+    let error = validate_water(&water).unwrap_err().to_string();
+    assert!(
+      error.contains("inflow[0].dischargeCubicMetresPerSecond") && error.contains("0 and 100000"),
+      "{error}"
+    );
+
+    let mut bad = inflow(5.0);
+    bad.position[1] = f32::INFINITY;
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![bad]);
+    assert!(validate_water(&water).is_err());
+
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![inflow(5.0); 8]);
+    assert!(validate_water(&water).is_ok());
 
     assert!(validate_water(&WaterOptions::default()).is_ok());
   }

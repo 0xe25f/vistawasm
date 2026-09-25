@@ -46,6 +46,13 @@ const DELTA_WIDTH: f32 = 8.0;
 /// Deltas form where the last reach is flatter than this.
 const DELTA_SLOPE: f32 = 0.005;
 
+/// Rivers at least this wide, in metres, on valley slopes under
+/// [`VALLEY_FLOOR_SLOPE`], lower a valley floor beside their banks.
+pub const VALLEY_FLOOR_WIDTH: f32 = 20.0;
+
+/// See [`VALLEY_FLOOR_WIDTH`].
+const VALLEY_FLOOR_SLOPE: f32 = 0.01;
+
 /// A step lower than this is a rapid, not a fall.
 const MIN_FALL_METRES: f32 = 3.0;
 
@@ -1213,10 +1220,15 @@ fn carve_reach(
     // V walls may climb several samples up a steep valley side; on gentle
     // ground the floodplain meets the ground 4 w beyond the bank, and
     // nothing further out is cut.
+    // A big river in a V-shaped valley reads as a canal, so on gentle
+    // ground it flattens a floor 3 w wide beside each bank, blending back
+    // to the ground over a further 6 w.
+    let valley = w >= VALLEY_FLOOR_WIDTH && a.slope.max(b.slope) < VALLEY_FLOOR_SLOPE;
+    let plain_metres = if valley { 9.0 * w } else { 4.0 * w };
     let reach_metres = if steep > 0.0 {
       r + (4.0 * w * (1.0 - steep)).max(3.0 * metres)
     } else {
-      r + 4.0 * w
+      r + plain_metres
     };
     let mask_metres = (0.65 * w).max(0.5 * metres);
     let low_level = a.level.min(b.level);
@@ -1244,9 +1256,9 @@ fn carve_reach(
     let radius = reach_metres / metres;
     let reach_sq = radius * radius;
     let mask_sq = (mask_metres / metres) * (mask_metres / metres);
-    let shape = ChannelShape::new(r, w, steep);
+    let shape = ChannelShape::new(r, w, steep, valley);
     let r_samples = r / metres;
-    let plain_sq = ((r + 4.0 * w) / metres).powi(2);
+    let plain_sq = ((r + plain_metres) / metres).powi(2);
 
     for y in min_y..=max_y {
       let py = y as f32 - a.y;
@@ -1387,10 +1399,13 @@ struct ChannelShape {
   /// One over the floodplain's reach, 4 w.
   inv_plain: f32,
   steep: f32,
+  /// Where a big river's valley floor ends, 3 w beyond the bank, and one
+  /// over the 6 w it takes to meet the ground; `None` for other rivers.
+  valley: Option<(f32, f32)>,
 }
 
 impl ChannelShape {
-  fn new(r: f32, w: f32, steep: f32) -> Self {
+  fn new(r: f32, w: f32, steep: f32, valley: bool) -> Self {
     Self {
       r,
       inv_r: 1.0 / r,
@@ -1398,6 +1413,7 @@ impl ChannelShape {
       inv_band: 1.0 / (0.3 * r),
       inv_plain: 1.0 / (4.0 * w),
       steep,
+      valley: valley.then(|| (r + 3.0 * w, 1.0 / (6.0 * w))),
     }
   }
 
@@ -1413,7 +1429,17 @@ impl ChannelShape {
     let plain = smoothstep((distance - r) * self.inv_plain);
     let trapezoid = bed + (bank - bed) * rise + (ground - bank) * plain;
     let v_shape = bed + depth * distance.min(r) * self.inv_r + (distance - r).max(0.0);
-    trapezoid + (v_shape - trapezoid) * self.steep
+    let target = trapezoid + (v_shape - trapezoid) * self.steep;
+
+    match self.valley {
+      // At most half a metre above the bank, then back to the ground.
+      Some((floor_end, inv_blend)) => {
+        let floor = bank + 0.5;
+        let blend = smoothstep((distance - floor_end) * inv_blend);
+        target.min(floor + (ground - floor) * blend)
+      }
+      None => target,
+    }
   }
 }
 
@@ -1937,6 +1963,69 @@ mod tests {
 
       assert!(changed > 50, "fixture {index} carved {changed} samples");
     }
+  }
+
+  #[test]
+  fn a_big_river_on_gentle_ground_flattens_its_valley_floor() {
+    // A broad V valley falling 0.2 % to the sea in the north, fed from the
+    // south by a river 40 m wide.
+    let original = map_from(256, 30.0, |x, y| y * 0.06 - 2.0 + (x - 128.0).abs() * 0.5);
+    let mut map = original.clone();
+    let discharge = (40.0f32 / 2.7).powi(2);
+    let options = RiverOptions {
+      min_catchment_km2: 50.0,
+      meanders: 0.0,
+      inflow: vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+        position: [0.5 * 30.0, 110.0 * 30.0],
+        discharge_cubic_metres_per_second: discharge,
+      }]),
+      ..RiverOptions::default()
+    };
+    let (channels, original_heights) = condition(&mut map, &options);
+    let trunk = channels
+      .reaches
+      .iter()
+      .max_by_key(|reach| reach.points.len())
+      .expect("a river");
+    let mut checked = 0;
+
+    for point in trunk
+      .points
+      .iter()
+      .filter(|p| p.width >= 39.0 && p.slope < 0.01)
+    {
+      let bank = point.level + 0.25 * point.depth;
+      let r = (0.5 * point.width).max(0.75 * 30.0);
+      let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+
+      for dx in -12..=12i32 {
+        let distance = (dx as f32 - (point.x - x as f32)).abs() * 30.0;
+
+        if distance <= r || distance > r + 3.0 * point.width {
+          continue;
+        }
+
+        let index = (y * 256 + x + dx) as usize;
+
+        if original.heights[index] > 0.0 {
+          assert!(
+            map.heights[index] <= bank + 0.5 + 1e-3,
+            "{} m above the bank at {} m",
+            map.heights[index] - bank,
+            distance
+          );
+          checked += 1;
+        }
+      }
+    }
+
+    assert!(checked > 100, "checked {checked} samples");
+
+    for (index, height) in original_heights {
+      map.heights[index] = height;
+    }
+
+    assert_eq!(map.heights, original.heights);
   }
 
   #[test]

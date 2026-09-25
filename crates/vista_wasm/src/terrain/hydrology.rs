@@ -12,7 +12,7 @@
 //! edge of snow fields, springs at the foot of slopes, and the outlets of
 //! lakes fed by a channel.
 
-use vista_types::{BiomeKind, RiverOptions};
+use vista_types::{BiomeKind, InflowMode, RiverInflows, RiverOptions};
 
 use crate::maths::{hash_u64, length2};
 use crate::terrain::biomes::{SurfaceSample, MAT_SNOW};
@@ -53,6 +53,22 @@ const MIN_SNOW_FIELD_CELLS: usize = 8;
 
 /// Marks a cell outside every lake.
 pub const NO_LAKE: u32 = u32::MAX;
+
+/// An automatic inflow drains a basin this many times the map's land area.
+pub const AUTO_INFLOW_BASIN: f32 = 10.0;
+
+/// Border cells this far either side of a valley mouth, along the border,
+/// are all higher than it.
+const MOUTH_REACH: i32 = 8;
+
+/// Water entering the map from beyond it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inflow {
+  /// The land cell it enters at.
+  pub cell: u32,
+  /// Mean discharge in cubic metres per second.
+  pub discharge: f32,
+}
 
 /// A lake filling a depression to its spill height.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,6 +156,8 @@ pub struct Hydrology {
   pub sources: Vec<u32>,
   /// Every cell after its receiver.
   pub order: Vec<u32>,
+  /// Water entering from beyond the map.
+  pub inflows: Vec<Inflow>,
 }
 
 impl Hydrology {
@@ -335,7 +353,22 @@ pub fn build_hydrology(
     });
   }
 
-  let (filled64, mut receiver) = flood(width, height, &ground64, sea as f64);
+  let inflows = place_inflows(
+    map,
+    options,
+    InflowGrid {
+      width,
+      height,
+      stride,
+      ground: &ground64,
+      sea: sea as f64,
+    },
+    |cell| climate(cell).map_or(0.5, |s| s.moisture_unit()),
+  );
+  // Water entering at the border runs inwards, so the flood does not
+  // drain the map out through those cells.
+  let closed: Vec<u32> = inflows.iter().map(|inflow| inflow.cell).collect();
+  let (filled64, mut receiver) = flood(width, height, &ground64, sea as f64, &closed);
   drainage::steepest_receivers(width, height, &filled64, &mut receiver);
   let ground: Vec<f32> = ground64.iter().map(|h| *h as f32).collect();
   let filled: Vec<f32> = filled64.iter().map(|h| *h as f32).collect();
@@ -360,6 +393,7 @@ pub fn build_hydrology(
     springs: Vec::new(),
     sources: Vec::new(),
     order: Vec::new(),
+    inflows,
   };
   find_lakes(&mut hydrology, &filled64, &ground64, &mut receiver);
   hydrology.receiver = receiver;
@@ -379,6 +413,10 @@ pub fn build_hydrology(
       climate(cell).map_or((0.5, 0.0), |s| (s.moisture_unit(), snow_amount(s)));
     let metres = precipitation_metres(moisture) + snowmelt * snow * SNOWMELT_METRES_PER_YEAR;
     hydrology.discharge[cell] = metres * cell_area / SECONDS_PER_YEAR;
+  }
+
+  for inflow in &hydrology.inflows {
+    hydrology.discharge[inflow.cell as usize] += inflow.discharge;
   }
 
   if options.springs {
@@ -429,9 +467,166 @@ pub fn build_hydrology(
   }
 
   hydrology.sources.extend(hydrology.springs.iter().copied());
+  let entering: Vec<u32> = hydrology.inflows.iter().map(|inflow| inflow.cell).collect();
+  hydrology.sources.extend(entering);
   mark_channels(&mut hydrology, discharge_threshold(options));
   hydrology.order = order;
   hydrology
+}
+
+/// The flow grid, as inflow placement sees it.
+struct InflowGrid<'a> {
+  width: u32,
+  height: u32,
+  stride: u32,
+  ground: &'a [f64],
+  sea: f64,
+}
+
+impl InflowGrid<'_> {
+  fn land(&self, cell: u32) -> bool {
+    self.ground[cell as usize] > self.sea
+  }
+
+  fn on_border(&self, cell: u32) -> bool {
+    let (x, y) = (cell % self.width, cell / self.width);
+    x == 0 || y == 0 || x == self.width - 1 || y == self.height - 1
+  }
+
+  /// Border cells in order around the map.
+  fn border(&self) -> Vec<u32> {
+    let (w, h) = (self.width, self.height);
+    let top = 0..w;
+    let right = (1..h).map(|y| y * w + w - 1);
+    let bottom = (0..w - 1).rev().map(|x| (h - 1) * w + x);
+    let left = (1..h - 1).rev().map(|y| y * w);
+    top.chain(right).chain(bottom).chain(left).collect()
+  }
+
+  /// The land cell nearest a heightmap sample position, searching rings
+  /// outwards, or `None` when the map has no land.
+  fn nearest_land(&self, x: f32, y: f32) -> Option<u32> {
+    let (w, h) = (self.width as i32, self.height as i32);
+    let cx = ((x / self.stride as f32).round() as i32).clamp(0, w - 1);
+    let cy = ((y / self.stride as f32).round() as i32).clamp(0, h - 1);
+
+    for radius in 0..w.max(h) {
+      let mut best: Option<(i32, u32)> = None;
+
+      for dy in -radius..=radius {
+        for dx in -radius..=radius {
+          if dx.abs().max(dy.abs()) != radius {
+            continue;
+          }
+
+          let (nx, ny) = (cx + dx, cy + dy);
+
+          if nx < 0 || ny < 0 || nx >= w || ny >= h {
+            continue;
+          }
+
+          let cell = (ny * w + nx) as u32;
+          let distance = dx * dx + dy * dy;
+
+          if self.land(cell) && best.is_none_or(|(d, _)| distance < d) {
+            best = Some((distance, cell));
+          }
+        }
+      }
+
+      if let Some((_, cell)) = best {
+        return Some(cell);
+      }
+    }
+
+    None
+  }
+
+  /// Valley mouths on an open edge: land border cells lower than every
+  /// border cell within [`MOUTH_REACH`] either side, whose steepest
+  /// descent leads inwards. The lowest one.
+  fn lowest_mouth(&self) -> Option<u32> {
+    let border = self.border();
+    let n = border.len() as i32;
+    let height = |cell: u32| self.ground[cell as usize];
+
+    (0..n)
+      .filter_map(|i| {
+        let cell = border[i as usize];
+
+        if !self.land(cell) {
+          return None;
+        }
+
+        let lowest_around = (1..=MOUTH_REACH).all(|k| {
+          let before = border[(i - k).rem_euclid(n) as usize];
+          let after = border[(i + k).rem_euclid(n) as usize];
+          height(cell) < height(before) && height(cell) < height(after)
+        });
+        let steepest = drainage::neighbours(self.width, self.height, cell)
+          .min_by(|a, b| height(*a).total_cmp(&height(*b)))?;
+
+        (lowest_around && height(steepest) < height(cell) && !self.on_border(steepest))
+          .then_some(cell)
+      })
+      .min_by(|a, b| height(*a).total_cmp(&height(*b)))
+  }
+}
+
+/// Where water enters from beyond the map, and how much. Explicit inflows
+/// snap to the nearest land cell; `"auto"` places one at the lowest valley
+/// mouth on an open edge (none where the map is ringed by sea), draining a
+/// basin [`AUTO_INFLOW_BASIN`] times the map's land area at its mean
+/// precipitation.
+fn place_inflows(
+  map: &HeightMap,
+  options: &RiverOptions,
+  grid: InflowGrid<'_>,
+  moisture: impl Fn(usize) -> f32,
+) -> Vec<Inflow> {
+  let metres = map.metadata.metres_per_sample.max(0.001);
+  let half = [
+    (map.metadata.width as f32 - 1.0) * 0.5,
+    (map.metadata.height as f32 - 1.0) * 0.5,
+  ];
+
+  match &options.inflow {
+    RiverInflows::Mode(InflowMode::None) => Vec::new(),
+    RiverInflows::List(list) => list
+      .iter()
+      .filter_map(|inflow| {
+        let x = inflow.position[0] / metres + half[0];
+        let y = inflow.position[1] / metres + half[1];
+        let on_map = (0.0..=half[0] * 2.0).contains(&x) && (0.0..=half[1] * 2.0).contains(&y);
+        let cell = on_map.then(|| grid.nearest_land(x, y)).flatten()?;
+        Some(Inflow {
+          cell,
+          discharge: inflow.discharge_cubic_metres_per_second.max(0.0),
+        })
+      })
+      .collect(),
+    RiverInflows::Mode(InflowMode::Auto) => {
+      let Some(cell) = grid.lowest_mouth() else {
+        return Vec::new();
+      };
+      let cell_metres = metres * grid.stride as f32;
+      let (mut land, mut rain) = (0usize, 0.0f64);
+
+      for index in 0..grid.ground.len() {
+        if grid.land(index as u32) {
+          land += 1;
+          rain += precipitation_metres(moisture(index)) as f64;
+        }
+      }
+
+      let area = land as f32 * cell_metres * cell_metres;
+      let precipitation = (rain / land.max(1) as f64) as f32;
+      vec![Inflow {
+        cell,
+        discharge: AUTO_INFLOW_BASIN * area * precipitation / SECONDS_PER_YEAR,
+      }]
+    }
+  }
 }
 
 /// Fill depressions to their spill height with no gradient across them
@@ -440,7 +635,13 @@ pub fn build_hydrology(
 /// only the coast and the map edge seed it. Cells in a pit are reached at
 /// the pit's level, so they go through a plain queue instead of the heap
 /// (Priority-Flood+, Barnes, Lehman and Mulla, 2014).
-fn flood(width: u32, height: u32, ground: &[f64], sea: f64) -> (Vec<f64>, Vec<u32>) {
+fn flood(
+  width: u32,
+  height: u32,
+  ground: &[f64],
+  sea: f64,
+  closed: &[u32],
+) -> (Vec<f64>, Vec<u32>) {
   let count = ground.len();
   let mut filled = ground.to_vec();
   let mut receiver = vec![NO_RECEIVER; count];
@@ -462,7 +663,7 @@ fn flood(width: u32, height: u32, ground: &[f64], sea: f64) -> (Vec<f64>, Vec<u3
 
   for index in 0..count as u32 {
     let (x, y) = (index % width, index / width);
-    let edge = x == 0 || y == 0 || x == width - 1 || y == height - 1;
+    let edge = (x == 0 || y == 0 || x == width - 1 || y == height - 1) && !closed.contains(&index);
 
     if edge || ground[index as usize] <= sea {
       visited[index as usize] = true;
@@ -1125,9 +1326,11 @@ mod tests {
         }
       })
       .collect();
-    // A threshold so high that only explicit sources make channels.
+    // A threshold so high that only explicit sources make channels, and
+    // no water from beyond the map's open edges.
     let options = RiverOptions {
       min_catchment_km2: 1_000.0,
+      inflow: RiverInflows::Mode(InflowMode::None),
       ..RiverOptions::default()
     };
     let hydrology = build_hydrology(&map, &surface, &options, 5);
@@ -1149,5 +1352,83 @@ mod tests {
       5,
     );
     assert!(!off.channel.iter().any(|c| *c));
+  }
+
+  /// Discharge of the largest stream reaching the sea.
+  fn outlet_discharge(hydrology: &Hydrology) -> f32 {
+    (0..hydrology.ground.len())
+      .filter(|c| {
+        let r = hydrology.receiver[*c];
+        r != NO_RECEIVER && hydrology.is_sea(r) && !hydrology.is_sea(*c as u32)
+      })
+      .map(|c| hydrology.discharge[c])
+      .fold(0.0, f32::max)
+  }
+
+  #[test]
+  fn an_explicit_inflow_runs_through_to_the_outlet() {
+    let map = valley_with_bowl();
+    let without = build_hydrology(
+      &map,
+      &[],
+      &RiverOptions {
+        inflow: RiverInflows::Mode(InflowMode::None),
+        ..options()
+      },
+      1,
+    );
+    // Upstream in the valley, 40 m samples from the centre.
+    let inflow = vista_types::RiverInflow {
+      position: [(48.0 - 47.5) * 40.0, (88.0 - 47.5) * 40.0],
+      discharge_cubic_metres_per_second: 50.0,
+    };
+    let with = build_hydrology(
+      &map,
+      &[],
+      &RiverOptions {
+        inflow: RiverInflows::List(vec![inflow]),
+        ..options()
+      },
+      1,
+    );
+
+    assert_eq!(with.inflows.len(), 1);
+    assert!(with.channel[with.inflows[0].cell as usize]);
+    assert!(
+      outlet_discharge(&with) >= 50.0 && outlet_discharge(&with) >= outlet_discharge(&without),
+      "outlet {} m³/s",
+      outlet_discharge(&with)
+    );
+  }
+
+  #[test]
+  fn auto_places_one_inflow_at_the_lowest_valley_mouth_of_an_open_edge() {
+    // Land runs off the south edge in two valleys, the one at x = 40 lower
+    // than the one at x = 80, and drains north to the sea.
+    let map = map_from(96, 30.0, |x, y| {
+      let west = (x as f32 - 40.0).abs() * 0.8;
+      let east = (x as f32 - 80.0).abs() * 0.8 + 5.0;
+      y as f32 * 0.5 - 3.0 + west.min(east)
+    });
+    let hydrology = build_hydrology(&map, &[], &options(), 4);
+
+    assert_eq!(hydrology.inflows.len(), 1, "{:?}", hydrology.inflows);
+    assert_eq!(hydrology.sample_xy(hydrology.inflows[0].cell), (40, 95));
+    // A basin ten times the land area, at 300 to 3000 mm a year.
+    let land = hydrology.ground.iter().filter(|h| **h > 0.0).count() as f32;
+    let area = land * 30.0 * 30.0;
+    let discharge = hydrology.inflows[0].discharge;
+    assert!(discharge >= 10.0 * area * 0.3 / SECONDS_PER_YEAR * 0.99);
+    assert!(discharge <= 10.0 * area * 3.0 / SECONDS_PER_YEAR * 1.01);
+    assert!(outlet_discharge(&hydrology) >= discharge);
+
+    // A map ringed by sea has no open edge, so no inflow.
+    let island = map_from(96, 30.0, |x, y| {
+      let r = length2(x as f32 - 48.0, y as f32 - 48.0);
+      40.0 - r * 1.2
+    });
+    assert!(build_hydrology(&island, &[], &options(), 4)
+      .inflows
+      .is_empty());
   }
 }

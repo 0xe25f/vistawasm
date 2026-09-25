@@ -227,6 +227,20 @@ pub struct RiverNetwork {
   pub freezing: bool,
   /// Distance to water, for wet banks and reeds.
   pub wet: WetBanks,
+  /// Water entering from beyond the map: where it enters, in heightmap
+  /// sample coordinates, its water level and its discharge.
+  pub inflows: Vec<InflowPoint>,
+}
+
+/// An inflow in use.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InflowPoint {
+  /// Heightmap sample coordinates.
+  pub position: [f32; 2],
+  /// Water level, in metres.
+  pub level: f32,
+  /// Mean discharge in cubic metres per second.
+  pub discharge: f32,
 }
 
 /// Distance to the nearest water, for wet banks, bankside grass and reeds,
@@ -395,6 +409,18 @@ pub fn build_river_network(
   }
 
   let hydrology = build_hydrology(map, surface, options, seed);
+  network.inflows = hydrology
+    .inflows
+    .iter()
+    .map(|inflow| {
+      let (x, y) = hydrology.sample_xy(inflow.cell);
+      InflowPoint {
+        position: [x as f32, y as f32],
+        level: hydrology.filled[inflow.cell as usize],
+        discharge: inflow.discharge,
+      }
+    })
+    .collect();
   let mut painted_cells = vec![false; hydrology.ground.len()];
   let painted: Vec<RawStream> = painted
     .iter()

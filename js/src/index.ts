@@ -40,6 +40,7 @@ import type {
   WaterSound,
   WaterSounds,
   Waterfall,
+  WaterInflow,
   WeatherKind,
   WeatherOptions,
   WeatherState
@@ -414,6 +415,24 @@ class VistaEngineWrapper implements VistaEngine {
     }
 
     return falls;
+  }
+
+  public getInflows(): WaterInflow[] {
+    if (this.pendingCall) {
+      return [];
+    }
+
+    const packed = this.call<Float32Array>(() => this.raw.getInflows());
+    const inflows: WaterInflow[] = [];
+
+    for (let at = 0; at + 4 <= packed.length; at += 4) {
+      inflows.push({
+        position: [packed[at], packed[at + 1], packed[at + 2]],
+        dischargeCubicMetresPerSecond: packed[at + 3]
+      });
+    }
+
+    return inflows;
   }
 
   public setDebugView(debugView: DebugView): void {

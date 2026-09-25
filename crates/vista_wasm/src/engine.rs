@@ -433,6 +433,25 @@ impl EngineCore {
   /// the river network, which re-bakes terrain shading.
   pub fn set_water(&mut self, water: WaterOptions) -> VistaResult<()> {
     self.ensure_live()?;
+    crate::config::validate_inflows(&water.rivers.inflow)?;
+
+    if let (Some(terrain), vista_types::RiverInflows::List(list)) =
+      (self.terrain.as_ref(), &water.rivers.inflow)
+    {
+      let metres = terrain.metadata.metres_per_sample.max(0.001);
+      let half_x = (terrain.metadata.width as f32 - 1.0) * metres * 0.5;
+      let half_z = (terrain.metadata.height as f32 - 1.0) * metres * 0.5;
+
+      for (index, inflow) in list.iter().enumerate() {
+        let [x, z] = inflow.position;
+
+        if x.abs() > half_x || z.abs() > half_z {
+          return Err(VistaError::options(format!(
+            "water.rivers.inflow[{index}].position ({x}, {z}) is off the map, which spans -{half_x} to {half_x} m in x and -{half_z} to {half_z} m in z."
+          )));
+        }
+      }
+    }
     let rivers_changed = self.wanted_rivers(&water) != self.applied_rivers;
     self.water = water;
 
@@ -949,6 +968,31 @@ impl EngineCore {
         height_metres: fall.height(),
         width_metres: fall.width,
         discharge_cubic_metres_per_second: fall.discharge,
+      })
+      .collect()
+  }
+
+  /// The water entering from beyond the map, including the inflow
+  /// `"auto"` placed, where it enters.
+  pub fn inflows(&self) -> Vec<vista_types::WaterInflow> {
+    let Some(terrain) = self.terrain.as_ref() else {
+      return Vec::new();
+    };
+    let metres = terrain.metadata.metres_per_sample.max(0.001);
+    let half_x = (terrain.metadata.width as f32 - 1.0) * metres * 0.5;
+    let half_z = (terrain.metadata.height as f32 - 1.0) * metres * 0.5;
+
+    self
+      .rivers
+      .inflows
+      .iter()
+      .map(|inflow| vista_types::WaterInflow {
+        position: [
+          inflow.position[0] * metres - half_x,
+          inflow.level,
+          inflow.position[1] * metres - half_z,
+        ],
+        discharge_cubic_metres_per_second: inflow.discharge,
       })
       .collect()
   }
@@ -2435,5 +2479,38 @@ mod tests {
       .unwrap();
     assert!(engine.stats.grass_instances > 0);
     assert_eq!(created(&engine, &mut slots), [PipelineKind::Grass]);
+  }
+
+  #[test]
+  fn inflows_are_reported_and_validated_against_the_map() {
+    // The basin's upper valley runs off the south edge: an open edge.
+    let mut engine = basin_engine();
+    let auto = engine.inflows();
+    assert_eq!(auto.len(), 1, "{auto:?}");
+    let half = 255.0 * 40.0 * 0.5;
+    assert!((auto[0].position[2] - half).abs() < 1.0, "{auto:?}");
+    assert!(auto[0].discharge_cubic_metres_per_second > 1.0);
+
+    let mut water = WaterOptions::default();
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+      position: [0.0, 1200.0],
+      discharge_cubic_metres_per_second: 80.0,
+    }]);
+    engine.set_water(water.clone()).unwrap();
+    let explicit = engine.inflows();
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].discharge_cubic_metres_per_second, 80.0);
+
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+      position: [half + 50.0, 0.0],
+      discharge_cubic_metres_per_second: 80.0,
+    }]);
+    let error = engine.set_water(water).unwrap_err().to_string();
+    assert!(error.contains("off the map"), "{error}");
+
+    let mut water = WaterOptions::default();
+    water.rivers.inflow = vista_types::RiverInflows::Mode(vista_types::InflowMode::None);
+    engine.set_water(water).unwrap();
+    assert!(engine.inflows().is_empty());
   }
 }

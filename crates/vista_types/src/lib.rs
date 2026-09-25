@@ -587,6 +587,60 @@ pub struct RiverOptions {
   pub meanders: f32,
   /// Whether rivers crossing cliffs become waterfalls.
   pub waterfalls: bool,
+  /// Water arriving from beyond the map. [`InflowMode::Auto`] (the
+  /// default) adds one inflow where a valley meets an open map edge, sized
+  /// from a basin ten times the map's land area; [`InflowMode::None`]
+  /// adds nothing; or up to 8 explicit inflows.
+  pub inflow: RiverInflows,
+}
+
+/// Water arriving from beyond the map (`RiverOptions::inflow`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RiverInflows {
+  /// `"auto"` or `"none"`.
+  Mode(InflowMode),
+  /// Up to 8 explicit inflows.
+  List(Vec<RiverInflow>),
+}
+
+impl Default for RiverInflows {
+  fn default() -> Self {
+    Self::Mode(InflowMode::Auto)
+  }
+}
+
+/// How inflows are placed when none are listed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InflowMode {
+  /// One inflow where a valley meets an open map edge; none on maps ringed
+  /// by sea.
+  #[default]
+  Auto,
+  /// No inflow.
+  None,
+}
+
+/// One explicit inflow.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RiverInflow {
+  /// World x and z in metres. Snaps to the nearest land sample.
+  pub position: [f32; 2],
+  /// Mean discharge, 0 to 100,000 cubic metres per second.
+  pub discharge_cubic_metres_per_second: f32,
+}
+
+/// An inflow in use, as `getInflows` reports it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WaterInflow {
+  /// Where the water enters, on the land sample it snapped to, in world
+  /// metres.
+  pub position: Vec3,
+  /// Mean discharge in cubic metres per second.
+  pub discharge_cubic_metres_per_second: f32,
 }
 
 impl Default for RiverOptions {
@@ -600,6 +654,7 @@ impl Default for RiverOptions {
       springs: true,
       meanders: 0.6,
       waterfalls: true,
+      inflow: RiverInflows::default(),
     }
   }
 }

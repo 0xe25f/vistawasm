@@ -291,6 +291,22 @@ impl VistaEngine {
     Ok(floats(&packed))
   }
 
+  /// Every inflow in use as four numbers (x, y, z where the water enters,
+  /// discharge).
+  #[wasm_bindgen(js_name = getInflows)]
+  pub fn get_inflows(&self) -> Result<Float32Array, JsValue> {
+    let packed: Vec<f32> = self
+      .core_ref()?
+      .inflows()
+      .iter()
+      .flat_map(|inflow| {
+        let [x, y, z] = inflow.position;
+        [x, y, z, inflow.discharge_cubic_metres_per_second]
+      })
+      .collect();
+    Ok(floats(&packed))
+  }
+
   /// Replace render quality controls.
   #[wasm_bindgen(js_name = setRenderQuality)]
   pub fn set_render_quality(&mut self, quality: JsValue) -> Result<(), JsValue> {

@@ -76,6 +76,7 @@ export interface VistaWasmRawEngine {
   setWaterMask(width: number, height: number, data?: Uint8Array): string | undefined;
   getWaterSounds(x: number, y: number, z: number): Float32Array;
   getWaterfalls(): Float32Array;
+  getInflows(): Float32Array;
   setDebugView(debugView: unknown): void;
   renderOnce(): unknown;
   resize(width: number, height: number, devicePixelRatio?: number): void;
@@ -389,6 +390,31 @@ export interface RiverOptions {
   meanders?: number;
   /** Waterfalls where rivers cross cliffs. Defaults to `true`. */
   waterfalls?: boolean;
+  /**
+   * Water arriving from beyond the map. `"auto"` (default) adds one inflow
+   * where a valley meets an open map edge, sized from a basin ten times
+   * the map's land area; `"none"` adds nothing; or up to 8 explicit inflows.
+   */
+  inflow?: "auto" | "none" | RiverInflow[];
+}
+
+/**
+ * Water entering the map from beyond it, for `RiverOptions.inflow`.
+ */
+export interface RiverInflow {
+  /** World x and z in metres. Snaps to the nearest land sample. */
+  position: [number, number];
+  /** Mean discharge, 0 to 100,000 m³/s. */
+  dischargeCubicMetresPerSecond: number;
+}
+
+/**
+ * An inflow in use, from `getInflows()`.
+ */
+export interface WaterInflow {
+  /** Where the water enters, on the land sample it snapped to, in world metres. */
+  position: [number, number, number];
+  dischargeCubicMetresPerSecond: number;
 }
 
 /**
@@ -1113,8 +1139,13 @@ export interface VistaEngine {
    * position, for your own audio. Cheap enough to call every frame.
    */
   getWaterSounds(x: number, y: number, z: number): WaterSounds;
-  /** Every waterfall on the terrain. */
+  /**
+   * Every waterfall on the terrain. A cascade of falls close together is
+   * listed once, with its total drop, where its lowest fall lands.
+   */
   getWaterfalls(): Waterfall[];
+  /** The inflows in use, including the one `inflow: "auto"` placed. */
+  getInflows(): WaterInflow[];
   setDebugView(debugView: DebugView): void;
   /** Replace weather controls. Changing `state` blends to the new weather. */
   setWeather(weather: WeatherOptions): void;
