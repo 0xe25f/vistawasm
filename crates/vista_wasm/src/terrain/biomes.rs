@@ -88,6 +88,14 @@ pub struct SurfaceSample {
 }
 
 impl SurfaceSample {
+  /// Snow and ice on the ground, 0 to 255: its snow and ice materials,
+  /// or snow that never melts, whichever is more. Bank strips fade out
+  /// under it.
+  pub fn snow_cover(&self) -> u8 {
+    let lying = u16::from(self.materials[MAT_SNOW]) + u16::from(self.materials[MAT_ICE]);
+    (lying.min(255) as u8).max(self.permanent_snow)
+  }
+
   /// The biome of this sample.
   pub fn biome_kind(&self) -> BiomeKind {
     BiomeKind::from_index(self.biome)
@@ -1169,6 +1177,27 @@ mod tests {
   use crate::terrain::heightmap::update_stats;
   use crate::terrain::normals::generate_normals;
   use vista_types::TerrainMetadata;
+
+  #[test]
+  fn snow_cover_counts_snow_ice_and_permanent_snow() {
+    let mut sample = SurfaceSample::default();
+    sample.materials[MAT_LUSH_GRASS] = 200;
+    sample.materials[MAT_MUD] = 55;
+    assert_eq!(sample.snow_cover(), 0);
+
+    sample.materials[MAT_SNOW] = 100;
+    sample.materials[MAT_ICE] = 60;
+    assert_eq!(sample.snow_cover(), 160);
+
+    sample.materials[MAT_ICE] = 200;
+    assert_eq!(sample.snow_cover(), 255);
+
+    let tundra = SurfaceSample {
+      permanent_snow: 120,
+      ..SurfaceSample::default()
+    };
+    assert_eq!(tundra.snow_cover(), 120);
+  }
 
   #[test]
   fn bed_materials_blend_with_the_ground_there() {

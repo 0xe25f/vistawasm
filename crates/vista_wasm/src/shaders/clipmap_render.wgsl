@@ -611,7 +611,8 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 // terrain: wet mud, sand or gravel by the flow speed, darker and glossier
 // at the water, sloping down to it, and fading out at the strip's outer
 // edge and between 300 and 500 m. Far strips are widened to at least 0.75
-// pixel, with alpha scaled by how much of that they cover.
+// pixel, with alpha scaled by how much of that they cover. Under snow and
+// ice the strip fades out: the terrain's own snow shows.
 
 struct BankIn {
   @location(0) position: vec3<f32>,
@@ -664,6 +665,7 @@ fn fragment_bank(in: BankOut) -> @location(0) vec4<f32> {
   let tinted = mix(mud.albedo * world.material_tints[MAT_MUD].rgb, sand.albedo * coarse, sandy);
   let albedo = mix(tinted * 0.65, vec3<f32>(0.05, 0.036, 0.024), 0.5);
   let colour = shade_surface(albedo, normal, position, mix(mud.occlusion, sand.occlusion, sandy), mix(0.35, 1.0, wet) * 0.65, 0.35);
-  let alpha = (1.0 - smoothstep(0.55, 1.0, in.edge)) * (1.0 - smoothstep(300.0, 500.0, distance)) * in.coverage;
+  let snow = max(snow_cover_at(position.xz), frame.weather.w);
+  let alpha = (1.0 - smoothstep(0.55, 1.0, in.edge)) * (1.0 - smoothstep(300.0, 500.0, distance)) * in.coverage * (1.0 - snow);
   return vec4<f32>(colour, alpha);
 }

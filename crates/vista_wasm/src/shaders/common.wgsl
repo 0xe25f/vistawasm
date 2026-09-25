@@ -138,8 +138,9 @@ struct WorldInfo {
 // sea), a biome index / 255. Always sampled with `textureSampleLevel`.
 @group(1) @binding(12) var surface_texture: texture_2d<f32>;
 // A second per-terrain surface texture at the same resolution: r distance
-// to the nearest river, lake or waterfall edge / 40 m; g, b and a are
-// reserved (0). Always sampled with `textureSampleLevel`.
+// to the nearest river, lake or waterfall edge / 40 m, g snow and ice
+// cover; b and a are reserved (0). Always sampled with
+// `textureSampleLevel`.
 @group(1) @binding(13) var surface_texture_b: texture_2d<f32>;
 
 // Shadow receivers only (terrain, trees, grass, water).
@@ -387,6 +388,14 @@ fn water_distance_at(xz: vec2<f32>) -> f32 {
   let size = max(world.terrain2.xy, vec2<f32>(1.0));
   let uv = ((xz + world.terrain.xy) / world.terrain.zw + 0.5) / size;
   return textureSampleLevel(surface_texture_b, clamp_sampler, uv, 0.0).r * 40.0;
+}
+
+// Snow and ice on the ground at a world position, 0 to 1: its materials
+// and snow that never melts.
+fn snow_cover_at(xz: vec2<f32>) -> f32 {
+  let size = max(world.terrain2.xy, vec2<f32>(1.0));
+  let uv = ((xz + world.terrain.xy) / world.terrain.zw + 0.5) / size;
+  return textureSampleLevel(surface_texture_b, clamp_sampler, uv, 0.0).g;
 }
 
 // Snow that never melts at a world position, 0 to 1.

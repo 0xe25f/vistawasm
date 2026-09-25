@@ -1098,7 +1098,6 @@ impl EngineCore {
       self
         .gpu
         .upload_bank_strips(&self.rivers.bank_vertices, &self.rivers.bank_indices);
-      self.gpu.upload_wet_banks(&self.rivers.wet);
     }
 
     self.rebake_surface(before_rivers);
@@ -1169,7 +1168,9 @@ impl EngineCore {
             crate::render::terrain_mesh::CENTRED_MESH_SAMPLES_PER_SIDE,
           );
           self.gpu.upload_terrain(&mesh);
-          self.gpu.upload_surface(terrain, &self.surface);
+          self
+            .gpu
+            .upload_surface(terrain, &self.surface, &self.rivers.wet);
           self.terrain_normals = normals;
           self.mesh_centre_sample = Some((centre_sample_x, centre_sample_z));
           // A half-built next mesh has the old heights and colours.

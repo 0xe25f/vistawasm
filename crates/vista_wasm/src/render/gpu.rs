@@ -613,7 +613,7 @@ pub struct GpuContext {
   impostor_view: wgpu::TextureView,
   height_view: wgpu::TextureView,
   surface_view: wgpu::TextureView,
-  /// Distance to water (see `create_surface_b_texture`).
+  /// Distance to water and snow cover (see `create_surface_b_texture`).
   surface_b_view: wgpu::TextureView,
   height_size: (u32, u32),
   height_version: u64,
@@ -981,15 +981,16 @@ fn create_surface_texture(
 }
 
 /// The second per-terrain surface texture, at the same resolution as the
-/// first: r distance to water / 40 m; g, b and a are reserved (0).
+/// first: r distance to water / 40 m, g snow and ice cover; b and a are
+/// reserved (0). `texels` holds (distance, cover) pairs.
 fn create_surface_b_texture(
   device: &wgpu::Device,
   queue: &wgpu::Queue,
   width: u32,
   height: u32,
-  distance: &[u8],
+  texels: &[[u8; 2]],
 ) -> wgpu::TextureView {
-  let data: Vec<u8> = distance.iter().flat_map(|d| [*d, 0, 0, 0]).collect();
+  let data: Vec<u8> = texels.iter().flat_map(|[d, c]| [*d, *c, 0, 0]).collect();
   create_surface_texture(device, queue, width, height, &data)
 }
 
@@ -1885,7 +1886,7 @@ impl GpuContext {
         ..SurfaceSample::default()
       }),
     );
-    let surface_b_view = create_surface_b_texture(&device, &queue, 1, 1, &[255]);
+    let surface_b_view = create_surface_b_texture(&device, &queue, 1, 1, &[[255, 0]]);
     let terrain_shadow = create_terrain_shadow(&device, &queue, 1, 1);
     let tree_shadow_map = create_tree_shadow_map(&device, tree_shadow_resolution);
     let shadow_bind_group =
@@ -2484,9 +2485,15 @@ impl GpuContext {
     self.rebuild_world_bind_group();
   }
 
-  /// Upload the per-terrain surface texture (temperature, moisture,
-  /// permanent snow, biome) at the same resolution as the height texture.
-  pub fn upload_surface(&mut self, map: &HeightMap, surface: &[SurfaceSample]) {
+  /// Upload the per-terrain surface textures at the same resolution as
+  /// the height texture: temperature, moisture, permanent snow and biome,
+  /// then distance to water (from `wet`) and snow and ice cover.
+  pub fn upload_surface(
+    &mut self,
+    map: &HeightMap,
+    surface: &[SurfaceSample],
+    wet: &crate::render::water::WetBanks,
+  ) {
     let width = map.metadata.width;
     let height = map.metadata.height;
 
@@ -2497,12 +2504,19 @@ impl GpuContext {
     let stride = (width.max(height).saturating_sub(1) / (HEIGHT_TEXTURE_MAX - 1)).max(1);
     let texture_width = (width - 1) / stride + 1;
     let texture_height = (height - 1) / stride + 1;
-    let mut data = Vec::with_capacity((texture_width * texture_height * 4) as usize);
+    let texels = (texture_width * texture_height) as usize;
+    let mut data = Vec::with_capacity(texels * 4);
+    // Without water the distance is the field's full range everywhere.
+    let dry = wet.distance.len() != texels;
+    let mut banks = Vec::with_capacity(texels);
 
     for ty in 0..texture_height {
       for tx in 0..texture_width {
         let index = ((ty * stride) * width + tx * stride) as usize;
-        data.extend_from_slice(&surface_texel(&surface[index]));
+        let sample = &surface[index];
+        data.extend_from_slice(&surface_texel(sample));
+        let distance = if dry { 255 } else { wet.distance[banks.len()] };
+        banks.push([distance, sample.snow_cover()]);
       }
     }
 
@@ -2513,22 +2527,13 @@ impl GpuContext {
       texture_height,
       &data,
     );
-    self.rebuild_world_bind_group();
-  }
-
-  /// Upload the distance-to-water field, or clear it with an empty one.
-  pub fn upload_wet_banks(&mut self, wet: &crate::render::water::WetBanks) {
-    self.surface_b_view = if wet.distance.is_empty() {
-      create_surface_b_texture(&self.device, &self.queue, 1, 1, &[255])
-    } else {
-      create_surface_b_texture(
-        &self.device,
-        &self.queue,
-        wet.width,
-        wet.height,
-        &wet.distance,
-      )
-    };
+    self.surface_b_view = create_surface_b_texture(
+      &self.device,
+      &self.queue,
+      texture_width,
+      texture_height,
+      &banks,
+    );
     self.rebuild_world_bind_group();
   }
 
