@@ -5,7 +5,7 @@ use crate::maths::smoothstep;
 use crate::render::flora::{
   unit_from_hash, FloraInstance, FloraVertex, GRASS_STYLE_REED, GRASS_STYLE_TUFT,
 };
-use crate::render::water::WetBanks;
+use crate::render::water::{WetBanks, WET_BANK_RANGE_METRES};
 use crate::terrain::biomes::{
   SurfaceSample, MAT_DRY_GRASS, MAT_FOREST_FLOOR, MAT_LUSH_GRASS, MAT_TUNDRA,
 };
@@ -117,7 +117,8 @@ pub fn build_grass_instances(
 }
 
 /// Reeds grow within this distance of still or slow water, in metres, or
-/// on the first samples from the shore where samples are further apart.
+/// on the first samples from the shore where samples are further apart,
+/// as long as the wet-bank field still measures that far.
 const REED_METRES: f32 = 3.0;
 
 /// Reeds need a mean temperature above this, in °C.
@@ -270,7 +271,9 @@ fn candidate_at(
 
   let (water_metres, still_metres) = wet.map_or((f32::MAX, f32::MAX), |wet| wet.at(x, y));
   let shore = wet.map_or(0.0, |wet| wet.stride as f32 * metres_per_sample * 0.5 + 0.5);
+  // The field saturates at its range, which reads as "far", not "near".
   let reeds = still_metres > 0.0
+    && still_metres < WET_BANK_RANGE_METRES
     && still_metres <= REED_METRES.max(shore)
     && sample.is_some_and(|sample| !sample.is_glacier() && sample.celsius() > REED_CELSIUS);
   // Within 12 m of water grass grows denser and greener.
@@ -468,6 +471,39 @@ mod tests {
     let cold = surface(1.0);
     let cold_grass = build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &options, 1.0);
     assert!(cold_grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));
+  }
+
+  #[test]
+  fn reeds_do_not_spread_over_coarse_maps() {
+    // Samples 120 m apart: even the first shore sample lies beyond the
+    // wet-bank field's range, where it reads as far from water.
+    let size = 64;
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 120.0,
+      sea_level_metres: 0.0,
+      ..TerrainMetadata::default()
+    };
+    let map = HeightMap::flat(size, size, 20.0, metadata);
+    let water: Vec<bool> = (0..size * size).map(|i| (i % size) < 8).collect();
+    let wet = WetBanks::build(&map, &water, &water);
+    let surface = vec![
+      SurfaceSample {
+        materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        celsius_hundredths: 1200,
+        ..SurfaceSample::default()
+      };
+      (size * size) as usize
+    ];
+    let options = GrassOptions {
+      density: 1.0,
+      ..grass_options()
+    };
+    let grass = build_grass_instances_by_water(&map, Some(&surface), Some(&wet), &options, 1.0);
+
+    assert!(!grass.is_empty());
+    assert!(grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));
   }
 
   #[test]

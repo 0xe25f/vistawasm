@@ -232,7 +232,10 @@ Within 6 m of a river, lake or waterfall the ground darkens by up to
 35 %, turns glossy, and gentle banks turn to mud. Within 12 m grass grows
 denser and greener (when grass is on), and beside lakes, oxbows and
 rivers slower than 0.6 m/s, in temperate and warm climates, reeds 1.4 to
-2.2 m tall grow in the same wind.
+2.2 m tall grow in the same wind: within 3 m of the water, or on the
+first samples from the shore where samples are further apart. Wet banks
+reach 40 m from the water, so maps with samples more than 80 m apart
+have no reeds.
 
 ### Painted water (`setWaterMask`)
 
