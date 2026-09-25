@@ -742,9 +742,11 @@ fn classify_into(
       rock *= 0.6;
     }
 
+    // A stream bed is wet silt with a little gravel; on the coarse grid it
+    // also stands for the wet banks beside a narrow stream.
     if is_river {
-      sand = sand.max(0.5);
-      mud = mud.max(0.4);
+      sand = sand.max(0.2);
+      mud = mud.max(0.55);
     }
 
     let volcanic = volcano_factor.max(caldera_factor);

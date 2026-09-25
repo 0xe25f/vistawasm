@@ -192,7 +192,8 @@ pub struct RiverNetwork {
   pub vertices: Vec<WaterVertex>,
   /// Triangle list indices for `vertices`.
   pub indices: Vec<u32>,
-  /// Waterfall sheets, spray and plunge pools, drawn after the rest.
+  /// Waterfall sheets and mist, drawn after the rest by their own
+  /// pipeline. Plunge pools are water surfaces, in `vertices`.
   pub fall_vertices: Vec<WaterVertex>,
   /// Triangle list indices for `fall_vertices`.
   pub fall_indices: Vec<u32>,
@@ -399,9 +400,8 @@ fn push_strip(
   }
 }
 
-/// A river ribbon: at least 1.3 w wide, and wide enough to reach past the
-/// carved banks, so the water's visible edge is always where the shader
-/// fades it out against the bank. Steep reaches are subdivided so no
+/// A river ribbon, 1.3 w wide, so its edge lies on the bank, where the
+/// shader fades it out by depth. Steep reaches are subdivided so no
 /// segment is longer than half the width (or a quarter of a sample).
 fn add_ribbon(
   network: &mut RiverNetwork,
@@ -460,8 +460,7 @@ fn add_ribbon(
       let tangent = [next[0] - prev[0], next[1] - prev[1]];
       let length = length2(tangent[0], tangent[1]).max(1e-4);
       let tangent = [tangent[0] / length, tangent[1] / length];
-      let carved = (0.5 * p.width).max(0.6 * metres) + metres;
-      let half_width = (0.65 * p.width).max(carved);
+      let half_width = 0.65 * p.width;
       let speed = p.speed * current;
       (
         world[i],
@@ -493,7 +492,7 @@ fn add_oxbow(network: &mut RiverNetwork, oxbow: &Oxbow, metres: f32, half: [f32;
     .iter()
     .map(|p| to_world(*p, metres, half))
     .collect();
-  let half_width = (0.65 * oxbow.width).max((0.5 * oxbow.width).max(0.6 * metres) + metres);
+  let half_width = 0.65 * oxbow.width;
   let rows: Vec<_> = (0..n)
     .map(|i| {
       let prev = world[i.saturating_sub(1)];
@@ -630,8 +629,9 @@ fn add_lakes(network: &mut RiverNetwork, hydrology: &Hydrology, map: &HeightMap,
 /// Rows down a waterfall sheet.
 const FALL_ROWS: usize = 12;
 
-/// A waterfall: the falling sheet, mist sprites at its foot, and the
-/// churned plunge pool.
+/// A waterfall: the churned plunge pool (with the other water surfaces),
+/// and in a buffer of their own, the falling sheet and mist sprites at its
+/// foot.
 fn add_fall(
   network: &mut RiverNetwork,
   map: &HeightMap,
@@ -649,6 +649,41 @@ fn add_fall(
   let direction = fall.direction;
   let side = [-direction[1], direction[0]];
   let impact = (2.0 * GRAVITY * height).sqrt();
+  let foot = to_world(fall.foot, metres, half);
+
+  // The churned plunge pool: a disc at the foot as wide as the pool. The
+  // shader fades it out towards its rim, so where the pool is smaller
+  // than a heightmap sample it does not end in a hard edge.
+  let centre = network.vertices.len() as u32;
+  let pool = [fall.pool_radius, height, fall.celsius, fall.discharge];
+  let radius = fall.pool_radius;
+  network.vertices.push(WaterVertex {
+    position: [foot[0], fall.foot_level + 0.02, foot[1]],
+    flow: [0.0, 0.0],
+    params: [WATER_KIND_POOL, 0.0, 0.0],
+    extra: pool,
+  });
+
+  for k in 0..24 {
+    let angle = k as f32 / 24.0 * std::f32::consts::TAU;
+    network.vertices.push(WaterVertex {
+      position: [
+        foot[0] + angle.cos() * radius,
+        fall.foot_level + 0.02,
+        foot[1] + angle.sin() * radius,
+      ],
+      flow: [angle.cos(), angle.sin()],
+      params: [WATER_KIND_POOL, radius / fall.pool_radius.max(0.1), 0.0],
+      extra: pool,
+    });
+  }
+
+  for k in 0..24u32 {
+    network
+      .indices
+      .extend_from_slice(&[centre, centre + 1 + (k + 1) % 24, centre + 1 + k]);
+  }
+
   let vertices = &mut network.fall_vertices;
   let indices = &mut network.fall_indices;
 
@@ -717,43 +752,11 @@ fn add_fall(
     }
   }
 
-  let foot = to_world(fall.foot, metres, half);
-
-  // The churned plunge pool: a disc at the foot, a little wider than the
-  // pool, faded out by depth where it meets the bank.
-  let centre = vertices.len() as u32;
-  let pool = [fall.pool_radius, height, fall.celsius, fall.discharge];
-  let radius = fall.pool_radius * 1.15 + fall.width * 0.5;
-  vertices.push(WaterVertex {
-    position: [foot[0], fall.foot_level + 0.02, foot[1]],
-    flow: [0.0, 0.0],
-    params: [WATER_KIND_POOL, 0.0, 0.0],
-    extra: pool,
-  });
-
-  for k in 0..24 {
-    let angle = k as f32 / 24.0 * std::f32::consts::TAU;
-    vertices.push(WaterVertex {
-      position: [
-        foot[0] + angle.cos() * radius,
-        fall.foot_level + 0.02,
-        foot[1] + angle.sin() * radius,
-      ],
-      flow: [angle.cos(), angle.sin()],
-      params: [WATER_KIND_POOL, radius / fall.pool_radius.max(0.1), 0.0],
-      extra: pool,
-    });
-  }
-
-  for k in 0..24u32 {
-    indices.extend_from_slice(&[centre, centre + 1 + (k + 1) % 24, centre + 1 + k]);
-  }
-
   // Mist: 16 to 64 camera-facing sprites, more for bigger falls.
   let sprites = (16.0 + (fall.discharge * height).sqrt() * 4.0).clamp(16.0, 64.0) as u32;
   // Bigger falls throw up bigger clouds; a trickle only a light mist.
   let size = (0.25 * height + fall.width * 0.5)
-    .min(4.0 + 30.0 * fall.discharge.sqrt())
+    .min(1.0 + 20.0 * fall.discharge.sqrt())
     .clamp(1.5, 25.0);
 
   for k in 0..sprites {
@@ -785,6 +788,16 @@ mod tests {
   use super::*;
   use crate::terrain::heightmap::update_stats;
   use vista_types::TerrainMetadata;
+
+  #[test]
+  fn lakes_freeze_below_zero_margins_first_and_fully_at_minus_two() {
+    assert_eq!(freeze_fraction(-3.0, LAKE_FREEZE_CELSIUS), 1.0);
+    assert_eq!(freeze_fraction(1.0, LAKE_FREEZE_CELSIUS), 0.0);
+    let partial = freeze_fraction(-1.0, LAKE_FREEZE_CELSIUS);
+    assert!(partial > 0.0 && partial < 1.0);
+    assert_eq!(freeze_fraction(-6.0, RIVER_FREEZE_CELSIUS), 0.5);
+    assert_eq!(freeze_fraction(-10.0, FALL_FREEZE_CELSIUS), 1.0);
+  }
 
   #[test]
   fn plane_sits_at_the_requested_sea_level() {

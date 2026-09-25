@@ -373,7 +373,11 @@ pub fn condition_channels(
       }
     }
 
-    // Deltas deposit their fan first, then every channel is cut into it.
+    // Pools first, so the channel below cuts its outlet through the lip.
+    for fall in &falls {
+      carve_pool(map, fall, metres, record, &mut channels.mask);
+    }
+
     for reach in &reaches {
       carve_reach(
         map,
@@ -384,10 +388,6 @@ pub fn condition_channels(
         record,
         &mut channels.mask,
       );
-    }
-
-    for fall in &falls {
-      carve_pool(map, fall, metres, record, &mut channels.mask);
     }
 
     for oxbow in &oxbows {
@@ -419,10 +419,11 @@ fn arc_lengths(points: &[[f32; 2]], metres: f32) -> Vec<f32> {
   s
 }
 
-/// Find waterfall steps on a level profile: runs of segments steeper than
-/// 35 degrees, or dropping more than `max(3 m, 1.5 w)` within two samples
-/// far more steeply than the reach around them. Returns point index
-/// ranges `(lip, foot)`; `rapids` gets the runs lower than 3 m.
+/// Find waterfall steps on a level profile: segments steeper than 35
+/// degrees, or dropping more than `max(3 m, 1.5 w)` within two samples far
+/// more steeply than the reach around them, grouped into steps of at most
+/// two samples. Returns point index ranges `(lip, foot)`; `rapids` gets
+/// the steps lower than 3 m.
 pub fn find_steps(
   levels: &[f32],
   s: &[f32],
@@ -445,6 +446,8 @@ pub fn find_steps(
         && gradient > background * 3.0);
   }
 
+  // A step spans at most two samples, so a long steep run becomes a
+  // staircase of falls and pools, as steep mountain streams are.
   let mut steps = Vec::new();
   let mut i = 0;
 
@@ -456,13 +459,11 @@ pub fn find_steps(
 
     let start = i;
 
-    // A single gentler segment between two steep runs is a ledge in the
-    // same fall, not two falls.
-    while i < flagged.len() && (flagged[i] || (i + 1 < flagged.len() && flagged[i + 1])) {
+    while i < flagged.len() && flagged[i] && i - start < 2 {
       i += 1;
     }
 
-    // Points start..=i span the run.
+    // Points start..=i span the step.
     if levels[start] - levels[i] >= MIN_FALL_METRES {
       steps.push((start, i));
     } else {
@@ -1086,7 +1087,10 @@ fn carve_reach(
   for pair in points.windows(2) {
     let (a, b) = (pair[0], pair[1]);
     let w = a.width.max(b.width);
-    let r = (0.5 * w).max(0.6 * metres);
+    // At least three quarters of a sample, so a diagonal reach also cuts
+    // the two samples beside it and the water never breaks up between
+    // samples.
+    let r = (0.5 * w).max(0.75 * metres);
     let steep = smoothstep((a.slope.max(b.slope) - FLAT_SLOPE) / (V_SLOPE - FLAT_SLOPE));
     let reach_metres = r + (4.0 * w * (1.0 - steep)).max(3.0 * metres);
     let reach_samples = (reach_metres / metres).ceil() as i32 + 1;
@@ -1138,7 +1142,7 @@ fn carve_reach(
         let target = trapezoid + (v_shape - trapezoid) * steep;
         record.lower(map, index, target);
 
-        if distance <= r.max(0.65 * w) {
+        if distance <= (0.65 * w).max(0.5 * metres) {
           mask[index] = true;
         }
       }
@@ -1146,7 +1150,8 @@ fn carve_reach(
   }
 }
 
-/// Carve a plunge pool: a bowl of the fall's pool radius and depth.
+/// Shape a plunge pool: a bowl of the fall's pool radius and depth, with
+/// its rim at the water level all round.
 fn carve_pool(
   map: &mut HeightMap,
   fall: &Fall,
@@ -1163,18 +1168,13 @@ fn carve_pool(
   for y in (cy as i32 - r).max(0)..=(cy as i32 + r).min(height - 1) {
     for x in (cx as i32 - r).max(0)..=(cx as i32 + r).min(width - 1) {
       let d = length2(x as f32 - cx, y as f32 - cy) / radius.max(1e-4);
-
-      if d >= 1.0 {
-        continue;
-      }
-
       let index = (y * width + x) as usize;
 
-      if map.no_data[index] {
+      if d >= 1.0 || map.no_data[index] {
         continue;
       }
 
-      record.lower(
+      record.set(
         map,
         index,
         fall.foot_level - fall.pool_depth * (1.0 - d * d),
@@ -1189,7 +1189,7 @@ fn carve_oxbow(map: &mut HeightMap, oxbow: &Oxbow, metres: f32, record: &mut Car
   let width = map.metadata.width as i32;
   let height = map.metadata.height as i32;
   let depth = 0.6 * channel_depth((oxbow.width / 2.7).powi(2));
-  let radius = (oxbow.width * 0.5).max(0.6 * metres) / metres;
+  let radius = (oxbow.width * 0.5).max(0.75 * metres) / metres;
   let r = radius.ceil() as i32 + 1;
 
   for pair in oxbow.points.windows(2) {
@@ -1401,7 +1401,6 @@ mod tests {
   #[test]
   fn a_cliff_step_makes_one_waterfall_with_a_plunge_pool() {
     let mut map = cliff_valley();
-    let before = map.clone();
     let options = RiverOptions {
       min_catchment_km2: 0.005,
       ..RiverOptions::default()
@@ -1424,10 +1423,10 @@ mod tests {
     for y in 0..128u32 {
       for x in 0..128u32 {
         let index = (y * 128 + x) as usize;
-        let lowered = before.heights[index] - map.heights[index];
+        let below_foot = fall.foot_level - map.heights[index];
         let distance = length2(x as f32 - fall.foot[0], y as f32 - fall.foot[1]) * metres;
 
-        if lowered > fall.pool_depth * 0.5 && distance < fall.pool_radius * 2.0 {
+        if below_foot > fall.pool_depth * 0.5 && distance < fall.pool_radius * 2.0 {
           deepest_reach = deepest_reach.max(distance);
         }
       }

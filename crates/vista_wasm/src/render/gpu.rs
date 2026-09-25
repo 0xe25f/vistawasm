@@ -70,9 +70,10 @@ struct FrameUniforms {
   output: [f32; 4],
   cold: [f32; 4],
   sea_ice: [f32; 4],
+  rivers: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 784);
+const _: () = assert!(std::mem::size_of::<FrameUniforms>() == 800);
 
 /// Static world data: species bounds and tints, terrain mapping, and
 /// material tints. Mirrors `WorldInfo` in `common.wgsl`.
@@ -148,6 +149,23 @@ pub struct SeaIce {
   pub open_sea_unit: f32,
 }
 
+/// Rivers, lakes and waterfalls this frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RiverFrame {
+  /// How full snowmelt makes the rivers, 0.4 to 1.4: it scales speed and
+  /// foam, and raises the surface inside the channel above 1.
+  pub melt: f32,
+  /// Whether any lake, river or waterfall is below 0 °C. When `false` the
+  /// water shader skips all frozen-water code.
+  pub freezing: bool,
+  /// Whether there are waterfalls. When `false` the water shader skips
+  /// all waterfall code.
+  pub falls: bool,
+  /// Whether there is a wet-bank field. When `false` the terrain shader
+  /// skips wet banks.
+  pub wet_banks: bool,
+}
+
 /// Everything the renderer needs to shade one frame. The engine resolves
 /// weather into these values, so the renderer never needs to know whether
 /// a setting came from the host or from the weather system.
@@ -208,6 +226,8 @@ pub struct FrameParams {
   pub weather: FrameWeather,
   /// Sea ice conditions.
   pub sea_ice: SeaIce,
+  /// River, lake and waterfall conditions.
+  pub rivers: RiverFrame,
   /// Lowest and highest terrain heights, for fitting the shadow map.
   pub height_range: (f32, f32),
   /// Render, detail, and cloud distances.
@@ -518,6 +538,10 @@ struct Pipelines {
   composite: wgpu::RenderPipeline,
   water: wgpu::RenderPipeline,
   open_water: wgpu::RenderPipeline,
+  /// Rivers, lakes and plunge pools.
+  inland_water: wgpu::RenderPipeline,
+  /// Waterfall sheets and mist.
+  falls: wgpu::RenderPipeline,
   lens: wgpu::RenderPipeline,
   cull: wgpu::ComputePipeline,
   terrain_shadow: wgpu::ComputePipeline,
@@ -1498,6 +1522,40 @@ fn create_pipelines(
         depth: Some((false, wgpu::CompareFunction::Less)),
         constants: &[("SEA_ICE", 0.0)],
         ..PipelineSpec::opaque("VistaWASM open water", &modules.water, main, &water_buffers)
+      },
+    ),
+    // Rivers and lakes without the ocean's waves and sea ice, and the
+    // ocean without them.
+    inland_water: create_pipeline(
+      device,
+      &receivers,
+      PipelineSpec {
+        format: Some(surface_format),
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        depth: Some((false, wgpu::CompareFunction::Less)),
+        constants: &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
+        ..PipelineSpec::opaque(
+          "VistaWASM inland water",
+          &modules.water,
+          main,
+          &water_buffers,
+        )
+      },
+    ),
+    falls: create_pipeline(
+      device,
+      &receivers,
+      PipelineSpec {
+        format: Some(surface_format),
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        depth: Some((false, wgpu::CompareFunction::Less)),
+        constants: &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
+        ..PipelineSpec::opaque(
+          "VistaWASM waterfalls",
+          &modules.water,
+          ("vertex_main", "fragment_fall"),
+          &water_buffers,
+        )
       },
     ),
     cull: compute_pipeline(
@@ -2576,6 +2634,13 @@ impl GpuContext {
       self.sea_ice_offset[0],
       self.sea_ice_offset[1],
     ];
+    let rivers = &params.rivers;
+    u.rivers = [
+      rivers.melt.clamp(0.4, 1.4),
+      flag(rivers.freezing),
+      flag(rivers.falls),
+      flag(rivers.wet_banks),
+    ];
     let surface = &params.surface;
     u.surface = [
       flag(surface.textures),
@@ -3234,10 +3299,21 @@ impl GpuContext {
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
 
-      for mesh in std::iter::once(&self.ocean)
-        .chain(self.rivers.iter())
-        .chain(self.falls.iter())
-      {
+      let meshes = [
+        (None, Some(&self.ocean)),
+        (Some(&self.pipelines.inland_water), self.rivers.as_ref()),
+        (Some(&self.pipelines.falls), self.falls.as_ref()),
+      ];
+
+      for (pipeline, mesh) in meshes {
+        let Some(mesh) = mesh else {
+          continue;
+        };
+
+        if let Some(pipeline) = pipeline {
+          pass.set_pipeline(pipeline);
+        }
+
         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..mesh.index_count, 0, 0..1);

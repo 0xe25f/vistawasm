@@ -333,19 +333,10 @@ pub fn build_hydrology(
     });
   }
 
-  // No gradient across filled flats: lakes need their exact spill height.
-  // Flats still drain along the flood's own receivers.
-  let flood = drainage::priority_flood(
-    width,
-    height,
-    &ground64,
-    0.0,
-    drainage::edge_or_sea_outlet(width, height, &ground64, sea as f64),
-  );
-  let mut receiver = flood.receiver;
-  drainage::steepest_receivers(width, height, &flood.filled, &mut receiver);
+  let (filled64, mut receiver) = flood(width, height, &ground64, sea as f64);
+  drainage::steepest_receivers(width, height, &filled64, &mut receiver);
   let ground: Vec<f32> = ground64.iter().map(|h| *h as f32).collect();
-  let filled: Vec<f32> = flood.filled.iter().map(|h| *h as f32).collect();
+  let filled: Vec<f32> = filled64.iter().map(|h| *h as f32).collect();
   let glacier: Vec<bool> = (0..count)
     .map(|cell| climate(cell).is_some_and(|s| s.is_glacier()))
     .collect();
@@ -367,7 +358,7 @@ pub fn build_hydrology(
     springs: Vec::new(),
     sources: Vec::new(),
   };
-  find_lakes(&mut hydrology, &flood.filled, &ground64, &mut receiver);
+  find_lakes(&mut hydrology, &filled64, &ground64, &mut receiver);
   hydrology.receiver = receiver;
   let order = drainage::stack_order(&hydrology.receiver);
   let area_cells = drainage::accumulate(&order, &hydrology.receiver, vec![1.0; count]);
@@ -436,6 +427,78 @@ pub fn build_hydrology(
   hydrology.sources.extend(hydrology.springs.iter().copied());
   mark_channels(&mut hydrology, discharge_threshold(options));
   hydrology
+}
+
+/// Fill depressions to their spill height with no gradient across them
+/// (lakes need their exact spill height), and route every land cell
+/// towards the sea or the map edge. Open sea is left out of the flood:
+/// only the coast and the map edge seed it. Cells in a pit are reached at
+/// the pit's level, so they go through a plain queue instead of the heap
+/// (Priority-Flood+, Barnes, Lehman and Mulla, 2014).
+fn flood(width: u32, height: u32, ground: &[f64], sea: f64) -> (Vec<f64>, Vec<u32>) {
+  let count = ground.len();
+  let mut filled = ground.to_vec();
+  let mut receiver = vec![NO_RECEIVER; count];
+  let mut visited = vec![false; count];
+  let mut heap = std::collections::BinaryHeap::new();
+  let mut pit = std::collections::VecDeque::new();
+  // Heights are f32 values, so their f32 bit order is exact; with the
+  // index in the low bits, one u64 compares both, inverted so the heap
+  // pops the lowest first.
+  let key = |level: f64, index: u32| {
+    let bits = (level as f32).to_bits();
+    let ordered = if bits >> 31 == 1 {
+      !bits
+    } else {
+      bits | (1 << 31)
+    };
+    !(((ordered as u64) << 32) | index as u64)
+  };
+
+  for index in 0..count as u32 {
+    let (x, y) = (index % width, index / width);
+    let edge = x == 0 || y == 0 || x == width - 1 || y == height - 1;
+
+    if edge || ground[index as usize] <= sea {
+      visited[index as usize] = true;
+      let coast = drainage::neighbours(width, height, index).any(|n| ground[n as usize] > sea);
+
+      if edge || coast {
+        heap.push(key(ground[index as usize], index));
+      }
+    }
+  }
+
+  loop {
+    let cell = match pit.pop_front() {
+      Some(cell) => cell,
+      None => match heap.pop() {
+        Some(entry) => (!entry & 0xffff_ffff) as u32,
+        None => break,
+      },
+    };
+    let level = filled[cell as usize];
+
+    for n in drainage::neighbours(width, height, cell) {
+      let i = n as usize;
+
+      if visited[i] {
+        continue;
+      }
+
+      visited[i] = true;
+      receiver[i] = cell;
+
+      if ground[i] <= level {
+        filled[i] = level;
+        pit.push_back(n);
+      } else {
+        heap.push(key(ground[i], n));
+      }
+    }
+  }
+
+  (filled, receiver)
 }
 
 /// Label lakes: connected depressed cells with at least

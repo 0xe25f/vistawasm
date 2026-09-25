@@ -1284,6 +1284,15 @@ impl EngineCore {
         possible: self.sea_ice_possible || sea_level_celsius(&self.biomes) < SEA_ICE_CELSIUS,
         open_sea_unit: celsius_to_unit(sea_level_celsius(&self.biomes)).clamp(0.0, 1.0),
       },
+      rivers: crate::render::gpu::RiverFrame {
+        melt: melt_factor(self.celsius_at(
+          self.camera.options.position[0],
+          self.camera.options.position[2],
+        )),
+        freezing: self.rivers.freezing,
+        falls: !self.rivers.falls.is_empty(),
+        wet_banks: false,
+      },
       height_range: self.height_range,
       render_scale: self.stats.render_scale,
       frame_seconds: self.frame_seconds,
@@ -1462,6 +1471,13 @@ pub fn validate_tree_instances(trees: &[TreeInstance]) -> VistaResult<()> {
   }
 
   Ok(())
+}
+
+/// How full snowmelt makes the rivers, from the mean temperature where
+/// the camera is: 1 at 10 °C, down to 0.4 at -2 °C and below, and up to
+/// 1.4 at 18 °C and above. Rivers far from the camera share its season.
+pub fn melt_factor(celsius: Option<f32>) -> f32 {
+  (1.0 + (celsius.unwrap_or(10.0) - 10.0) / 20.0).clamp(0.4, 1.4)
 }
 
 /// The map-wide inputs of surface classification that river carving

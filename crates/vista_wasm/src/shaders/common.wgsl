@@ -99,6 +99,10 @@ struct FrameUniforms {
   // x: 1 when any sea may freeze, y: temperature unit of the open sea
   // beyond the terrain, zw: wind drift of the floes in metres.
   sea_ice: vec4<f32>,
+  // x: snowmelt fullness of the rivers (0.4 to 1.4), y: 1 when any lake,
+  // river or waterfall is below 0 °C, z: 1 when there are waterfalls,
+  // w: 1 when the wet-bank field is loaded.
+  rivers: vec4<f32>,
 };
 
 struct WorldInfo {

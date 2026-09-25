@@ -222,7 +222,7 @@ Each terrain vertex is 36 bytes:
     the lens there is no extra pass.
 
 Every render shader is compiled with `shaders/common.wgsl` prepended, which
-declares the one `FrameUniforms` struct (784 bytes), the shared world
+declares the one `FrameUniforms` struct (800 bytes), the shared world
 textures (bind group 1), shadow receivers (bind group 2), the sky model,
 lighting, fog integrals, and every shadow lookup. Because there is exactly
 one declaration, the Rust struct in `render/gpu.rs` and the WGSL struct
