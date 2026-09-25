@@ -797,12 +797,12 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       alpha_out = alpha_out * (1.0 - smoothstep(0.7, 1.0, abs(in.across)));
     }
 
-    // A pool holds water only in its bowl, 0.15 of the fall deep at the
-    // centre and rising to the rim: where the ground drops away below the
-    // bowl (a pool smaller than a heightmap sample, on a slope) the water
-    // would have drained, so it fades out, and it fades towards the rim.
+    // A pool holds water only in its bowl, `extra.x` deep at the centre
+    // and rising to the rim: where the ground drops away below the bowl (a
+    // pool smaller than a heightmap sample, on a slope) the water would
+    // have drained, so it fades out, and it fades towards the rim.
     if (INLAND && in.kind == KIND_POOL) {
-      let bowl = 0.15 * in.extra.y * (1.0 - in.across * in.across);
+      let bowl = in.extra.x * (1.0 - in.across * in.across);
       alpha_out = alpha_out * (1.0 - smoothstep(bowl + 0.3, bowl + 1.0, depth))
         * (1.0 - smoothstep(0.6, 1.0, in.across));
     }

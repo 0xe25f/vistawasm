@@ -435,7 +435,7 @@ export interface WaterSounds {
  * A waterfall.
  */
 export interface Waterfall {
-  /** Where the water lands, at the surface of its plunge pool, in world metres. */
+  /** Where the water lands, at the river level at the foot of the fall, in world metres. */
   position: [number, number, number];
   heightMetres: number;
   widthMetres: number;

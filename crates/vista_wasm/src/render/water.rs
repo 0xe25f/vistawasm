@@ -18,8 +18,8 @@ use vista_types::{RiverOptions, WaterOptions};
 use crate::maths::length2;
 use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::channels::{
-  condition_channels, raw_streams, CarveRecord, ChannelContext, ChannelPoint, Fall, Oxbow,
-  RawStream, Reach, GRAVITY,
+  channel_depth, condition_channels, height_at, raw_streams, CarveRecord, ChannelContext,
+  ChannelPoint, Fall, Oxbow, RawStream, Reach, GRAVITY,
 };
 use crate::terrain::drainage::NO_RECEIVER;
 use crate::terrain::heightmap::HeightMap;
@@ -62,6 +62,16 @@ pub const WATER_KIND_FALL: f32 = 3.0;
 pub const WATER_KIND_SPRAY: f32 = 4.0;
 /// Plunge pool vertex kind (`params[0]`).
 pub const WATER_KIND_POOL: f32 = 5.0;
+
+/// Most rings, and the segments, in a plunge pool's disc. Rings are about
+/// a third of a heightmap sample apart, from two to four of them, so the
+/// film follows the ground.
+const POOL_RINGS: usize = 4;
+const POOL_SEGMENTS: usize = 24;
+
+/// Depth of the film a plunge pool leaves where it spills over ground
+/// below its foot.
+const POOL_FILM_METRES: f32 = 0.15;
 
 /// One water vertex (48 bytes).
 #[repr(C)]
@@ -505,10 +515,7 @@ fn painted_stream(
   painted_cells: &mut [bool],
 ) -> Option<RawStream> {
   let mut points = river.points.clone();
-  let mut levels: Vec<f32> = points
-    .iter()
-    .map(|p| crate::terrain::channels::height_at(map, p[0], p[1]))
-    .collect();
+  let mut levels: Vec<f32> = points.iter().map(|p| height_at(map, p[0], p[1])).collect();
   let mut discharge: Vec<f32> = points
     .iter()
     .map(|p| hydrology.discharge[cell_at(hydrology, *p) as usize])
@@ -577,6 +584,36 @@ fn mark_sample(mask: &mut [bool], map: &HeightMap, point: [f32; 2]) {
   let x = (point[0].round().max(0.0) as u32).min(map.metadata.width - 1);
   let y = (point[1].round().max(0.0) as u32).min(map.metadata.height - 1);
   mask[(y * map.metadata.width + x) as usize] = true;
+}
+
+/// Ground height at sample coordinates as the terrain mesh draws it near
+/// the camera: two triangles per sample square, split from its top-right
+/// to its bottom-left corner. Over a sharply carved sample this differs
+/// from the bilinear height by metres.
+fn mesh_height_at(map: &HeightMap, x: f32, y: f32) -> f32 {
+  let width = map.metadata.width;
+  let height = map.metadata.height;
+
+  if width < 2 || height < 2 {
+    return height_at(map, x, y);
+  }
+
+  let fx = x.clamp(0.0, (width - 1) as f32);
+  let fy = y.clamp(0.0, (height - 1) as f32);
+  let x0 = (fx as u32).min(width - 2);
+  let y0 = (fy as u32).min(height - 2);
+  let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+  let at = |x: u32, y: u32| map.heights[(y * width + x) as usize];
+  let (top_left, top_right) = (at(x0, y0), at(x0 + 1, y0));
+  let (bottom_left, bottom_right) = (at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+
+  if tx + ty <= 1.0 {
+    top_left + (top_right - top_left) * tx + (bottom_left - top_left) * ty
+  } else {
+    bottom_right
+      + (bottom_left - bottom_right) * (1.0 - tx)
+      + (top_right - bottom_right) * (1.0 - ty)
+  }
 }
 
 fn to_world(point: [f32; 2], metres: f32, half: [f32; 2]) -> [f32; 2] {
@@ -875,37 +912,84 @@ fn add_fall(
   let impact = (2.0 * GRAVITY * height).sqrt();
   let foot = to_world(fall.foot, metres, half);
 
-  // The churned plunge pool: a disc at the foot as wide as the pool. The
-  // shader fades it out towards its rim, so where the pool is smaller
-  // than a heightmap sample it does not end in a hard edge.
+  // The churned plunge pool. Its water stands only as high as where it
+  // spills: the lowest ground just outside its rim, or the water in its
+  // outlet channel, and at most the foot. Below that it is flat; above
+  // it, and all over where the bowl holds nothing, as on a slope, it is a
+  // thin film over the ground, so it never stands out as a shelf. The
+  // shader fades it towards its rim, so where the pool is smaller than a
+  // heightmap sample it does not end in a hard edge.
+  let ring = fall.pool_radius / metres + 0.5;
+  let mut level = fall.foot_level;
+
+  for k in 0..POOL_SEGMENTS {
+    let angle = k as f32 / POOL_SEGMENTS as f32 * std::f32::consts::TAU;
+    let (cos, sin) = (angle.cos(), angle.sin());
+    let ground = height_at(map, fall.foot[0] + cos * ring, fall.foot[1] + sin * ring);
+    let outlet = cos * direction[0] + sin * direction[1] > 0.77;
+    level = level.min(if outlet {
+      ground + channel_depth(fall.discharge)
+    } else {
+      ground
+    });
+  }
+
+  let surface = |x: f32, y: f32| {
+    let ground = height_at(map, x, y).max(mesh_height_at(map, x, y));
+    fall.foot_level.min(level.max(ground + POOL_FILM_METRES))
+  };
+  let held = (level - (fall.foot_level - fall.pool_depth)).max(0.0);
   let centre = network.vertices.len() as u32;
-  let pool = [fall.pool_radius, height, fall.celsius, fall.discharge];
-  let radius = fall.pool_radius;
+  let pool = [held, height, fall.celsius, fall.discharge];
   network.vertices.push(WaterVertex {
-    position: [foot[0], fall.foot_level + 0.02, foot[1]],
+    position: [foot[0], surface(fall.foot[0], fall.foot[1]) + 0.02, foot[1]],
     flow: [0.0, 0.0],
     params: [WATER_KIND_POOL, 0.0, 0.0],
     extra: pool,
   });
 
-  for k in 0..24 {
-    let angle = k as f32 / 24.0 * std::f32::consts::TAU;
-    network.vertices.push(WaterVertex {
-      position: [
-        foot[0] + angle.cos() * radius,
-        fall.foot_level + 0.02,
-        foot[1] + angle.sin() * radius,
-      ],
-      flow: [angle.cos(), angle.sin()],
-      params: [WATER_KIND_POOL, radius / fall.pool_radius.max(0.1), 0.0],
-      extra: pool,
-    });
+  let rings = ((3.0 * fall.pool_radius / metres).ceil() as usize).clamp(2, POOL_RINGS);
+
+  for ring in 1..=rings {
+    let across = ring as f32 / rings as f32;
+    let radius = fall.pool_radius * across;
+
+    for k in 0..POOL_SEGMENTS {
+      let angle = k as f32 / POOL_SEGMENTS as f32 * std::f32::consts::TAU;
+      let (cos, sin) = (angle.cos(), angle.sin());
+      let level = surface(
+        fall.foot[0] + cos * radius / metres,
+        fall.foot[1] + sin * radius / metres,
+      );
+      network.vertices.push(WaterVertex {
+        position: [foot[0] + cos * radius, level + 0.02, foot[1] + sin * radius],
+        flow: [cos, sin],
+        params: [WATER_KIND_POOL, across, 0.0],
+        extra: pool,
+      });
+    }
   }
 
-  for k in 0..24u32 {
+  let segments = POOL_SEGMENTS as u32;
+
+  for k in 0..segments {
+    let next = (k + 1) % segments;
     network
       .indices
-      .extend_from_slice(&[centre, centre + 1 + (k + 1) % 24, centre + 1 + k]);
+      .extend_from_slice(&[centre, centre + 1 + next, centre + 1 + k]);
+
+    for ring in 1..rings as u32 {
+      let inner = centre + 1 + (ring - 1) * segments;
+      let outer = inner + segments;
+      network.indices.extend_from_slice(&[
+        inner + k,
+        inner + next,
+        outer + k,
+        inner + next,
+        outer + next,
+        outer + k,
+      ]);
+    }
   }
 
   let vertices = &mut network.fall_vertices;
@@ -927,7 +1011,7 @@ fn add_fall(
     };
     let sx = fall.lip[0] + direction[0] * along / metres;
     let sy = fall.lip[1] + direction[1] * along / metres;
-    let rock = crate::terrain::channels::height_at(map, sx, sy);
+    let rock = height_at(map, sx, sy);
     let y = if k == FALL_ROWS {
       fall.foot_level
     } else {
@@ -1024,6 +1108,23 @@ mod tests {
   }
 
   #[test]
+  fn mesh_heights_follow_the_terrain_triangles() {
+    let metadata = TerrainMetadata {
+      metres_per_sample: 10.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(3, 3, 0.0, metadata);
+    // Only the bottom-right corner of the first square is raised, so the
+    // top-left triangle stays flat and the bilinear height does not.
+    map.heights[4] = 8.0;
+
+    assert_eq!(mesh_height_at(&map, 0.4, 0.4), 0.0);
+    assert!(height_at(&map, 0.4, 0.4) > 1.0);
+    assert!((mesh_height_at(&map, 0.9, 0.9) - 6.4).abs() < 1e-4);
+    assert_eq!(mesh_height_at(&map, 1.0, 1.0), 8.0);
+  }
+
+  #[test]
   fn plane_sits_at_the_requested_sea_level() {
     let plane = build_water_plane(100.0, 50.0, 12.5);
 
@@ -1095,6 +1196,60 @@ mod tests {
 
     update_stats(&map.heights, &map.no_data, &mut map.metadata);
     map
+  }
+
+  #[test]
+  fn plunge_pools_on_a_slope_lie_on_the_ground() {
+    // A 20 m cliff above a hillside falling at about 30 degrees, in a
+    // valley that gathers the water.
+    let size = 128;
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 2.0,
+      sea_level_metres: -100.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(size, size, 0.0, metadata);
+
+    for y in 0..size {
+      for x in 0..size {
+        let step = if y >= 64 { 20.0 } else { 0.0 };
+        let _ = map.set_height(x, y, y as f32 * 1.2 + (x as f32 - 64.0).abs() * 0.5 + step);
+      }
+    }
+
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    let options = RiverOptions {
+      min_catchment_km2: 0.005,
+      ..RiverOptions::default()
+    };
+    let sources = plain(map.heights.len());
+    let network = build_river_network(&mut map, &options, sources);
+    let half = (size as f32 - 1.0) * 2.0 * 0.5;
+    let pools: Vec<&WaterVertex> = network
+      .vertices
+      .iter()
+      .filter(|vertex| vertex.params[0] == WATER_KIND_POOL)
+      .collect();
+
+    assert!(!network.falls.is_empty());
+    assert!(!pools.is_empty());
+
+    // No part of a pool stands clear of the ground: at most a film over
+    // it, or, towards the outlet, the depth of the stream leaving it.
+    for vertex in pools {
+      let x = (vertex.position[0] + half) / 2.0;
+      let y = (vertex.position[2] + half) / 2.0;
+      let ground = height_at(&map, x, y).max(mesh_height_at(&map, x, y));
+      let above = vertex.position[1] - ground;
+      let allowed = POOL_FILM_METRES + channel_depth(vertex.extra[3]) + 0.03;
+
+      assert!(
+        above <= allowed,
+        "pool {above} m above the ground at {x}, {y}"
+      );
+    }
   }
 
   #[test]

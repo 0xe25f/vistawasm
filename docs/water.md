@@ -145,7 +145,11 @@ shapes their beds and banks:
     of at most two samples each, with pools between them, as steep
     mountain streams are. Steps under 3 m become rapids. Each fall has a
     plunge pool 0.3 × its height + its width across and 0.15 × its
-    height deep. `waterfalls: false` keeps the channel draped over the
+    height deep. The bowl is cut into the ground, never built up, and
+    its water stands only as high as where it spills, over its lowest
+    rim point or into its outlet. Around that, and all over on a slope
+    where the bowl holds nothing, it is a thin film of churned water over
+    the ground. `waterfalls: false` keeps the channel draped over the
     step instead.
 
 Every change is recorded, so turning rivers off (or clearing the water

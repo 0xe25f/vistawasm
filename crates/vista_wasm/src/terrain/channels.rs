@@ -1150,8 +1150,10 @@ fn carve_reach(
   }
 }
 
-/// Shape a plunge pool: a bowl of the fall's pool radius and depth, with
-/// its rim at the water level all round.
+/// Cut a plunge pool: a bowl of the fall's pool radius and depth below the
+/// water level. Ground is only ever lowered, so on a steep slope the bowl
+/// is cut into the hillside and never builds a terrace below it; the
+/// shader shows water only where the bowl holds it.
 fn carve_pool(
   map: &mut HeightMap,
   fall: &Fall,
@@ -1174,7 +1176,7 @@ fn carve_pool(
         continue;
       }
 
-      record.set(
+      record.lower(
         map,
         index,
         fall.foot_level - fall.pool_depth * (1.0 - d * d),
@@ -1450,6 +1452,32 @@ mod tests {
     )
     .0;
     assert!(none.falls.is_empty());
+  }
+
+  #[test]
+  fn plunge_pools_on_a_steep_slope_never_raise_the_ground() {
+    // A 20 m cliff above a hillside falling at about 30 degrees,
+    // in a valley that gathers the water.
+    let shape = |x: f32, y: f32| {
+      let step = if y >= 64.0 { 20.0 } else { 0.0 };
+      y * 1.2 + (x - 64.0).abs() * 0.5 + step
+    };
+    let original = map_from(128, 2.0, shape);
+    let mut map = map_from(128, 2.0, shape);
+    let options = RiverOptions {
+      min_catchment_km2: 0.005,
+      ..RiverOptions::default()
+    };
+    let (channels, _) = condition(&mut map, &options);
+
+    assert!(!channels.falls.is_empty());
+
+    for (index, (after, before)) in map.heights.iter().zip(&original.heights).enumerate() {
+      assert!(
+        after <= before,
+        "sample {index} rose from {before} to {after}"
+      );
+    }
   }
 
   #[test]

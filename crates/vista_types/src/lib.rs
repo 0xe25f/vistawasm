@@ -636,8 +636,8 @@ pub struct WaterSounds {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Waterfall {
-  /// Where the water lands, at the surface of its plunge pool, in world
-  /// metres.
+  /// Where the water lands, at the river level at the foot of the fall,
+  /// in world metres.
   pub position: Vec3,
   /// Height of the drop, in metres.
   pub height_metres: f32,

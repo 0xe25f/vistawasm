@@ -506,7 +506,7 @@ distance squared) and the source's world position `[x, y, z]`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `position` | `[number, number, number]` | Where the water lands, at the surface of its plunge pool. |
+| `position` | `[number, number, number]` | Where the water lands, at the river level at the foot of the fall. |
 | `heightMetres` | `number` | Height of the drop. |
 | `widthMetres` | `number` | Width of the falling water. |
 | `dischargeCubicMetresPerSecond` | `number` | Mean discharge. |
