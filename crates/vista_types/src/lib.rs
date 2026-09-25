@@ -595,7 +595,7 @@ pub struct RiverOptions {
 }
 
 /// Water arriving from beyond the map (`RiverOptions::inflow`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum RiverInflows {
   /// `"auto"` or `"none"`.
@@ -607,6 +607,45 @@ pub enum RiverInflows {
 impl Default for RiverInflows {
   fn default() -> Self {
     Self::Mode(InflowMode::Auto)
+  }
+}
+
+// A string or a list, read directly: the untagged derive would buffer
+// every value first, which costs far more code.
+impl<'de> Deserialize<'de> for RiverInflows {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct Inflows;
+
+    impl<'de> serde::de::Visitor<'de> for Inflows {
+      type Value = RiverInflows;
+
+      fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("\"auto\", \"none\" or a list of inflows")
+      }
+
+      fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        match value {
+          "auto" => Ok(RiverInflows::Mode(InflowMode::Auto)),
+          "none" => Ok(RiverInflows::Mode(InflowMode::None)),
+          _ => Err(E::invalid_value(serde::de::Unexpected::Str(value), &self)),
+        }
+      }
+
+      fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+      ) -> Result<Self::Value, A::Error> {
+        let mut list = Vec::new();
+
+        while let Some(inflow) = seq.next_element()? {
+          list.push(inflow);
+        }
+
+        Ok(RiverInflows::List(list))
+      }
+    }
+
+    deserializer.deserialize_any(Inflows)
   }
 }
 
@@ -2136,5 +2175,19 @@ mod tests {
     assert_eq!(tints(10).unwrap()[9], [0.5, 0.25, 2.0]);
     assert!(tints(9).is_err());
     assert!(tints(11).is_err());
+  }
+
+  #[test]
+  fn inflows_read_a_mode_or_a_list() {
+    use serde::de::value::StrDeserializer;
+    let mode = |text: &str| RiverInflows::deserialize(StrDeserializer::<Error>::new(text));
+
+    assert_eq!(mode("auto").unwrap(), RiverInflows::Mode(InflowMode::Auto));
+    assert_eq!(mode("none").unwrap(), RiverInflows::Mode(InflowMode::None));
+    let error = mode("every edge").unwrap_err().to_string();
+    assert!(error.contains("\"auto\", \"none\" or a list"), "{error}");
+    let empty: Vec<f32> = Vec::new();
+    let list = RiverInflows::deserialize(SeqDeserializer::<_, Error>::new(empty.into_iter()));
+    assert_eq!(list.unwrap(), RiverInflows::List(Vec::new()));
   }
 }
