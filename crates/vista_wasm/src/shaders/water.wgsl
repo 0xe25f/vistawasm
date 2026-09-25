@@ -73,6 +73,10 @@ const KIND_POOL: i32 = 5;
 // other's code.
 override INLAND: bool = false;
 
+// The opaque scene at half resolution: HDR colour, and linear view depth
+// in alpha (see `scene_copy_main` in `atmosphere.wgsl`).
+@group(3) @binding(0) var scene_copy: texture_2d<f32>;
+
 // Whether any waterfall exists this frame.
 fn falls_possible() -> bool {
   return frame.rivers.z > 0.5;
@@ -575,6 +579,78 @@ fn fragment_fall(in: VertexOut) -> @location(0) vec4<f32> {
   return vec4<f32>(finish_colour(apply_fog(colour, position, in.clip_position.xy)), saturate(alpha));
 }
 
+// Screen position of a world point: uv, then linear view depth.
+fn screen_uv(p: vec3<f32>) -> vec3<f32> {
+  let clip = frame.view_proj * vec4<f32>(p, 1.0);
+  let ndc = clip.xy / max(clip.w, 1.0e-4);
+  return vec3<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, clip.w);
+}
+
+// The scene copy's depth at a uv, unfiltered: filtering would blend a
+// near edge with the sky behind it into a depth that is neither.
+fn copy_depth(uv: vec2<f32>) -> f32 {
+  let size = vec2<f32>(textureDimensions(scene_copy));
+  return textureLoad(scene_copy, vec2<i32>(clamp(uv * size, vec2<f32>(0.0), size - 1.0)), 0).a;
+}
+
+// How much of a reflection hit to trust: none at the screen edges or at
+// the end of the ray's reach, all of it in between.
+fn reflection_fade(uv: vec2<f32>, travelled: f32, reach: f32) -> f32 {
+  let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+  return smoothstep(0.0, 0.1, edge) * (1.0 - smoothstep(0.6, 1.0, travelled / reach));
+}
+
+// The opaque scene seen along a reflected ray: 16 steps of geometrically
+// growing stride from 2 m out to `reach` metres, so near banks and far
+// hills are both found, then 4 bisection steps against the scene copy's
+// depth. rgb is the colour, a how much to use it.
+fn trace_reflection(origin: vec3<f32>, ray: vec3<f32>, reach: f32) -> vec4<f32> {
+  var near_t = 0.0;
+  var far_t = -1.0;
+
+  for (var i = 1; i <= 16; i = i + 1) {
+    let t = 2.0 * pow(reach / 2.0, f32(i) / 16.0);
+    let s = screen_uv(origin + ray * t);
+
+    if (s.z <= 0.0 || any(s.xy < vec2<f32>(0.0)) || any(s.xy > vec2<f32>(1.0))) {
+      break;
+    }
+
+    if (s.z > copy_depth(s.xy)) {
+      far_t = t;
+      break;
+    }
+
+    near_t = t;
+  }
+
+  if (far_t < 0.0) {
+    return vec4<f32>(0.0);
+  }
+
+  for (var k = 0; k < 4; k = k + 1) {
+    let t = 0.5 * (near_t + far_t);
+    let s = screen_uv(origin + ray * t);
+
+    if (s.z > copy_depth(s.xy)) {
+      far_t = t;
+    } else {
+      near_t = t;
+    }
+  }
+
+  let s = screen_uv(origin + ray * far_t);
+  let hit = vec4<f32>(textureSampleLevel(scene_copy, linear_sampler, s.xy, 0.0).rgb, copy_depth(s.xy));
+  // A ray passing far behind what it crossed found nothing there, and one
+  // heading back towards the camera sees surfaces facing away. Nothing
+  // nearer the camera than the water itself can be in its reflection:
+  // that is foreground in front of it.
+  let solid = (1.0 - smoothstep(0.1, 0.25, (s.z - hit.a) / max(s.z, 1.0)))
+    * step(0.95 * screen_uv(origin).z, hit.a);
+  let facing = smoothstep(-0.1, 0.2, dot(ray, frame.camera_forward.xyz));
+  return vec4<f32>(hit.rgb, reflection_fade(s.xy, far_t, reach) * solid * facing);
+}
+
 // The stone in the cell of a grid `size` metres apart around `p`, if the
 // cell has one (with probability `chance`): xy its centre, z its radius
 // (from `radius.x` to `radius.y`), or 0 without one. Each stone stays
@@ -751,6 +827,12 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       // Under a full overcast the deck already is the sky being reflected.
       let cloud = smoothstep(0.05, 0.6, weather) * saturate(reflected.y * 5.0) * (1.0 - frame.weather2.y);
       reflection = mix(reflection, (sun_light() * 0.35 + sky_irradiance(vec3<f32>(0.0, 1.0, 0.0)) * 0.3) * frame.cloud_colour.rgb, cloud * 0.8);
+    }
+
+    // The scene on screen where a reflected ray finds it, over the sky.
+    if (frame.water_origin.w > 0.5) {
+      let hit = trace_reflection(position, reflected, 4000.0);
+      reflection = mix(reflection, hit.rgb, hit.a);
     }
 
     let shadow = sun_visibility(position, vec3<f32>(0.0, 1.0, 0.0));

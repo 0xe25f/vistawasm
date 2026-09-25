@@ -1404,6 +1404,7 @@ impl EngineCore {
       inland_water: !self.rivers.vertices.is_empty(),
       falls: !self.rivers.fall_vertices.is_empty(),
       bank_strips: !self.rivers.bank_vertices.is_empty(),
+      reflections: water.reflections == vista_types::WaterReflections::Screen,
       present: !self.lens_drops.is_empty() || self.stats.render_scale < 0.999,
     };
     let options = self.weather.options();
@@ -2491,6 +2492,16 @@ mod tests {
 
     assert!(kinds.contains(&PipelineKind::Terrain));
     assert!(kinds.contains(&PipelineKind::OpenOcean));
+    // Screen reflections copy the scene; sky reflections do not.
+    assert!(kinds.contains(&PipelineKind::SceneCopy));
+    engine
+      .set_water(WaterOptions {
+        reflections: vista_types::WaterReflections::Sky,
+        ..engine.water.clone()
+      })
+      .unwrap();
+    let kinds = created(&engine, &mut PipelineSlots::default());
+    assert!(!kinds.contains(&PipelineKind::SceneCopy));
   }
 
   #[test]

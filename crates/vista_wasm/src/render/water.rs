@@ -1965,6 +1965,31 @@ mod tests {
     assert!(beside[3] > 100 && beside[..3] == [0; 3], "{beside:?}");
   }
 
+  /// CPU port of `reflection_fade` in `water.wgsl`.
+  fn reflection_fade(uv: [f32; 2], travelled: f32, reach: f32) -> f32 {
+    let edge = uv[0].min(1.0 - uv[0]).min(uv[1].min(1.0 - uv[1]));
+    smoothstep(edge / 0.1) * (1.0 - smoothstep((travelled / reach - 0.6) / 0.4))
+  }
+
+  #[test]
+  fn screen_reflections_fade_at_the_edges_and_the_end_of_the_ray() {
+    // The ray steps of `trace_reflection`: 16, growing, out to its reach.
+    let reach: f32 = 4000.0;
+    let steps: Vec<f32> = (1..=16)
+      .map(|i| 2.0 * (reach / 2.0).powf(i as f32 / 16.0))
+      .collect();
+    assert!((steps[15] - reach).abs() < 0.1);
+    assert!(steps[0] < 4.0);
+    assert!(steps.windows(3).all(|w| w[2] - w[1] > w[1] - w[0]));
+
+    assert_eq!(reflection_fade([0.5, 0.5], 100.0, reach), 1.0);
+    for edge in [[0.0, 0.5], [1.0, 0.5], [0.5, 0.0], [0.5, 1.0]] {
+      assert_eq!(reflection_fade(edge, 100.0, reach), 0.0);
+    }
+    assert_eq!(reflection_fade([0.5, 0.5], reach, reach), 0.0);
+    assert!(reflection_fade([0.05, 0.5], 100.0, reach) > 0.0);
+  }
+
   #[test]
   fn riparian_greening_is_full_at_the_water_and_ends_at_its_reach() {
     let map = HeightMap::flat(

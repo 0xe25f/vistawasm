@@ -730,6 +730,18 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   return vec4<f32>(finish_colour(colour), 1.0);
 }
 
+// Half-resolution copy of the opaque scene for water to reflect: HDR
+// colour in rgb, linear view depth in a (1e9 for the sky).
+@fragment
+fn scene_copy_main(in: VertexOut) -> @location(0) vec4<f32> {
+  let pixel = full_pixel(in.ndc);
+  let depth = textureLoad(depth_texture, pixel, 0);
+  let near = frame.water_deep.w;
+  let far = frame.water_current.w;
+  let view_depth = select(far * near / max(far - depth * (far - near), 0.0001), 1.0e9, depth >= 0.999999);
+  return vec4<f32>(textureLoad(scene_texture, pixel, 0).rgb, view_depth);
+}
+
 // The final pass, run when the scene was rendered below the canvas
 // resolution or raindrops land on the lens. It upscales the finished frame
 // to the canvas, sharpening what was upscaled with a contrast-adaptive

@@ -44,6 +44,8 @@ pub enum PipelineKind {
   Clouds,
   /// Sky, fog and tone mapping.
   Composite,
+  /// The half-resolution scene copy water reflects.
+  SceneCopy,
   /// The ocean with sea ice.
   SeaIceOcean,
   /// The ocean without sea ice.
@@ -58,7 +60,7 @@ pub enum PipelineKind {
 
 impl PipelineKind {
   /// Every kind, in the order a frame uses them.
-  pub const ALL: [Self; 16] = [
+  pub const ALL: [Self; 17] = [
     Self::TerrainShadow,
     Self::TreeCull,
     Self::TreeShadow,
@@ -70,6 +72,7 @@ impl PipelineKind {
     Self::QuarterClouds,
     Self::Clouds,
     Self::Composite,
+    Self::SceneCopy,
     Self::SeaIceOcean,
     Self::OpenOcean,
     Self::InlandWater,
@@ -121,6 +124,8 @@ pub struct Needs {
   pub falls: bool,
   /// Bank strips are present.
   pub bank_strips: bool,
+  /// Water reflects the scene on screen.
+  pub reflections: bool,
   /// The frame goes through the final pass: lens drops, or a scene drawn
   /// below the canvas resolution.
   pub present: bool,
@@ -144,6 +149,7 @@ impl Needs {
       PipelineKind::InlandWater => self.water && self.inland_water,
       PipelineKind::Falls => self.water && self.falls,
       PipelineKind::BankStrips => self.water && self.bank_strips,
+      PipelineKind::SceneCopy => self.water && self.reflections,
       PipelineKind::Present => self.present,
     }
   }

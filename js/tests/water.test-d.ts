@@ -7,7 +7,8 @@ import type {
   WaterSound,
   WaterSounds,
   Waterfall,
-  WaterInflow
+  WaterInflow,
+  WaterOptions
 } from "../src/types";
 
 describe("water types", () => {
@@ -16,6 +17,13 @@ describe("water types", () => {
     expectTypeOf<RiverOptions["springs"]>().toEqualTypeOf<boolean | undefined>();
     expectTypeOf<RiverOptions["meanders"]>().toEqualTypeOf<number | undefined>();
     expectTypeOf<RiverOptions["waterfalls"]>().toEqualTypeOf<boolean | undefined>();
+  });
+
+  it("types reflections", () => {
+    expectTypeOf<WaterOptions["reflections"]>().toEqualTypeOf<"screen" | "sky" | undefined>();
+    // @ts-expect-error reflections are "screen" or "sky".
+    const wrong: Partial<WaterOptions> = { reflections: "planar" };
+    expectTypeOf(wrong).toBeObject();
   });
 
   it("types riparian greening", () => {

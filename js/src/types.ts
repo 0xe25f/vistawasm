@@ -500,6 +500,13 @@ export interface WaterOptions {
   clarityMetres?: number;
   /** Foam strength, 0 to 1. Defaults to `0.7`. */
   foam?: number;
+  /**
+   * What water reflects. `"screen"` (default) reflects the terrain, trees
+   * and banks on screen, falling back to the sky and clouds where a
+   * reflected ray leaves the screen; `"sky"` reflects the sky and clouds
+   * only, which costs less.
+   */
+  reflections?: "screen" | "sky";
 }
 
 /**

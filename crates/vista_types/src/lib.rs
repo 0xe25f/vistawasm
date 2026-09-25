@@ -824,6 +824,21 @@ pub struct WaterOptions {
   /// Foam strength on crests, shorelines, and rapids, from 0 to 1.
   #[serde(default = "default_foam")]
   pub foam: f32,
+  /// What water reflects.
+  #[serde(default)]
+  pub reflections: WaterReflections,
+}
+
+/// What water reflects (`WaterOptions::reflections`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WaterReflections {
+  /// The scene on screen (terrain, trees, banks), falling back to the sky
+  /// and clouds where a reflected ray leaves the screen or finds nothing.
+  #[default]
+  Screen,
+  /// The sky and clouds only.
+  Sky,
 }
 
 impl Default for WaterOptions {
@@ -842,6 +857,7 @@ impl Default for WaterOptions {
       deep_colour: default_deep_colour(),
       clarity_metres: default_clarity_metres(),
       foam: default_foam(),
+      reflections: WaterReflections::Screen,
     }
   }
 }

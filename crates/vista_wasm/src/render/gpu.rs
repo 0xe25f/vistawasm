@@ -531,6 +531,8 @@ struct Layouts {
   cloud_quarter: wgpu::BindGroupLayout,
   terrain_shadow: wgpu::BindGroupLayout,
   lens: wgpu::BindGroupLayout,
+  /// The scene copy that water reflects.
+  reflection: wgpu::BindGroupLayout,
 }
 
 /// Pipeline layouts, made once so each pipeline created later shares them.
@@ -545,6 +547,8 @@ struct PipelineLayouts {
   cloud: wgpu::PipelineLayout,
   cloud_quarter: wgpu::PipelineLayout,
   terrain_shadow: wgpu::PipelineLayout,
+  /// Shadow receivers plus the scene copy they reflect.
+  water: wgpu::PipelineLayout,
 }
 
 /// A render or compute pipeline in a [`PipelineSlots`] slot.
@@ -617,6 +621,8 @@ pub struct GpuContext {
   tree_shadow_map: TreeShadowMap,
   cloud_target: Option<CloudTarget>,
   lens_target: Option<LensTarget>,
+  /// The half-resolution scene copy water reflects, and its bind group.
+  reflection: Option<(wgpu::TextureView, wgpu::BindGroup)>,
   /// The previous frame's view-projection, for reusing its clouds.
   previous_view_proj: [f32; 16],
   /// Counts cloud frames, to choose which pixel of each block is marched.
@@ -780,6 +786,10 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
         texture_entry(4, Dim::D2, filterable, fragment),
         texture_entry(5, Dim::D2, unfilterable, fragment),
       ],
+    ),
+    reflection: layout(
+      "VistaWASM reflection layout",
+      &[texture_entry(0, Dim::D2, filterable, fragment)],
     ),
     cloud_quarter: layout(
       "VistaWASM quarter cloud layout",
@@ -1406,6 +1416,10 @@ fn create_pipeline_layouts(device: &wgpu::Device, layouts: &Layouts) -> Pipeline
       "VistaWASM terrain shadow pipeline layout",
       &[&layouts.terrain_shadow],
     ),
+    water: pipeline_layout(
+      "VistaWASM water pipeline layout",
+      &[frame, &layouts.world, &layouts.shadow, &layouts.reflection],
+    ),
   }
 }
 
@@ -1536,7 +1550,7 @@ fn create_pipeline_of(
   let water = |label, constants, entries| {
     create_pipeline(
       device,
-      &layouts.receivers,
+      &layouts.water,
       PipelineSpec {
         format: Some(surface_format),
         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -1682,6 +1696,20 @@ fn create_pipeline_of(
         format: Some(surface_format),
         depth: None,
         ..PipelineSpec::opaque("VistaWASM composite", modules.atmosphere(device), main, &[])
+      },
+    )),
+    PipelineKind::SceneCopy => render(create_pipeline(
+      device,
+      &layouts.composite,
+      PipelineSpec {
+        format: Some(HDR_FORMAT),
+        depth: None,
+        ..PipelineSpec::opaque(
+          "VistaWASM scene copy",
+          modules.atmosphere(device),
+          ("vertex_main", "scene_copy_main"),
+          &[],
+        )
       },
     )),
     PipelineKind::SeaIceOcean => render(water("VistaWASM water", &[], main)),
@@ -1938,6 +1966,7 @@ impl GpuContext {
       tree_shadow_map,
       cloud_target: None,
       lens_target: None,
+      reflection: None,
       previous_view_proj: [0.0; 16],
       cloud_frame: 0,
       tree_meshes,
@@ -2865,7 +2894,7 @@ impl GpuContext {
       (p[0] / OCEAN_SNAP_METRES).round() * OCEAN_SNAP_METRES,
       (p[2] / OCEAN_SNAP_METRES).round() * OCEAN_SNAP_METRES,
       flag(self.water_visible),
-      0.0,
+      flag(water.reflections == vista_types::WaterReflections::Screen),
     ];
 
     let flora = &params.flora;
@@ -3104,6 +3133,29 @@ impl GpuContext {
     });
   }
 
+  /// Make sure the half-resolution scene copy that water reflects exists
+  /// at the internal render size.
+  fn ensure_reflection_target(&mut self) {
+    if self.reflection.is_some() {
+      return;
+    }
+
+    let view = default_view(&create_texture_2d(
+      &self.device,
+      "VistaWASM scene copy",
+      self.width.div_ceil(2),
+      self.height.div_ceil(2),
+      HDR_FORMAT,
+      wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    ));
+    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("VistaWASM reflection bind group"),
+      layout: &self.layouts.reflection,
+      entries: &[view_entry(0, &view)],
+    });
+    self.reflection = Some((view, bind_group));
+  }
+
   /// Make sure the off-screen target for the lens-drop pass matches the
   /// canvas.
   fn ensure_lens_target(&mut self) {
@@ -3189,6 +3241,7 @@ impl GpuContext {
     self.set_render_scale(params.render_scale);
     self.ensure_pipelines(&params.needs);
     self.ensure_cloud_target(params.clouds.resolution_scale);
+    self.ensure_reflection_target();
     // When the scene is rendered below the canvas resolution, or lens drops
     // refract it, the frame is drawn off-screen first and a final pass
     // upscales it (adding the drops); otherwise it goes straight to the
@@ -3607,11 +3660,56 @@ impl GpuContext {
       pass.draw(0..3, 0..1);
     }
 
+    // A half-resolution copy of the opaque scene and its depth, for water
+    // to reflect. Water is not in it, so water never reflects water. Its
+    // time counts towards the water pass.
+    let copy = match (self.water_visible, &self.reflection) {
+      (true, Some((copy_view, _))) => {
+        self
+          .pipelines
+          .render(PipelineKind::SceneCopy)
+          .map(|pipeline| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+              label: Some("VistaWASM scene copy pass"),
+              timestamp_writes: timing.map(|timer| wgpu::RenderPassTimestampWrites {
+                end_of_pass_write_index: None,
+                ..timer.render_writes(PASS_WATER)
+              }),
+              color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: copy_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                  load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                  store: wgpu::StoreOp::Store,
+                },
+              })],
+              depth_stencil_attachment: None,
+              ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            pass.set_bind_group(1, &self.world_bind_group, &[]);
+            pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+            pass.set_bind_group(
+              3,
+              &cloud_target.composite_bind_groups[cloud_target.current],
+              &[],
+            );
+            pass.draw(0..3, 0..1);
+          })
+      }
+      _ => None,
+    };
+
     // Transparent water on top, depth-tested against the opaque scene.
-    if self.water_visible {
+    if let (true, Some((_, reflection))) = (self.water_visible, &self.reflection) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM water pass"),
-        timestamp_writes: timing.map(|timer| timer.render_writes(PASS_WATER)),
+        timestamp_writes: timing.map(|timer| wgpu::RenderPassTimestampWrites {
+          beginning_of_pass_write_index: copy.is_none().then_some(PASS_WATER * 2),
+          ..timer.render_writes(PASS_WATER)
+        }),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &view,
           depth_slice: None,
@@ -3635,6 +3733,7 @@ impl GpuContext {
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
+      pass.set_bind_group(3, reflection, &[]);
       let ocean = if self.uniforms.sea_ice[0] > 0.5 {
         PipelineKind::SeaIceOcean
       } else {
@@ -3812,6 +3911,7 @@ impl GpuContext {
     // targets, so rebuild them on the next frame.
     self.cloud_target = None;
     self.lens_target = None;
+    self.reflection = None;
   }
 }
 
