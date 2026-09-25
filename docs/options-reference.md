@@ -188,7 +188,15 @@ for you (see [`docs/weather.md`](weather.md#cloud-types)).
 | `enabled` | `boolean?` | `true` | Rivers and lakes on or off. |
 | `minCatchmentKm2` | `number?` | `0.15` | Upstream area before a channel becomes a river. Smaller draws more, thinner streams. Must be `> 0`. |
 | `widthScale` | `number?` | `1` | Multiplier on the automatic width. Must be `> 0`. |
-| `currentSpeed` | `number?` | `1` | River current speed multiplier. |
+| `currentSpeed` | `number?` | `1` | River current speed multiplier. Must be `>= 0`. |
+| `snowmelt` | `number?` | `1` | How strongly snow fields and glaciers feed streams, `0` (none) to `2`. Streams also start at glacier snouts and at the lower edge of snowy peaks. |
+| `springs` | `boolean?` | `true` | Small springs at the foot of steep slopes. |
+| `meanders` | `number?` | `0.6` | Lowland meander strength, `0` (straight) to `1`. |
+| `waterfalls` | `boolean?` | `true` | Waterfalls, with mist and plunge pools, where rivers cross steps and cliffs. |
+
+`minCatchmentKm2` becomes a discharge threshold of 0.03 m³/s per km².
+See [`docs/water.md`](water.md#rivers-and-lakes-rivers) for how rivers
+form.
 
 ## `FloraOptions`
 
@@ -466,9 +474,42 @@ See [`docs/export-and-snapshots.md`](export-and-snapshots.md) for the full
 set of export helpers, including the ones with their own option types
 (`HeightmapImageOptions`, `TerrainObjExportOptions`).
 
+### `WaterMask` (for `engine.setWaterMask()`)
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `width`, `height` | `number` | `2` to `8192`. Resampled to the terrain's size, with a warning, when they differ. |
+| `data` | `Uint8Array` | `width × height` bytes, row-major, north row first: `0` no water, `1` to `127` a river brush (1 m to 60 m wide), `128` to `255` a lake. |
+
+A wrong type throws a `TypeError`; a wrong size or length a
+`VistaWasmError` with the code `OPTIONS_INVALID`. `null` removes the mask.
+See [`docs/water.md`](water.md#painted-water-setwatermask).
+
 ## Read-only shapes returned by the engine
 
 These are never passed *in* — the engine returns them.
+
+### `WaterSounds` (from `engine.getWaterSounds(x, y, z)`)
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `river` | `WaterSound \| null` | Running water within 400 m. |
+| `waterfall` | `WaterSound \| null` | A waterfall within 1500 m. |
+| `lakeShore` | `WaterSound \| null` | A lake shore within 400 m. |
+| `surf` | `WaterSound \| null` | Waves on the coast within 600 m. |
+
+Each `WaterSound` is `{ distanceMetres, loudness, position }`: the
+distance in metres, a loudness from 0 to 1 (the source's strength over its
+distance squared) and the source's world position `[x, y, z]`.
+
+### `Waterfall` (from `engine.getWaterfalls()`)
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `position` | `[number, number, number]` | Where the water lands, at the surface of its plunge pool. |
+| `heightMetres` | `number` | Height of the drop. |
+| `widthMetres` | `number` | Width of the falling water. |
+| `dischargeCubicMetresPerSecond` | `number` | Mean discharge. |
 
 ### `TerrainMetadata` (on `TerrainHandle.metadata`)
 

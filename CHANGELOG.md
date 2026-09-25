@@ -154,8 +154,35 @@ for changed defaults.
   rings the land with sea along a natural, wandering coastline, and
   `"open"` lets the land run to the map edge for tiling several maps. The
   demo's terrain section has an Edges select.
+- **Rivers, lakes and waterfalls.** Water is routed over the terrain
+  from rain, snowmelt and springs: glacier snouts and snow fields feed
+  streams, closed basins fill to their spill height as lakes that
+  overflow or, in dry climates, stay endorheic and salty. Channels take
+  their width, depth and speed from their discharge, meander on gentle
+  ground, leave oxbow lakes, fan into deltas at the sea, and drop over
+  steps as waterfalls into plunge pools, with a sheet, mist and churn.
+  Rivers show rapids, bends and sediment; lakes, rivers and waterfalls
+  freeze in cold climates. Banks darken with wet ground and mud, reeds
+  grow beside still water, and grass is greener near water. New
+  `RiverOptions.snowmelt`, `springs`, `meanders` and `waterfalls`.
+- **Painted water.** `setWaterMask(width, height, data)` carves the
+  rivers and lakes of a host's mask and draws them like the terrain's
+  own; clearing it restores the terrain exactly.
+- **Water sound hooks.** `getWaterSounds(x, y, z)` returns the nearest
+  river, waterfall, lake shore and surf with their loudness, and
+  `getWaterfalls()` lists every waterfall, for hosts that play their own
+  audio.
+- `FlyCameraControls.lookAt([x, y, z])` turns the camera towards a point.
+  The demo has snowmelt and meander sliders, springs and waterfalls
+  checkboxes, a button that jumps to a waterfall, and a water sounds
+  readout.
 
 ### Changed
+
+- River width now follows discharge instead of a fixed rule, rivers
+  depend on the climate's rain and snow, and river-bed samples are no
+  longer classified as sand or mud; wet banks show mud instead.
+- Terrain generation reports a `"rivers"` progress phase.
 
 - **Fractal terrain is geology-led.** Continents with an exact land
   fraction and uplifted ranges are carved by a stream-power model into

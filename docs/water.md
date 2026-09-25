@@ -1,12 +1,15 @@
 # Water
 
-VistaWASM draws three kinds of water, all shaded by `shaders/water.wgsl`:
+VistaWASM draws four kinds of water, all shaded by `shaders/water.wgsl`:
 
 - **Ocean** — a camera-following grid at `seaLevelMetres` that reaches the
   horizon, displaced by a simulated Gerstner swell.
-- **Rivers** — ribbons traced along the terrain's own drainage network and
-  carved into the terrain, with an animated current that runs downstream.
-- **Lakes** — flat water filling closed basins in the terrain.
+- **Rivers** — fed by rain, snowmelt and springs, running in channels
+  shaped into the terrain, with a current that runs downstream.
+- **Lakes** — filling basins to their spill height and overflowing into
+  the rivers below them.
+- **Waterfalls** — where a river drops over a step, with mist and a
+  churned plunge pool.
 
 For the exact field list, see
 [`docs/options-reference.md`](options-reference.md#wateroptions).
@@ -75,25 +78,236 @@ across open water and lakes. Rivers carry their own current (below).
 
 ## Rivers and lakes (`rivers`)
 
-When a terrain is installed (and whenever `rivers` changes), the engine:
+Rivers come from the water draining the land. When a terrain is
+installed, and whenever `rivers` or the water mask changes, the engine
+routes water over the finished heights (after erosion, glaciers and any
+painted water) on a grid at full terrain resolution up to 1024 samples
+per side. The river build is reported as the `"rivers"` progress phase;
+at 512 × 512 it takes about 100 to 250 ms in the browser.
 
-1. Fills closed depressions with a priority-flood. Filled basins with real
-    depth become lakes; tiny pits stay dry.
-2. Routes flow downhill and accumulates upstream catchment area.
-3. Traces every channel whose catchment exceeds `minCatchmentKm2` into a
-    smoothed polyline running to the sea or into a larger river.
-4. Carves the channel into the heightmap, so the river sits in a real bed
-    with sloping banks, and marks the bed as sand and mud for the biome map.
-5. Builds a ribbon whose width grows with catchment (`widthScale`) and
-    whose vertices carry the flow direction and speed. Steep reaches run
-    fast and turn white with rapids; flat lowland reaches drift slowly.
+### Sources
 
-The water surface never runs uphill. Carving is fully reversible: turning
-rivers off restores the original heights exactly, and `exportHeightmap()`
-returns the carved terrain while rivers are on.
+- **Rain.** Every sample adds runoff from its precipitation: 300 mm a
+    year in the driest climates to 3000 mm in the wettest, from the
+    climate's moisture. Runoff is accumulated downhill into a mean
+    discharge in m³/s.
+- **Snowmelt.** Snow fields and glaciers add `snowmelt` × snow × 0.6 m of
+    water a year. Glacier snouts (where meltwater leaves the ice) and the
+    lower edge of each snowy-peak field start streams of their own, even
+    where too little water has gathered yet. Water runs on under glacier
+    ice: nothing is drawn or carved on the ice itself.
+- **Springs.** Where steep ground (over 20 degrees) meets gentle ground
+    (under 8 degrees) in a hollow draining more than 0.05 km², a small
+    spring (0.02 m³/s) starts a stream. Springs are placed by the terrain
+    and at most one per 600 m. `springs: false` turns them off.
+- A sample becomes a channel when its discharge reaches
+    `minCatchmentKm2` × 0.03 m³/s per km², about the flow of that
+    catchment in an average climate.
 
-Rivers are extracted on a grid of at most 512 × 512 samples, so the cost is
-bounded (tens of milliseconds) regardless of terrain size.
+With biomes switched off, rain and snow follow the default climate.
+
+### Lakes
+
+Every basin is filled to its spill height. A basin with at least 24
+samples, or deeper than 1.5 m, becomes a lake whose surface is its spill
+height. Its outlet river starts at the lowest point of its rim, so rivers
+never end in a dead end. Where evaporation (warmer and drier climates
+evaporate more) takes all the inflow, the lake keeps its water with no
+outlet: an endorheic lake, as in a desert basin. Every channel ends at the
+sea, at a lake, or at the map edge.
+
+### Channel form
+
+The channels follow the valleys erosion carved; the river build only
+shapes their beds and banks:
+
+- **Width and depth** grow with discharge: width 2.7 √Q × `widthScale`
+    and depth 0.35 Q⁰·⁴ metres, both from 0.6 to 400 m. A small island
+    stream carries a few litres a second and is under a metre wide; a
+    large lowland river is tens of metres wide.
+- **The bed never rises downstream**, and is smoothed along the river
+    except across waterfall steps.
+- **Cross-section.** In steep valleys (over 6 %) the channel is a narrow
+    V; on gentle ground (under 2 %) it is flat-bottomed, with a floodplain
+    four widths wide on each side levelled towards the bank; in between
+    it blends.
+- **Meanders.** On lowland reaches flatter than 1.5 % and wider than 4 m,
+    the river swings in Kinoshita curves, 11 widths long and up to 2.5
+    widths wide times `meanders`. The sharpest tenth of the loops leave
+    oxbow lakes beside the river.
+- **Deltas.** A river wider than 8 m meeting the sea on ground flatter
+    than 0.5 % splits into two or three distributaries fanning out at
+    ±25 degrees over its last eight widths, with a low fan of silt, 0.5 m
+    above the sea, deposited between them.
+- **Waterfalls** form where the bed drops more than 3 m (or 1.5 widths)
+    within two samples far more steeply than the reach around it, or runs
+    steeper than 35 degrees. A long steep run becomes a staircase of steps
+    of at most two samples each, with pools between them, as steep
+    mountain streams are. Steps under 3 m become rapids. Each fall has a
+    plunge pool 0.3 × its height + its width across and 0.15 × its
+    height deep. `waterfalls: false` keeps the channel draped over the
+    step instead.
+
+Every change is recorded, so turning rivers off (or clearing the water
+mask) restores the original heights exactly, and `exportHeightmap()`
+returns the shaped terrain while rivers are on.
+
+### Flowing water
+
+- **Ribbons** are 1.3 channel widths wide, and fade out where the water
+    is shallower than 25 cm, so banks meet the water with no edge.
+- **Speed** comes from Manning's equation, `v = R^(2/3) S^(1/2) / n`
+    with n = 0.035 and R the depth, from 0.2 to 6 m/s, times
+    `currentSpeed`. It moves the ripples downstream at the water's speed.
+- **Ripples** are glassy under 0.5 m/s and small and choppy above 2 m/s.
+- **Rapids** on slopes of 2 to 8 % (and below small steps) carry standing
+    waves fixed in place, and whitewater that grows with speed above
+    1.5 m/s.
+- **Bends** run faster, with more foam, on the outer bank.
+- **Clarity.** Shallow water shows the bed; fast rivers carry silt that
+    clouds and browns them.
+- **Snowmelt fullness.** Where the camera is warmer, rivers run faster
+    and foamier and rise up to a fifth of their depth in their channels;
+    where it is cold they run slow and low.
+
+### Waterfalls
+
+Each waterfall has:
+
+- **a sheet** following the path of water leaving the lip, `x = v t` and
+    `y = -g t² / 2`, 12 rows down and at least three across, pushed out to
+    lie just over the rock where the face is not vertical;
+- **streaks** falling at the impact speed, `√(2 g drop)`, breaking up into
+    aerated white water towards the foot, thin at the edges, and lit
+    through from behind when the sun is beyond it;
+- **mist**: 16 to 64 camera-facing sprites rising and drifting downwind
+    from the foot, soft where they meet the ground, and not drawn beyond
+    1.5 km;
+- **a plunge pool** of churned foam in rings spreading from the foot.
+
+`engine.getWaterfalls()` lists every waterfall, where its water lands:
+
+```ts
+const [fall] = engine.getWaterfalls();
+
+if (fall) {
+  const [x, y, z] = fall.position;
+  const back = fall.heightMetres * 3;
+  engine.setCamera({
+    position: [x + back, y + fall.heightMetres * 0.5, z],
+    target: [x, y + fall.heightMetres * 0.4, z],
+    fieldOfViewDegrees: 55
+  });
+}
+```
+
+### Frozen water
+
+Lakes, rivers and waterfalls follow the climate (see
+[`docs/biomes.md`](biomes.md#climate-temperature)):
+
+- **Lakes** freeze where the temperature at their outlet is below 0 °C,
+    fully at -2 °C, shallow margins first. Lake ice is drawn as great
+    smooth sheets meeting at pressure cracks, under snow that deepens as
+    it gets colder and is blown thin in patches of clear, dark ice. No
+    ripples, flow or foam show through it.
+- **Rivers** freeze below -5 °C, fully at -7 °C: snow-dusted ice with open
+    dark leads over the fastest water (over 2 m/s).
+- **Waterfalls** below -8 °C become icefalls: still, blue-white ice ribbed
+    down the fall line, with no mist, no churned pool and no sound.
+
+A map with no water below 0 °C pays nothing for any of this.
+
+```ts
+engine.setBiomes({ meanTemperatureCelsius: -18 });
+```
+
+### Wet banks and reeds
+
+Within 6 m of a river, lake or waterfall the ground darkens by up to
+35 %, turns glossy, and gentle banks turn to mud. Within 12 m grass grows
+denser and greener (when grass is on), and beside lakes, oxbows and
+rivers slower than 0.6 m/s, in temperate and warm climates, reeds 1.4 to
+2.2 m tall grow in the same wind.
+
+### Painted water (`setWaterMask`)
+
+`engine.setWaterMask(mask)` paints rivers and lakes into the terrain,
+which carves and draws them like its own. Each byte of `mask.data` is one
+sample, row-major, north row first:
+
+- `0`: no water;
+- `1` to `127`: a river brush, `1` painting a river 1 m wide and `127` one
+    60 m wide (or wider, where its discharge asks for it);
+- `128` to `255`: a lake or pond.
+
+Painted lakes are flattened into basins below their rim, `max(1.5 m,
+0.05 × √area)` deep, and fill to their lowest rim point, where their
+outlet joins the drainage. Painted river strokes are thinned to
+centrelines, run downhill from their higher end (towards the nearer sea
+or lake when both ends are level), are cut with the same channel form,
+and join the natural network; natural streams end where they reach
+painted water. Painted water always wins over generated water.
+
+A mask of another size is resampled to the terrain (the nearest value
+decides between no water, river and lake; river strength is
+interpolated), with a `"warning"` event. The mask stays through
+`setWater()` and is cleared when new terrain loads. `null` removes it and
+restores the terrain exactly.
+
+```ts
+const width = 512;
+const height = 512;
+const data = new Uint8Array(width * height);
+
+// A 20 m wide river across the middle, and a round pond.
+for (let x = 100; x < 400; x += 1) {
+  data[256 * width + x] = 40;
+}
+
+for (let y = 0; y < height; y += 1) {
+  for (let x = 0; x < width; x += 1) {
+    if (Math.hypot(x - 380, y - 140) < 25) {
+      data[y * width + x] = 255;
+    }
+  }
+}
+
+engine.setWaterMask({ width, height, data });
+// Later: remove it and restore the terrain.
+engine.setWaterMask(null);
+```
+
+A wrong type throws a `TypeError`; a wrong size or data length throws a
+`VistaWasmError` with the code `OPTIONS_INVALID`.
+
+### Sound hooks
+
+`engine.getWaterSounds(x, y, z)` returns the loudest river, waterfall,
+lake shore and surf near a position, for your own audio. Each is
+`{ distanceMetres, loudness, position }`, or `null` when there is none
+within 400 m (rivers and lake shores), 1500 m (waterfalls) or 600 m
+(surf). Loudness runs from 0 to 1, from the source's strength over its
+distance squared: river strength is speed × width, waterfall strength
+discharge × drop, surf strength the wave height. Frozen water is silent.
+A query reads only the grid cells around the position and costs a few
+microseconds, so it can run every frame; VistaWASM plays no audio itself.
+
+```ts
+const audio = new AudioContext();
+const river = new Audio("river-loop.ogg");
+river.loop = true;
+const gain = audio.createGain();
+audio.createMediaElementSource(river).connect(gain).connect(audio.destination);
+await river.play();
+
+// `controls` from attachFlyCameraControls(), or your own camera.
+engine.on("stats", () => {
+  const [x, y, z] = controls.getCamera().position;
+  const sounds = engine.getWaterSounds(x, y, z);
+  gain.gain.setTargetAtTime(sounds.river?.loudness ?? 0, audio.currentTime, 0.2);
+});
+```
 
 ## Shading
 
@@ -104,8 +318,8 @@ bounded (tens of milliseconds) regardless of terrain size.
   sky pass, including cloud reflections, plus a GGX sun glitter.
   `reflectivity` scales reflection strength.
 - **Subsurface light** glows through thin wave crests facing the sun.
-- **Foam** appears on folding crests, along shorelines, and in rapids,
-  scaled by `foam`.
+- **Foam** appears on folding crests, along shorelines, in rapids, on the
+  outer bank of bends and in plunge pools, scaled by `foam`.
 - **Cloud shadows** and fog apply to water like everything else.
 
 ## Sea ice
@@ -137,8 +351,9 @@ frozen solid to the shore for 200 m out.
 - **Calm.** Waves, ripples, and foam die down as the concentration rises.
     Where the ice is solid, the water beneath is not shaded at all.
 
-Sea ice only forms on the ocean, not on rivers or lakes. A map whose sea
-never freezes pays nothing for it.
+Sea ice forms on the ocean; lakes, rivers and waterfalls freeze by their
+own rules (see [Frozen water](#frozen-water)). A map whose sea never
+freezes pays nothing for sea ice.
 
 ```ts
 engine.setBiomes({ meanTemperatureCelsius: -12 });
@@ -164,4 +379,7 @@ settings. See [`docs/weather.md`](weather.md).
   [`docs/game-development.md`](game-development.md#querying-terrain-height-for-gameplay))
   against `seaLevelMetres` yourself.
 - No reflections of scene geometry; reflections show the sky and clouds.
-- Rivers do not change sea level or flood terrain.
+- Rivers do not change sea level or flood terrain: discharge is a yearly
+  mean, with no floods or droughts.
+- No audio playback; `getWaterSounds()` tells your own audio where the
+  water is.

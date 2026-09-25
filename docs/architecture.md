@@ -113,17 +113,41 @@ When the engine is created, and never again:
 1. Glaciers raise the ground they cover towards a smooth ice surface, by
     at most 40 m (`terrain/glaciers.rs`). Every raised sample is recorded
     so it can be restored exactly.
-2. Rivers and lakes are extracted from the drainage network and carved
-    into the heightmap (reversibly; see [`docs/water.md`](water.md)).
-3. Normals and the biome/surface map are baked
-    (`terrain/biomes.rs::classify_surface`).
-4. The LOD terrain mesh, tree and grass instances, river geometry, a
-    height texture (for water depth), and the surface texture are
-    uploaded.
+2. When water and rivers (or a water mask) are on, the river build runs
+    (the `"rivers"` progress phase; see [`docs/water.md`](water.md)):
+    1. the surface is classified once, before any channel is cut, for the
+        climate's rain, snow and temperature;
+    2. a painted water mask flattens its lakes and yields its river
+        centrelines (`terrain/water_mask.rs`);
+    3. hydrology (`terrain/hydrology.rs`) routes water on a flow grid at
+        full resolution up to 1024 per side: a priority flood fills
+        basins to their spill height, discharge is accumulated from rain,
+        snowmelt and springs, lakes overflow or stay endorheic, channels
+        are marked, and the network is split into streams, main stems
+        first;
+    4. the channel stage (`terrain/channels.rs::condition_channels`)
+        shapes beds and banks: hydraulic geometry, a level that never
+        rises, V or floodplain cross-sections, meanders and oxbows,
+        deltas, waterfall steps and plunge pools;
+    5. geometry is built (`render/water.rs`): river ribbons, lake and
+        oxbow surfaces and plunge pools in one buffer, waterfall sheets and
+        mist in another; then the wet-bank field and the sound map
+        (`water_sounds.rs`).
 
-`setBiomes` and changing `WaterOptions.rivers` restore the carving and
-the glaciers, in that order, and repeat all four steps. Other setters
-only change uniforms.
+    Every changed sample (mask, channels, pools, delta fans) is recorded
+    in one `CarveRecord`, so the terrain can be restored exactly.
+3. Normals and the biome/surface map are baked
+    (`terrain/biomes.rs::classify_surface`). After a river build, only
+    the samples within two samples of a change or a channel are classified
+    again (`reclassify_surface`), which gives the same result as a full
+    pass.
+4. The LOD terrain mesh, tree and grass instances, river and waterfall
+    geometry, a height texture (for water depth), and the surface
+    textures are uploaded.
+
+`setBiomes`, `setWaterMask` and changing `WaterOptions.rivers` restore the
+carving and the glaciers, in that order, and repeat all four steps. Other
+setters only change uniforms.
 
 ### The surface texture
 
@@ -220,11 +244,18 @@ Each terrain vertex is 36 bytes:
     the HDR target, depth, and upsampled clouds, draws sky and sun, applies
     haze and mist along each pixel's true view ray, adds rain and snow, and
     tone maps (ACES).
-8. **Water pass** (`shaders/water.wgsl`): ocean grid, rivers, and lakes,
-    depth-tested against the opaque scene, alpha-blended, fogged, and tone
-    mapped in the same way. The pass has two pipelines from the same
-    shader: one with sea ice, and one compiled with the `SEA_ICE`
-    override constant off, drawn whenever no sea can freeze.
+8. **Water pass** (`shaders/water.wgsl`): the ocean grid, then rivers,
+    lakes and plunge pools, then waterfall sheets and mist, depth-tested
+    against the opaque scene, alpha-blended, fogged, and tone mapped in
+    the same way. The ocean draws with one of two pipelines from the same
+    shader: one with sea ice, and one compiled with the `SEA_ICE` override
+    constant off, drawn whenever no sea can freeze. Rivers and lakes draw
+    with a third, compiled with the `INLAND` constant on, so the ocean's
+    pipelines contain no river, pool or lake-ice code and the inland one
+    no waves or sea ice. Waterfalls draw with a fourth, with their own
+    fragment entry point (`fragment_fall`). Frozen water and waterfalls
+    are also behind uniform guards (`frame.rivers`), so maps without them
+    skip that code.
 9. **Present pass** (`shaders/atmosphere.wgsl`, `present_main`), only when
     the scene is rendered below the canvas resolution or lens drops are on.
     Steps 5 to 8 then draw into an off-screen image at the render scale,

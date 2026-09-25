@@ -94,7 +94,8 @@ controller while a settings panel is focused.
 
 The returned `FlyCameraControls` handle exposes `getCamera()`,
 `getMoveSpeed()`, `getFieldOfView()`, `setPosition(position)` (teleport
-without changing look direction), and `dispose()` (removes every event
+without changing look direction), `lookAt(target)` (turn to face a world
+position without moving), and `dispose()` (removes every event
 listener and stops the internal animation loop — always call this when the
 canvas is removed or controls should stop, to avoid leaking event
 listeners).
