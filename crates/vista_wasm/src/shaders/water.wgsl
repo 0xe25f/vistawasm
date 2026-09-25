@@ -455,7 +455,10 @@ fn frozen_surface(
 ) -> vec4<f32> {
   let river = in.kind == KIND_RIVER;
   let celsius = in.extra.w;
-  let concentration = freeze_fraction(celsius, select(0.0, -5.0, river));
+  // Lakes start to freeze at 0 °C, rivers at -5 °C and the churned pools
+  // below waterfalls, with their falls, at -8 °C.
+  let start = select(select(0.0, -8.0, in.kind == KIND_POOL), -5.0, river);
+  let concentration = freeze_fraction(celsius, start);
 
   if (concentration <= 0.001) {
     return vec4<f32>(0.0);
@@ -635,7 +638,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   if (INLAND && falls_possible() && in.kind == KIND_POOL) {
     let r = in.across;
     let outward = normalize(in.flow + vec2<f32>(1.0e-5, 0.0));
-    let energy = saturate(sqrt(max(in.extra.y * in.extra.w, 0.0)) * 0.25 + 0.3);
+    let energy = saturate(sqrt(max(in.extra.y, 0.0)) * 0.25 + 0.3);
     let lod = texture_lod(footprint, 5.0);
     let pool_a = textureSampleLevel(water_texture, linear_sampler, in.rest_xz / 5.0 - outward * flow_phase_0 * 1.5, lod);
     let pool_b = textureSampleLevel(water_texture, linear_sampler, in.rest_xz / 5.0 - outward * flow_phase_1 * 1.5 + vec2<f32>(0.5, 0.5), lod);
@@ -646,7 +649,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     churn = saturate((rings * 0.7 + (1.0 - smoothstep(0.0, 0.45, r))) * pool.b * 1.6) * energy;
 
     if (freezing_possible()) {
-      churn = churn * (1.0 - freeze_fraction(in.extra.z, -8.0));
+      churn = churn * (1.0 - freeze_fraction(in.extra.w, -8.0));
     }
   }
 
@@ -797,20 +800,21 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       alpha_out = alpha_out * (1.0 - smoothstep(0.7, 1.0, abs(in.across)));
     }
 
+    if (INLAND && freezing_possible() && (in.kind == KIND_LAKE || river || in.kind == KIND_POOL)) {
+      let frozen = frozen_surface(in, position, depth, flow_speed, pixel_footprint, distance);
+      colour = mix(colour, frozen.rgb, frozen.a);
+      alpha_out = mix(alpha_out, smoothstep(0.0, 0.25, depth), frozen.a);
+    }
+
     // A pool holds water only in its bowl, `extra.x` deep at the centre
     // and rising to the rim: where the ground drops away below the bowl (a
     // pool smaller than a heightmap sample, on a slope) the water would
-    // have drained, so it fades out, and it fades towards the rim.
+    // have drained, so it fades out, and it fades towards the rim, frozen
+    // or not.
     if (INLAND && in.kind == KIND_POOL) {
       let bowl = in.extra.x * (1.0 - in.across * in.across);
       alpha_out = alpha_out * (1.0 - smoothstep(bowl + 0.3, bowl + 1.0, depth))
         * (1.0 - smoothstep(0.6, 1.0, in.across));
-    }
-
-    if (INLAND && freezing_possible() && (in.kind == KIND_LAKE || river)) {
-      let frozen = frozen_surface(in, position, depth, flow_speed, pixel_footprint, distance);
-      colour = mix(colour, frozen.rgb, frozen.a);
-      alpha_out = mix(alpha_out, smoothstep(0.0, 0.25, depth), frozen.a);
     }
   }
 

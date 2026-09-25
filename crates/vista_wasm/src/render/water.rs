@@ -88,8 +88,9 @@ pub struct WaterVertex {
   pub params: [f32; 3],
   /// Rivers: slope, curvature (-1 to 1), depth (metres), °C. Lakes:
   /// unused, unused, depth, °C. Falls: metres travelled down the sheet,
-  /// sheet length, °C, height. Pools: radius, fall height, °C,
-  /// discharge. Mist: fall height, discharge, °C, pool radius.
+  /// sheet length, °C, height. Pools: bowl depth, fall height times
+  /// discharge, unused, °C. Mist: fall height, discharge, °C, pool
+  /// radius.
   pub extra: [f32; 4],
 }
 
@@ -940,7 +941,9 @@ fn add_fall(
   };
   let held = (level - (fall.foot_level - fall.pool_depth)).max(0.0);
   let centre = network.vertices.len() as u32;
-  let pool = [held, height, fall.celsius, fall.discharge];
+  // Bowl depth, the fall's energy (drop times discharge) and, where
+  // frozen water expects it, the temperature.
+  let pool = [held, height * fall.discharge, 0.0, fall.celsius];
   network.vertices.push(WaterVertex {
     position: [foot[0], surface(fall.foot[0], fall.foot[1]) + 0.02, foot[1]],
     flow: [0.0, 0.0],
@@ -1238,12 +1241,18 @@ mod tests {
 
     // No part of a pool stands clear of the ground: at most a film over
     // it, or, towards the outlet, the depth of the stream leaving it.
+    let outlet = network
+      .falls
+      .iter()
+      .map(|fall| channel_depth(fall.discharge))
+      .fold(0.0, f32::max);
+
     for vertex in pools {
       let x = (vertex.position[0] + half) / 2.0;
       let y = (vertex.position[2] + half) / 2.0;
       let ground = height_at(&map, x, y).max(mesh_height_at(&map, x, y));
       let above = vertex.position[1] - ground;
-      let allowed = POOL_FILM_METRES + channel_depth(vertex.extra[3]) + 0.03;
+      let allowed = POOL_FILM_METRES + outlet + 0.03;
 
       assert!(
         above <= allowed,

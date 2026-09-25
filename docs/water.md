@@ -218,7 +218,8 @@ Lakes, rivers and waterfalls follow the climate (see
 - **Rivers** freeze below -5 °C, fully at -7 °C: snow-dusted ice with open
     dark leads over the fastest water (over 2 m/s).
 - **Waterfalls** below -8 °C become icefalls: still, blue-white ice ribbed
-    down the fall line, with no mist, no churned pool and no sound.
+    down the fall line, with no mist and no sound, over a pool frozen
+    like a lake's ice.
 
 A map with no water below 0 °C pays nothing for any of this.
 
