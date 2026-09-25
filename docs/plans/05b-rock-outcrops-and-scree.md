@@ -251,7 +251,8 @@ rebuild at height-map resolution.
     - snow still buries all but the steepest rock;
     - sea-bed rock is still reduced;
     - plan 2's tundra stoniness stays.
-- **Scree** (a new material, `MAT_SCREE = 10`, using reserved slot 10):
+- **Scree** (a new material, `MAT_SCREE = 11`, using reserved slot 11;
+    plan 3b gives slot 10 to gravel):
     - For each outcrop sample, walk 2 to 8 samples down the steepest
         descent (plan 3's D8 receivers). While the slope stays over 25
         degrees, deposit scree weight that falls off with distance.
@@ -259,8 +260,8 @@ rebuild at height-map resolution.
         the talus cone.
     - Scree also covers `alpineTransition` ground at 0.2 to 0.5,
         replacing part of today's plain rock there.
-    - Update `MATERIAL_COUNT` usage and the materials debug view. Slot
-        11 stays reserved.
+    - Update `MATERIAL_COUNT` usage and the materials debug view. No
+        reserved slots remain.
 - Keep the old rule as a reference only in a test. The new rule must
     produce broadly similar total rock on mountains (within ±30 %), but in
     structured places.
@@ -274,8 +275,9 @@ UV derivatives).
 - **Scree texture:** generate it in `texture_gen.wgsl` as a new terrain
     layer: angular gravel and cobbles, 2 to 30 cm, with contact shadows
     and a height channel. Raise `TERRAIN_LAYERS` and
-    `TERRAIN_TEXTURE_LAYERS` to 11, and update `replaceTexture` layer
-    validation and `docs/hooks.md` (layers 0 to 10).
+    `TERRAIN_TEXTURE_LAYERS` to 12 (plan 3b took them to 11 for gravel),
+    and update `replaceTexture` layer validation and `docs/hooks.md`
+    (layers 0 to 11).
 - **Macro joints:** a second, low-frequency rock pattern at 6 to 20 m.
     - It is Voronoi-based blocky joint planes, taken from the noise
         texture's Worley channel and stretched along the strata direction.
@@ -366,8 +368,8 @@ export interface SurfaceOptions {
 ```
 
 - Validate them in `config.rs`.
-- `materialTints` gains a ninth, tenth and eleventh entry (ice, tundra,
-    scree) if it doesn't already cover them. Extend the docs list.
+- `materialTints` gains a twelfth entry (scree), after plan 3b's
+    eleventh (gravel), if it doesn't already cover them. Extend the docs list.
 - Demo, surface section: a "Rockiness" slider (0 to 2, readout), a
     "Boulders" checkbox, and a "Boulder distance" select (150, 300,
     600 m).

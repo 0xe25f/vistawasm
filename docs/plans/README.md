@@ -15,6 +15,7 @@ check it is there.
 | 2 | [Ice and arctic biome](02-ice-arctic-biome.md) | `iceArctic`: glaciers, tundra fringe, sea ice and permanent snow, driven by climate temperature. |
 | 2b | [Course correction](02b-course-correction.md) | Sea-ringed map edges and a skirt beyond them, real alpine relief, realistic pack ice, stretched-snow fix, configurable lens drops that are never cut off, and a like-for-like performance gate. |
 | 3 | [Rivers, lakes and waterfalls](03-rivers-lakes-and-waterfalls.md) | Erosion-coupled drainage from rain, snowmelt, springs and overflowing lakes; flowing water, real waterfalls, wet banks and audio queries. |
+| 3b | [Rivers at landscape scale](03b-rivers-at-landscape-scale.md) | Big rivers fed from beyond the map, screen-space reflections, gravel bars and stones, rock-walled rapids, green banks, small streams at their true size, falls and pools at their size, and a faster first load. |
 | 4 | [Tree placement](04-tree-placement.md) | Trees on the rendered ground at every distance, and ecological placement rules. |
 | 5 | [Vegetation density](05-vegetation-density.md) | Closed-canopy forests and full grass cover at 60 FPS: streamed placement, a far canopy layer and a forest floor. |
 | 5b | [Rock outcrops and scree](05b-rock-outcrops-and-scree.md) | Rock where soil is thin, in banded crags and ledges; jointed, lichened, streaked stone; scree fans and grounded boulders below outcrops. |
@@ -30,7 +31,7 @@ and the rule that nothing is signed as AI-written: no `Co-Authored-By:
 Claude` lines, no "Generated with Claude Code" footers and no session
 links, in commits, pull requests, code or docs.
 
-Budgets across all eleven plans, measured at 1920 x 1080 on a mid-range
+Budgets across all the plans, measured at 1920 x 1080 on a mid-range
 GPU:
 
 - Default scene: at most 12 ms of GPU time per frame. Rain or storm: at
