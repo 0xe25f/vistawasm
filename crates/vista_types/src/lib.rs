@@ -577,6 +577,16 @@ pub struct RiverOptions {
   pub width_scale: f32,
   /// Current speed multiplier for river flow animation.
   pub current_speed: f32,
+  /// How strongly snow fields and glaciers feed streams: 0 turns
+  /// snowmelt off, 1 is a typical melt, 2 doubles it. Streams also start
+  /// at glacier snouts and at the lower edge of snowy peaks.
+  pub snowmelt: f32,
+  /// Whether small springs rise at the foot of steep slopes.
+  pub springs: bool,
+  /// Lowland meander strength, from 0 (straight) to 1.
+  pub meanders: f32,
+  /// Whether rivers crossing cliffs become waterfalls.
+  pub waterfalls: bool,
 }
 
 impl Default for RiverOptions {
@@ -586,6 +596,10 @@ impl Default for RiverOptions {
       min_catchment_km2: 0.15,
       width_scale: 1.0,
       current_speed: 1.0,
+      snowmelt: 1.0,
+      springs: true,
+      meanders: 0.6,
+      waterfalls: true,
     }
   }
 }

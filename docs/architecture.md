@@ -73,8 +73,9 @@ the numbers each stage uses.
 Finally, minor summits are levelled, specks of land drowned and small pits
 filled, so the map drains. Heights are stored in metres; metadata records
 scale, sea level, source, and warnings. No-data samples are kept in a mask.
-Stages report `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"` and
-`"finishing"` progress to the JavaScript `"progress"` event.
+Stages report `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"`,
+`"finishing"` and, inside it, `"rivers"` progress to the JavaScript
+`"progress"` event.
 
 ## DEM Loading
 

@@ -565,6 +565,8 @@ pub struct GpuContext {
   grass_base_vertex_buffer: wgpu::Buffer,
   ocean: IndexedMesh,
   rivers: Option<IndexedMesh>,
+  /// Waterfall sheets, mist and plunge pools, drawn after the rivers.
+  falls: Option<IndexedMesh>,
   water_visible: bool,
   uniforms: FrameUniforms,
   last_time: f32,
@@ -1197,10 +1199,11 @@ const GRASS_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_
   5 => Float32,
 ];
 
-const WATER_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+const WATER_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
   0 => Float32x3,
   1 => Float32x2,
   2 => Float32x3,
+  3 => Float32x4,
 ];
 
 fn tree_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
@@ -1752,6 +1755,7 @@ impl GpuContext {
       grass_base_vertex_buffer,
       ocean,
       rivers: None,
+      falls: None,
       water_visible: false,
       uniforms,
       last_time: 0.0,
@@ -2285,6 +2289,19 @@ impl GpuContext {
       bytemuck::cast_slice(vertices),
       indices,
     ));
+  }
+
+  /// Upload waterfall geometry, replacing any previous buffers.
+  pub fn upload_falls(&mut self, vertices: &[WaterVertex], indices: &[u32]) {
+    self.falls = (!vertices.is_empty() && !indices.is_empty()).then(|| {
+      indexed_mesh(
+        &self.device,
+        &self.queue,
+        "VistaWASM waterfalls",
+        bytemuck::cast_slice(vertices),
+        indices,
+      )
+    });
   }
 
   /// Show or hide all water.
@@ -3217,7 +3234,10 @@ impl GpuContext {
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
 
-      for mesh in std::iter::once(&self.ocean).chain(self.rivers.iter()) {
+      for mesh in std::iter::once(&self.ocean)
+        .chain(self.rivers.iter())
+        .chain(self.falls.iter())
+      {
         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..mesh.index_count, 0, 0..1);

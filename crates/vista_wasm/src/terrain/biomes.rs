@@ -530,22 +530,22 @@ pub fn snow_line_metres(map: &HeightMap, options: &BiomeOptions) -> f32 {
     .unwrap_or(sea + relative.max(MIN_AUTOMATIC_SNOW_LINE_METRES))
 }
 
-/// Classify every heightmap sample into a biome and surface materials.
-///
-/// `normals` must be the per-sample normals for `map`. `river_mask`, when
-/// present, marks samples that sit under a river channel.
-pub fn classify_surface(
+fn classify_into(
   map: &HeightMap,
   normals: &[Vec3],
   river_mask: Option<&[bool]>,
   options: &BiomeOptions,
-) -> Vec<SurfaceSample> {
+  only: Option<&[usize]>,
+  samples: &mut Vec<SurfaceSample>,
+) {
   let width = map.metadata.width;
   let height = map.metadata.height;
   let count = (width as usize) * (height as usize);
 
   if count == 0 || normals.len() != count {
-    return vec![SurfaceSample::default(); count];
+    samples.clear();
+    samples.resize(count, SurfaceSample::default());
+    return;
   }
 
   let (sea, range) = relief(map);
@@ -559,274 +559,326 @@ pub fn classify_surface(
   let beach = options.beach_height_metres.max(0.5);
   let metres_per_sample = map.metadata.metres_per_sample.max(0.001);
   let detail_seed = options.seed_offset ^ 0x0f0f_1234;
-  let mut samples = Vec::with_capacity(count);
+  let classify = |x: u32, y: u32| -> SurfaceSample {
+    let index = (y * width + x) as usize;
+    let h = map.heights[index];
+    let normal = normals[index];
+    let steep = (1.0 - normal[1]).clamp(0.0, 1.0);
+    let rel = ((h - sea) / range).clamp(0.0, 1.0);
+    let above_sea = h - sea;
+    let (base_temperature, base_moisture, noise) = climate.sample(x, y);
+    let lowland = (1.0 - rel).powi(3);
+    // The sea surface is at sea level, whatever the depth of the bed.
+    let celsius = local_celsius(options, noise, above_sea, rel, range);
+    let temperature = if options.enabled && options.mean_temperature_celsius.is_some() {
+      celsius_to_unit(celsius).clamp(0.0, 1.0)
+    } else {
+      (base_temperature - rel * 0.62).clamp(0.0, 1.0)
+    };
+    let slope = slope_degrees(normal);
+    let gate = cold_gate(options);
+    let climate_wetness = climate_moisture(base_moisture, rel);
+    let cold = if h < sea - 0.3 || gate <= 0.0 {
+      ColdGround::None
+    } else {
+      cold_ground(celsius, slope, climate_wetness)
+    };
+    // A little high-frequency jitter keeps biome borders organic rather
+    // than following the smooth climate contours exactly.
+    let jitter = hash_noise(detail_seed, x as i32 / 3, y as i32 / 3) * 0.035
+      + value_noise(detail_seed, x as f32 * 0.09, y as f32 * 0.09) * 0.05;
+    let is_river = river_mask.is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
+    let moisture =
+      (base_moisture + lowland * 0.12 + jitter + if is_river { 0.1 } else { 0.0 }).clamp(0.0, 1.0);
 
-  for y in 0..height {
-    for x in 0..width {
-      let index = (y * width + x) as usize;
-      let h = map.heights[index];
-      let normal = normals[index];
-      let steep = (1.0 - normal[1]).clamp(0.0, 1.0);
-      let rel = ((h - sea) / range).clamp(0.0, 1.0);
-      let above_sea = h - sea;
-      let (base_temperature, base_moisture, noise) = climate.sample(x, y);
-      let lowland = (1.0 - rel).powi(3);
-      // The sea surface is at sea level, whatever the depth of the bed.
-      let celsius = local_celsius(options, noise, above_sea, rel, range);
-      let temperature = if options.enabled && options.mean_temperature_celsius.is_some() {
-        celsius_to_unit(celsius).clamp(0.0, 1.0)
-      } else {
-        (base_temperature - rel * 0.62).clamp(0.0, 1.0)
-      };
-      let slope = slope_degrees(normal);
-      let gate = cold_gate(options);
-      let climate_wetness = climate_moisture(base_moisture, rel);
-      let cold = if h < sea - 0.3 || gate <= 0.0 {
-        ColdGround::None
-      } else {
-        cold_ground(celsius, slope, climate_wetness)
-      };
-      // A little high-frequency jitter keeps biome borders organic rather
-      // than following the smooth climate contours exactly.
-      let jitter = hash_noise(detail_seed, x as i32 / 3, y as i32 / 3) * 0.035
-        + value_noise(detail_seed, x as f32 * 0.09, y as f32 * 0.09) * 0.05;
-      let is_river = river_mask.is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
-      let moisture = (base_moisture + lowland * 0.12 + jitter + if is_river { 0.1 } else { 0.0 })
-        .clamp(0.0, 1.0);
+    // Cavity occlusion from the four-neighbour Laplacian.
+    let neighbour = |dx: i32, dy: i32| {
+      let nx = (x as i32 + dx).clamp(0, width as i32 - 1) as u32;
+      let ny = (y as i32 + dy).clamp(0, height as i32 - 1) as u32;
+      map.heights[(ny * width + nx) as usize]
+    };
+    let laplacian =
+      (neighbour(-2, 0) + neighbour(2, 0) + neighbour(0, -2) + neighbour(0, 2)) * 0.25 - h;
+    let occlusion = 1.0 - (laplacian / (metres_per_sample * 1.2)).clamp(0.0, 1.0) * 0.55;
 
-      // Cavity occlusion from the four-neighbour Laplacian.
-      let neighbour = |dx: i32, dy: i32| {
-        let nx = (x as i32 + dx).clamp(0, width as i32 - 1) as u32;
-        let ny = (y as i32 + dy).clamp(0, height as i32 - 1) as u32;
-        map.heights[(ny * width + nx) as usize]
-      };
-      let laplacian =
-        (neighbour(-2, 0) + neighbour(2, 0) + neighbour(0, -2) + neighbour(0, 2)) * 0.25 - h;
-      let occlusion = 1.0 - (laplacian / (metres_per_sample * 1.2)).clamp(0.0, 1.0) * 0.55;
+    // Volcanic proximity.
+    let mut volcano_factor: f32 = 0.0;
+    let mut caldera_factor: f32 = 0.0;
 
-      // Volcanic proximity.
-      let mut volcano_factor: f32 = 0.0;
-      let mut caldera_factor: f32 = 0.0;
+    for volcano in &volcanoes {
+      let dx = x as f32 - volcano.x;
+      let dy = y as f32 - volcano.y;
+      let distance = (dx * dx + dy * dy).sqrt() / volcano.radius;
+      volcano_factor = volcano_factor.max(1.0 - smoothstep((distance - 0.55) / 0.45));
+      caldera_factor = caldera_factor.max(1.0 - smoothstep((distance - 0.12) / 0.14));
+    }
 
-      for volcano in &volcanoes {
-        let dx = x as f32 - volcano.x;
-        let dy = y as f32 - volcano.y;
-        let distance = (dx * dx + dy * dy).sqrt() / volcano.radius;
-        volcano_factor = volcano_factor.max(1.0 - smoothstep((distance - 0.55) / 0.45));
-        caldera_factor = caldera_factor.max(1.0 - smoothstep((distance - 0.12) / 0.14));
-      }
+    volcano_factor *= smoothstep((rel - 0.08) / 0.2);
+    caldera_factor *= smoothstep((rel - 0.35) / 0.2);
 
-      volcano_factor *= smoothstep((rel - 0.08) / 0.2);
-      caldera_factor *= smoothstep((rel - 0.35) / 0.2);
+    // The snow line is lower where it is cold, and tropical peaks carry
+    // no snow at all.
+    let snow_line_here = snow_line - (0.35 - temperature).max(0.0) * range * 0.5;
+    let snowy = temperature <= 0.75;
+    // The top part of the ground above the snow line is permanent snow
+    // and ice; the band below it is snowfield broken by rock.
+    let upper_snow_line =
+      snow_line_here + ((peak - snow_line_here) * UPPER_SNOW_FRACTION).max(transition_band);
 
-      // The snow line is lower where it is cold, and tropical peaks carry
-      // no snow at all.
-      let snow_line_here = snow_line - (0.35 - temperature).max(0.0) * range * 0.5;
-      let snowy = temperature <= 0.75;
-      // The top part of the ground above the snow line is permanent snow
-      // and ice; the band below it is snowfield broken by rock.
-      let upper_snow_line =
-        snow_line_here + ((peak - snow_line_here) * UPPER_SNOW_FRACTION).max(transition_band);
-
-      // Biome decision.
-      let biome = if h < sea - 0.3 {
-        BiomeKind::Ocean
-      } else if caldera_factor > 0.5 {
-        BiomeKind::CalderaVolcanic
-      } else if volcano_factor > 0.45 {
-        BiomeKind::OuterVolcanic
-      } else if matches!(cold, ColdGround::Glacier | ColdGround::Tundra) {
-        BiomeKind::IceArctic
-      } else if cold == ColdGround::Cliff {
-        // Cold rock too steep for ice keeps the mountain bands.
-        if snowy && h >= upper_snow_line {
-          BiomeKind::UpperSnowyPeaks
-        } else if snowy && h >= snow_line_here {
-          BiomeKind::LowerSnowyPeaks
-        } else {
-          BiomeKind::MountainProper
-        }
-      } else if above_sea < beach * 1.6 && steep > 0.22 {
-        BiomeKind::CoastalRocky
-      } else if above_sea < beach * 1.6 && !(moisture > 0.72 && temperature > 0.45 && steep < 0.05)
-      {
-        BiomeKind::CoastalBeach
-      } else if above_sea < beach * 5.0 && steep > 0.38 {
-        BiomeKind::CoastalRocky
-      } else if snowy && h >= upper_snow_line {
+    // Biome decision.
+    let biome = if h < sea - 0.3 {
+      BiomeKind::Ocean
+    } else if caldera_factor > 0.5 {
+      BiomeKind::CalderaVolcanic
+    } else if volcano_factor > 0.45 {
+      BiomeKind::OuterVolcanic
+    } else if matches!(cold, ColdGround::Glacier | ColdGround::Tundra) {
+      BiomeKind::IceArctic
+    } else if cold == ColdGround::Cliff {
+      // Cold rock too steep for ice keeps the mountain bands.
+      if snowy && h >= upper_snow_line {
         BiomeKind::UpperSnowyPeaks
       } else if snowy && h >= snow_line_here {
         BiomeKind::LowerSnowyPeaks
-      } else if snowy && h >= snow_line_here - transition_band {
-        BiomeKind::AlpineTransition
-      } else if rel > 0.62 || (rel > 0.46 && steep > 0.34) {
+      } else {
         BiomeKind::MountainProper
-      } else if rel > 0.4 {
-        BiomeKind::MountainFoothills
-      } else if moisture > 0.68 && steep < 0.07 && rel < 0.16 && temperature > 0.3 {
-        BiomeKind::SwampWetlands
-      } else if temperature > 0.64 {
-        if moisture > 0.74 {
-          BiomeKind::InnerJungle
-        } else if moisture > 0.58 {
-          BiomeKind::OuterJungle
-        } else {
-          BiomeKind::SavannahExpanse
+      }
+    } else if above_sea < beach * 1.6 && steep > 0.22 {
+      BiomeKind::CoastalRocky
+    } else if above_sea < beach * 1.6 && !(moisture > 0.72 && temperature > 0.45 && steep < 0.05) {
+      BiomeKind::CoastalBeach
+    } else if above_sea < beach * 5.0 && steep > 0.38 {
+      BiomeKind::CoastalRocky
+    } else if snowy && h >= upper_snow_line {
+      BiomeKind::UpperSnowyPeaks
+    } else if snowy && h >= snow_line_here {
+      BiomeKind::LowerSnowyPeaks
+    } else if snowy && h >= snow_line_here - transition_band {
+      BiomeKind::AlpineTransition
+    } else if rel > 0.62 || (rel > 0.46 && steep > 0.34) {
+      BiomeKind::MountainProper
+    } else if rel > 0.4 {
+      BiomeKind::MountainFoothills
+    } else if moisture > 0.68 && steep < 0.07 && rel < 0.16 && temperature > 0.3 {
+      BiomeKind::SwampWetlands
+    } else if temperature > 0.64 {
+      if moisture > 0.74 {
+        BiomeKind::InnerJungle
+      } else if moisture > 0.58 {
+        BiomeKind::OuterJungle
+      } else {
+        BiomeKind::SavannahExpanse
+      }
+    } else if moisture < 0.4 {
+      BiomeKind::GrassyMeadows
+    } else if moisture < 0.5 {
+      BiomeKind::OuterThicket
+    } else if moisture < 0.63 {
+      BiomeKind::OuterForest
+    } else {
+      BiomeKind::InnerForest
+    };
+
+    // Continuous material fields, so textures blend smoothly across
+    // biome borders instead of switching abruptly. Snow lies in patches
+    // through the transition band (in hollows first, where drifts
+    // collect), covers the lower peaks except on steep rock, and on the
+    // upper peaks clings to all but near-vertical faces.
+    let into_band = ((h - (snow_line_here - transition_band)) / transition_band).clamp(0.0, 1.0);
+    let patches =
+      smoothstep((into_band * 1.3 - 0.35 + (1.0 - occlusion) * 0.8 + jitter * 3.0) / 0.35);
+    let upper = smoothstep((h - upper_snow_line) / transition_band.max(1.0) + 0.5);
+    let steep_limit = 0.3 + upper * 0.25;
+    let mut snow = if snowy {
+      let settled = smoothstep((h - snow_line_here) / 60.0 + 0.5);
+      (settled.max(patches * 0.6 * into_band) * (1.0 - smoothstep((steep - steep_limit) / 0.25)))
+        .max(upper * 0.9)
+        .min(1.0)
+    } else {
+      0.0
+    };
+
+    // Wherever it is below freezing all year, snow lies on anything flat
+    // enough to hold it, whatever the height. Cold, dry snow clings to
+    // steeper faces than wet snow does.
+    let cold_snow = if h >= sea - 0.3 {
+      gate * smoothstep((-2.0 - celsius) / 6.0) * (1.0 - smoothstep((steep - 0.4) / 0.25))
+    } else {
+      0.0
+    };
+    snow = snow.max(cold_snow);
+    let mountain = smoothstep((rel - 0.5) / 0.25);
+    let mut rock = smoothstep((steep - 0.16) / 0.26) * 0.95 + mountain * 0.35 * (1.0 - snow);
+
+    if biome == BiomeKind::CoastalRocky {
+      rock = rock.max(0.75);
+    }
+
+    // Above the trees the ground is scree and thin turf, stonier the
+    // closer it is to the snow.
+    if biome == BiomeKind::AlpineTransition {
+      rock = rock.max(0.3 + 0.35 * into_band);
+    }
+
+    // Snow that never melts buries all but the steepest rock.
+    rock *= 1.0 - cold_snow * 0.6;
+
+    let sand_band = 1.0 - smoothstep((above_sea - beach * 0.7) / (beach * 0.9).max(0.5));
+    let desert =
+      smoothstep((temperature - 0.7) / 0.15) * (1.0 - smoothstep((moisture - 0.2) / 0.15));
+    let mut sand = (sand_band * (1.0 - smoothstep((steep - 0.2) / 0.15))).max(desert * 0.6);
+    let swamp = if biome == BiomeKind::SwampWetlands {
+      0.65
+    } else {
+      smoothstep((moisture - 0.7) / 0.15) * lowland * 0.4
+    };
+    let mut mud = swamp;
+
+    if h < sea - 0.3 {
+      // Sea bed: sand in the shallows, silt in the deep.
+      let depth = sea - h;
+      sand = 1.0 - smoothstep((depth - 6.0) / 20.0);
+      mud = 1.0 - sand;
+      rock *= 0.6;
+    }
+
+    if is_river {
+      sand = sand.max(0.5);
+      mud = mud.max(0.4);
+    }
+
+    let volcanic = volcano_factor.max(caldera_factor);
+    let forest_floor = smoothstep((moisture - 0.45) / 0.22) * (1.0 - mountain * 0.6);
+    let dryness =
+      smoothstep((temperature - 0.5) / 0.25) * (1.0 - smoothstep((moisture - 0.35) / 0.3));
+    let dry_grass = dryness.max(if biome == BiomeKind::SavannahExpanse {
+      0.7
+    } else {
+      0.0
+    });
+    let lush = (1.0 - dry_grass).max(0.0);
+
+    let mut weights = [0.0f32; MATERIAL_COUNT];
+    let cover = (1.0 - rock - snow - sand - mud - volcanic).max(0.0);
+    let ground_total = (lush * (1.0 - forest_floor) + dry_grass + forest_floor).max(0.0001);
+    weights[MAT_LUSH_GRASS] = cover * lush * (1.0 - forest_floor) / ground_total;
+    weights[MAT_DRY_GRASS] = cover * dry_grass / ground_total;
+    weights[MAT_FOREST_FLOOR] = cover * forest_floor / ground_total;
+    weights[MAT_SAND] = sand;
+    weights[MAT_ROCK] = rock;
+    weights[MAT_SNOW] = snow;
+    weights[MAT_MUD] = mud;
+    weights[MAT_VOLCANIC] = volcanic;
+
+    if gate > 0.0 && h >= sea - 0.3 {
+      apply_cold_materials(
+        &mut weights,
+        ColdMaterials {
+          gate,
+          celsius,
+          slope,
+          glacier: cold == ColdGround::Glacier && biome == BiomeKind::IceArctic,
+          glacier_celsius: glacier_celsius(climate_wetness),
+          detail: value_noise(detail_seed ^ 0x1ce, x as f32 * 0.07, y as f32 * 0.07),
+        },
+      );
+    }
+
+    let total: f32 = weights.iter().sum::<f32>().max(0.0001);
+    let mut materials = [0u8; MATERIAL_COUNT];
+
+    for (slot, weight) in materials.iter_mut().zip(weights.iter()) {
+      *slot = ((weight / total) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+
+    let glacier = biome == BiomeKind::IceArctic && cold == ColdGround::Glacier;
+    let forest = if glacier {
+      0.0
+    } else {
+      forest_density(biome, moisture) * (1.0 - rock.min(1.0)) * (1.0 - snow.min(1.0))
+    };
+    let permanent_snow = if glacier {
+      1.0
+    } else if biome == BiomeKind::IceArctic {
+      // Tundra keeps patches of old snow the colder it gets, up to 160.
+      smoothstep((3.0 - celsius) / 5.0) * (160.0 / 255.0)
+    } else {
+      0.0
+    };
+
+    SurfaceSample {
+      materials,
+      moisture: unit_to_byte(moisture),
+      temperature: unit_to_byte(temperature),
+      heat: unit_to_byte(caldera_factor * caldera_factor),
+      occlusion: unit_to_byte(occlusion),
+      biome: biome as u8,
+      forest: unit_to_byte(forest),
+      river: if is_river { 255 } else { 0 },
+      permanent_snow: unit_to_byte(permanent_snow),
+      celsius_hundredths: (celsius * 100.0).round().clamp(-32_000.0, 32_000.0) as i16,
+    }
+  };
+
+  match only {
+    Some(indices) if samples.len() == count => {
+      for index in indices {
+        samples[*index] = classify(*index as u32 % width, *index as u32 / width);
+      }
+
+      // Fast ice depends on the distance to land, which may have changed
+      // anywhere, so it is marked again from scratch below.
+      let ocean = BiomeKind::Ocean as u8;
+
+      for sample in samples.iter_mut() {
+        if sample.biome == ocean {
+          sample.permanent_snow = 0;
         }
-      } else if moisture < 0.4 {
-        BiomeKind::GrassyMeadows
-      } else if moisture < 0.5 {
-        BiomeKind::OuterThicket
-      } else if moisture < 0.63 {
-        BiomeKind::OuterForest
-      } else {
-        BiomeKind::InnerForest
-      };
-
-      // Continuous material fields, so textures blend smoothly across
-      // biome borders instead of switching abruptly. Snow lies in patches
-      // through the transition band (in hollows first, where drifts
-      // collect), covers the lower peaks except on steep rock, and on the
-      // upper peaks clings to all but near-vertical faces.
-      let into_band = ((h - (snow_line_here - transition_band)) / transition_band).clamp(0.0, 1.0);
-      let patches =
-        smoothstep((into_band * 1.3 - 0.35 + (1.0 - occlusion) * 0.8 + jitter * 3.0) / 0.35);
-      let upper = smoothstep((h - upper_snow_line) / transition_band.max(1.0) + 0.5);
-      let steep_limit = 0.3 + upper * 0.25;
-      let mut snow = if snowy {
-        let settled = smoothstep((h - snow_line_here) / 60.0 + 0.5);
-        (settled.max(patches * 0.6 * into_band) * (1.0 - smoothstep((steep - steep_limit) / 0.25)))
-          .max(upper * 0.9)
-          .min(1.0)
-      } else {
-        0.0
-      };
-
-      // Wherever it is below freezing all year, snow lies on anything flat
-      // enough to hold it, whatever the height. Cold, dry snow clings to
-      // steeper faces than wet snow does.
-      let cold_snow = if h >= sea - 0.3 {
-        gate * smoothstep((-2.0 - celsius) / 6.0) * (1.0 - smoothstep((steep - 0.4) / 0.25))
-      } else {
-        0.0
-      };
-      snow = snow.max(cold_snow);
-      let mountain = smoothstep((rel - 0.5) / 0.25);
-      let mut rock = smoothstep((steep - 0.16) / 0.26) * 0.95 + mountain * 0.35 * (1.0 - snow);
-
-      if biome == BiomeKind::CoastalRocky {
-        rock = rock.max(0.75);
       }
+    }
+    _ => {
+      samples.clear();
+      samples.reserve(count);
 
-      // Above the trees the ground is scree and thin turf, stonier the
-      // closer it is to the snow.
-      if biome == BiomeKind::AlpineTransition {
-        rock = rock.max(0.3 + 0.35 * into_band);
+      for y in 0..height {
+        for x in 0..width {
+          samples.push(classify(x, y));
+        }
       }
-
-      // Snow that never melts buries all but the steepest rock.
-      rock *= 1.0 - cold_snow * 0.6;
-
-      let sand_band = 1.0 - smoothstep((above_sea - beach * 0.7) / (beach * 0.9).max(0.5));
-      let desert =
-        smoothstep((temperature - 0.7) / 0.15) * (1.0 - smoothstep((moisture - 0.2) / 0.15));
-      let mut sand = (sand_band * (1.0 - smoothstep((steep - 0.2) / 0.15))).max(desert * 0.6);
-      let swamp = if biome == BiomeKind::SwampWetlands {
-        0.65
-      } else {
-        smoothstep((moisture - 0.7) / 0.15) * lowland * 0.4
-      };
-      let mut mud = swamp;
-
-      if h < sea - 0.3 {
-        // Sea bed: sand in the shallows, silt in the deep.
-        let depth = sea - h;
-        sand = 1.0 - smoothstep((depth - 6.0) / 20.0);
-        mud = 1.0 - sand;
-        rock *= 0.6;
-      }
-
-      if is_river {
-        sand = sand.max(0.5);
-        mud = mud.max(0.4);
-      }
-
-      let volcanic = volcano_factor.max(caldera_factor);
-      let forest_floor = smoothstep((moisture - 0.45) / 0.22) * (1.0 - mountain * 0.6);
-      let dryness =
-        smoothstep((temperature - 0.5) / 0.25) * (1.0 - smoothstep((moisture - 0.35) / 0.3));
-      let dry_grass = dryness.max(if biome == BiomeKind::SavannahExpanse {
-        0.7
-      } else {
-        0.0
-      });
-      let lush = (1.0 - dry_grass).max(0.0);
-
-      let mut weights = [0.0f32; MATERIAL_COUNT];
-      let cover = (1.0 - rock - snow - sand - mud - volcanic).max(0.0);
-      let ground_total = (lush * (1.0 - forest_floor) + dry_grass + forest_floor).max(0.0001);
-      weights[MAT_LUSH_GRASS] = cover * lush * (1.0 - forest_floor) / ground_total;
-      weights[MAT_DRY_GRASS] = cover * dry_grass / ground_total;
-      weights[MAT_FOREST_FLOOR] = cover * forest_floor / ground_total;
-      weights[MAT_SAND] = sand;
-      weights[MAT_ROCK] = rock;
-      weights[MAT_SNOW] = snow;
-      weights[MAT_MUD] = mud;
-      weights[MAT_VOLCANIC] = volcanic;
-
-      if gate > 0.0 && h >= sea - 0.3 {
-        apply_cold_materials(
-          &mut weights,
-          ColdMaterials {
-            gate,
-            celsius,
-            slope,
-            glacier: cold == ColdGround::Glacier && biome == BiomeKind::IceArctic,
-            glacier_celsius: glacier_celsius(climate_wetness),
-            detail: value_noise(detail_seed ^ 0x1ce, x as f32 * 0.07, y as f32 * 0.07),
-          },
-        );
-      }
-
-      let total: f32 = weights.iter().sum::<f32>().max(0.0001);
-      let mut materials = [0u8; MATERIAL_COUNT];
-
-      for (slot, weight) in materials.iter_mut().zip(weights.iter()) {
-        *slot = ((weight / total) * 255.0).round().clamp(0.0, 255.0) as u8;
-      }
-
-      let glacier = biome == BiomeKind::IceArctic && cold == ColdGround::Glacier;
-      let forest = if glacier {
-        0.0
-      } else {
-        forest_density(biome, moisture) * (1.0 - rock.min(1.0)) * (1.0 - snow.min(1.0))
-      };
-      let permanent_snow = if glacier {
-        1.0
-      } else if biome == BiomeKind::IceArctic {
-        // Tundra keeps patches of old snow the colder it gets, up to 160.
-        smoothstep((3.0 - celsius) / 5.0) * (160.0 / 255.0)
-      } else {
-        0.0
-      };
-
-      samples.push(SurfaceSample {
-        materials,
-        moisture: unit_to_byte(moisture),
-        temperature: unit_to_byte(temperature),
-        heat: unit_to_byte(caldera_factor * caldera_factor),
-        occlusion: unit_to_byte(occlusion),
-        biome: biome as u8,
-        forest: unit_to_byte(forest),
-        river: if is_river { 255 } else { 0 },
-        permanent_snow: unit_to_byte(permanent_snow),
-        celsius_hundredths: (celsius * 100.0).round().clamp(-32_000.0, 32_000.0) as i16,
-      });
     }
   }
 
-  mark_fast_ice(map, &mut samples);
+  mark_fast_ice(map, samples);
+}
+
+/// Classify every heightmap sample into a biome and surface materials.
+///
+/// `normals` must be the per-sample normals for `map`. `river_mask`, when
+/// present, marks samples that sit under a river channel.
+pub fn classify_surface(
+  map: &HeightMap,
+  normals: &[Vec3],
+  river_mask: Option<&[bool]>,
+  options: &BiomeOptions,
+) -> Vec<SurfaceSample> {
+  let mut samples = Vec::new();
+  classify_into(map, normals, river_mask, options, None, &mut samples);
   samples
+}
+
+/// Classify only the samples at `indices` again, after their heights (or
+/// those of their neighbours) or their river flag changed. `samples` must
+/// hold a full classification of the map with the same relief; the
+/// result is the same as classifying the whole map again.
+pub fn reclassify_surface(
+  map: &HeightMap,
+  normals: &[Vec3],
+  river_mask: Option<&[bool]>,
+  options: &BiomeOptions,
+  samples: &mut Vec<SurfaceSample>,
+  indices: &[usize],
+) {
+  classify_into(map, normals, river_mask, options, Some(indices), samples);
 }
 
 /// Inputs for [`apply_cold_materials`].

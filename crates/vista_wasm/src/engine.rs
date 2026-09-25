@@ -15,10 +15,11 @@ use crate::maths::smoothstep;
 use crate::maths::{cross, normalise, sub};
 use crate::render::flora::TreeInstance;
 use crate::render::tree_models::{layers, mesh_from_arrays, TreeMesh};
-use crate::render::water::{build_river_network, restore_carving, RiverNetwork};
+use crate::render::water::{build_river_network, restore_carving, RiverNetwork, RiverSources};
 use crate::terrain::biomes::SurfaceSample;
 #[cfg(target_arch = "wasm32")]
 use crate::terrain::biomes::{celsius_to_unit, sea_level_celsius};
+use crate::terrain::channels::CarveRecord;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::clipmap::build_clipmap_levels;
 use crate::terrain::fractal::Progress;
@@ -84,6 +85,8 @@ pub struct EngineCore {
   applied_rivers: Option<RiverOptions>,
   /// Original heights of the samples raised into glacier surfaces.
   glaciers: Vec<(usize, f32)>,
+  /// Seed for springs, meanders and deltas, from the terrain's heights.
+  terrain_seed: u64,
   /// Whether any sea on the terrain is cold enough to freeze.
   sea_ice_possible: bool,
   /// Cached per-sample normals for the active terrain, computed once when
@@ -200,6 +203,7 @@ impl EngineCore {
       rivers: RiverNetwork::default(),
       applied_rivers: None,
       glaciers: Vec::new(),
+      terrain_seed: 0,
       sea_ice_possible: false,
     })
   }
@@ -255,6 +259,7 @@ impl EngineCore {
       rivers: RiverNetwork::default(),
       applied_rivers: None,
       glaciers: Vec::new(),
+      terrain_seed: 0,
       sea_ice_possible: false,
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
@@ -285,9 +290,10 @@ impl EngineCore {
 
   /// [`Self::generate_fractal`], reporting `(phase, progress)` as each
   /// generation stage advances. Phases are `"tectonics"`, `"drainage"`,
-  /// `"detail"`, `"erosion"` (when erosion is requested) and
-  /// `"finishing"` (conditioning the map and building rivers, flora and
-  /// the terrain mesh).
+  /// `"detail"`, `"erosion"` (when erosion is requested), `"finishing"`
+  /// (conditioning the map and building flora and the terrain mesh), and
+  /// within it `"rivers"` (routing water and shaping channels, lakes and
+  /// waterfalls).
   pub async fn generate_fractal_with_progress(
     &mut self,
     options: FractalTerrainOptions,
@@ -296,7 +302,7 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = self.generate_fractal_map(&options, progress).await?;
-    let handle = self.install_terrain(map);
+    let handle = self.install_terrain(map, progress);
     progress("finishing", 1.0);
     self.state = EngineState::Ready;
     Ok(handle)
@@ -353,7 +359,7 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = decode_geotiff(bytes, &options)?;
-    let handle = self.install_terrain(map);
+    let handle = self.install_terrain(map, &mut |_, _| {});
     self.state = EngineState::Ready;
     Ok(handle)
   }
@@ -367,7 +373,7 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = decode_raw_heightmap(bytes, &options)?;
-    let handle = self.install_terrain(map);
+    let handle = self.install_terrain(map, &mut |_, _| {});
     self.state = EngineState::Ready;
     Ok(handle)
   }
@@ -810,7 +816,7 @@ impl EngineCore {
     Ok(())
   }
 
-  fn install_terrain(&mut self, map: HeightMap) -> TerrainHandle {
+  fn install_terrain(&mut self, map: HeightMap, progress: Progress<'_>) -> TerrainHandle {
     let id = self.next_terrain_id;
     self.next_terrain_id = self.next_terrain_id.saturating_add(1);
 
@@ -818,6 +824,7 @@ impl EngineCore {
     self.rivers = RiverNetwork::default();
     self.applied_rivers = None;
     self.glaciers = Vec::new();
+    self.terrain_seed = terrain_seed(&map);
     self.terrain = Some(map);
     self.active_terrain_id = Some(id);
 
@@ -827,7 +834,7 @@ impl EngineCore {
       self.mesh_stream = None;
     }
 
-    self.rebuild_world();
+    self.rebuild_world_with(progress);
     let metadata = self
       .terrain
       .as_ref()
@@ -850,7 +857,14 @@ impl EngineCore {
   /// shaping and carving first), then re-bake surface shading and every
   /// terrain-dependent layer.
   fn rebuild_world(&mut self) {
+    self.rebuild_world_with(&mut |_, _| {});
+  }
+
+  /// [`Self::rebuild_world`], reporting the `"rivers"` phase while the
+  /// river network is built.
+  fn rebuild_world_with(&mut self, progress: Progress<'_>) {
     let wanted = self.wanted_rivers(&self.water);
+    let mut before_rivers = None;
 
     if let Some(terrain) = self.terrain.as_mut() {
       // Undo in the reverse order of shaping: rivers were carved into the
@@ -859,7 +873,42 @@ impl EngineCore {
       restore_glaciers(terrain, &self.glaciers);
       self.glaciers = shape_glaciers(terrain, &self.biomes);
       self.rivers = match &wanted {
-        Some(options) => build_river_network(terrain, options),
+        Some(options) => {
+          progress("rivers", 0.0);
+          // Rain, snow and temperature for the hydrology, from the ground
+          // before any channel is cut. The same classification is patched
+          // afterwards where the rivers changed the ground.
+          let (_, surface) =
+            crate::render::terrain_mesh::bake_terrain_shading(terrain, &self.biomes, None);
+          // With biomes switched off the ground is not shaded by climate,
+          // but rain still falls: rivers follow the default climate.
+          let default_climate = (!self.biomes.enabled).then(|| {
+            crate::render::terrain_mesh::bake_terrain_shading(
+              terrain,
+              &BiomeOptions::default(),
+              None,
+            )
+            .1
+          });
+          let record = CarveRecord::new(terrain.heights.len());
+          let relief = SurfaceRelief::of(terrain, &self.biomes);
+          let network = build_river_network(
+            terrain,
+            options,
+            RiverSources {
+              surface: default_climate.as_deref().unwrap_or(&surface),
+              seed: self.terrain_seed,
+              painted: Vec::new(),
+              record,
+            },
+          );
+          progress("rivers", 1.0);
+          // Back to the rest of finishing, so the phase log times the
+          // river build alone.
+          progress("finishing", 0.5);
+          before_rivers = Some((surface, relief));
+          network
+        }
         None => RiverNetwork {
           mask: vec![false; terrain.heights.len()],
           ..RiverNetwork::default()
@@ -882,14 +931,19 @@ impl EngineCore {
       self
         .gpu
         .upload_rivers(&self.rivers.vertices, &self.rivers.indices);
+      self
+        .gpu
+        .upload_falls(&self.rivers.fall_vertices, &self.rivers.fall_indices);
     }
 
-    self.rebake_surface();
+    self.rebake_surface(before_rivers);
   }
 
   /// Re-bake normals and biome/surface data, rebuild the terrain mesh, and
-  /// refresh trees, grass, and water.
-  fn rebake_surface(&mut self) {
+  /// refresh trees, grass, and water. `before_rivers` is the surface
+  /// classified just before the rivers were built: only the samples the
+  /// rivers changed are classified again.
+  fn rebake_surface(&mut self, before_rivers: Option<(Vec<SurfaceSample>, SurfaceRelief)>) {
     match self.terrain.as_ref() {
       Some(terrain) => {
         let mask = if self.rivers.mask.len() == terrain.heights.len() {
@@ -897,8 +951,22 @@ impl EngineCore {
         } else {
           None
         };
-        let (normals, surface) =
-          crate::render::terrain_mesh::bake_terrain_shading(terrain, &self.biomes, mask);
+        let normals = crate::terrain::normals::generate_normals(terrain);
+        let surface = match before_rivers {
+          Some((mut samples, relief)) if relief == SurfaceRelief::of(terrain, &self.biomes) => {
+            let touched = touched_samples(terrain, &self.rivers);
+            crate::terrain::biomes::reclassify_surface(
+              terrain,
+              &normals,
+              mask,
+              &self.biomes,
+              &mut samples,
+              &touched,
+            );
+            samples
+          }
+          _ => crate::terrain::biomes::classify_surface(terrain, &normals, mask, &self.biomes),
+        };
         self.surface = surface;
         let ocean = BiomeKind::Ocean as u8;
         self.sea_ice_possible = self
@@ -1396,6 +1464,73 @@ pub fn validate_tree_instances(trees: &[TreeInstance]) -> VistaResult<()> {
   Ok(())
 }
 
+/// The map-wide inputs of surface classification that river carving
+/// could change. When they are unchanged, reclassifying just the touched
+/// samples gives exactly a full classification.
+#[derive(Clone, Debug, PartialEq)]
+struct SurfaceRelief {
+  max_height: f32,
+  volcanoes: Vec<crate::terrain::biomes::Volcano>,
+}
+
+impl SurfaceRelief {
+  fn of(map: &HeightMap, biomes: &BiomeOptions) -> Self {
+    Self {
+      max_height: map.metadata.max_height_metres,
+      volcanoes: crate::terrain::biomes::find_volcanoes(map, biomes),
+    }
+  }
+}
+
+/// Samples whose classification the rivers may have changed: every
+/// changed or masked sample and those within two samples of it (normals
+/// and occlusion read that far).
+fn touched_samples(map: &HeightMap, rivers: &RiverNetwork) -> Vec<usize> {
+  let width = map.metadata.width as i32;
+  let height = map.metadata.height as i32;
+  let mut touched = vec![false; map.heights.len()];
+  let mut list = Vec::new();
+  let masked = rivers
+    .mask
+    .iter()
+    .enumerate()
+    .filter(|(_, masked)| **masked)
+    .map(|(index, _)| index);
+
+  for index in rivers.carved.iter().map(|(index, _)| *index).chain(masked) {
+    let x = (index as i32) % width;
+    let y = (index as i32) / width;
+
+    for ny in (y - 2).max(0)..=(y + 2).min(height - 1) {
+      for nx in (x - 2).max(0)..=(x + 2).min(width - 1) {
+        let n = (ny * width + nx) as usize;
+
+        if !touched[n] {
+          touched[n] = true;
+          list.push(n);
+        }
+      }
+    }
+  }
+
+  list
+}
+
+/// A seed that follows the terrain: a hash of its heights, so every
+/// terrain places its springs, meanders and deltas its own way, and the
+/// same terrain always places them the same way.
+fn terrain_seed(map: &HeightMap) -> u64 {
+  let step = (map.heights.len() / 65_536).max(1);
+
+  map
+    .heights
+    .iter()
+    .step_by(step)
+    .fold(map.heights.len() as u64, |seed, height| {
+      crate::maths::hash_u64(seed ^ height.to_bits() as u64)
+    })
+}
+
 fn terrain_height_range(map: &HeightMap) -> (f32, f32) {
   let mut low = f32::MAX;
   let mut high = f32::MIN;
@@ -1614,6 +1749,85 @@ mod tests {
     water.rivers.enabled = false;
     engine.set_water(water).unwrap();
     assert_eq!(engine.export_heightmap().unwrap(), uncarved);
+  }
+
+  /// A broad, gently sloping basin draining north to the sea, with a
+  /// 30 m cliff across its upper valley: a waterfall above, meanders
+  /// below.
+  fn basin_engine() -> EngineCore {
+    let mut engine = EngineCore::new_for_tests(VistaEngineOptions::default()).unwrap();
+    let size = 256u32;
+    let metadata = vista_types::TerrainMetadata {
+      metres_per_sample: 40.0,
+      sea_level_metres: 0.0,
+      ..Default::default()
+    };
+    let mut heights = Vec::new();
+
+    for y in 0..size {
+      for x in 0..size {
+        let cliff = if y >= 200 { 30.0 } else { 0.0 };
+        heights.push(y as f32 * 0.2 - 1.5 + (x as f32 - 128.0).abs() * 0.6 + cliff);
+      }
+    }
+
+    let map = HeightMap::from_values(
+      size,
+      size,
+      heights,
+      vec![false; (size * size) as usize],
+      metadata,
+    )
+    .unwrap();
+    engine.install_terrain(map, &mut |_, _| {});
+    engine
+  }
+
+  #[test]
+  fn toggling_rivers_restores_meanders_and_plunge_pools_exactly() {
+    let mut engine = basin_engine();
+    let mut water = WaterOptions::default();
+    water.rivers.meanders = 1.0;
+    engine.set_water(water.clone()).unwrap();
+
+    assert!(!engine.rivers.falls.is_empty(), "no waterfall");
+    let meandering = engine.rivers.reaches.iter().any(|reach| {
+      reach
+        .points
+        .iter()
+        .any(|point| (point.x - point.x.round()).abs() > 0.2)
+    });
+    assert!(meandering, "no meanders");
+    assert!(!engine.rivers.carved.is_empty());
+
+    water.rivers.enabled = false;
+    engine.set_water(water.clone()).unwrap();
+    let uncarved = engine.export_heightmap().unwrap();
+
+    water.rivers.enabled = true;
+    engine.set_water(water.clone()).unwrap();
+    assert_ne!(engine.export_heightmap().unwrap(), uncarved);
+    water.rivers.enabled = false;
+    engine.set_water(water).unwrap();
+    assert_eq!(engine.export_heightmap().unwrap(), uncarved);
+  }
+
+  #[test]
+  fn patching_the_surface_after_rivers_matches_a_full_classification() {
+    for mut engine in [generated_engine(), basin_engine(), cold_engine(-20.0)] {
+      engine.set_water(WaterOptions::default()).unwrap();
+      let terrain = engine.terrain.as_ref().unwrap();
+      let normals = crate::terrain::normals::generate_normals(terrain);
+      let full = crate::terrain::biomes::classify_surface(
+        terrain,
+        &normals,
+        Some(&engine.rivers.mask),
+        &engine.biomes,
+      );
+
+      assert!(!engine.rivers.carved.is_empty());
+      assert!(engine.surface == full);
+    }
   }
 
   #[test]

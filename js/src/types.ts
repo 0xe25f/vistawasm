@@ -374,6 +374,18 @@ export interface RiverOptions {
   widthScale?: number;
   /** River current speed multiplier. Defaults to `1`. */
   currentSpeed?: number;
+  /**
+   * How strongly snow fields and glaciers feed streams, from 0 (no
+   * snowmelt) to 2. Streams also start at glacier snouts and at the lower
+   * edge of snowy peaks. Defaults to `1`.
+   */
+  snowmelt?: number;
+  /** Small springs at the foot of steep slopes. Defaults to `true`. */
+  springs?: boolean;
+  /** Lowland meander strength, from 0 (straight) to 1. Defaults to `0.6`. */
+  meanders?: number;
+  /** Waterfalls where rivers cross cliffs. Defaults to `true`. */
+  waterfalls?: boolean;
 }
 
 /**
@@ -988,7 +1000,8 @@ export interface VistaEventMap {
    * call, and in between `"tectonics"`, `"drainage"`, `"detail"`,
    * `"erosion"` (when erosion is requested, at least every 10 %) and
    * `"finishing"` (conditioning the map, then building rivers, flora and
-   * the terrain mesh).
+   * the terrain mesh), with `"rivers"` at 0 and 1 around the river build
+   * inside it.
    */
   progress: { phase: string; progress: number };
   warning: { message: string; details?: unknown };

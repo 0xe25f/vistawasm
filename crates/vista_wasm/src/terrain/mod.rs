@@ -1,12 +1,14 @@
 //! Terrain storage, generation, erosion, normals, materials, and clipmap data.
 
 pub mod biomes;
+pub mod channels;
 pub mod clipmap;
 pub mod drainage;
 pub mod erosion;
 pub mod fractal;
 pub mod glaciers;
 pub mod heightmap;
+pub mod hydrology;
 pub mod landforms;
 pub mod materials;
 pub mod noise;

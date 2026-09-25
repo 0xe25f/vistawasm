@@ -112,6 +112,8 @@ await engine.generateFractal({
 The phases are `"tectonics"`, `"drainage"`, `"detail"`, `"erosion"` (at
 least every 10 %) and `"finishing"` (conditioning the map, then building
 rivers, flora and the terrain mesh), between `"fractal"` events at 0 and 1.
+Inside `"finishing"`, `"rivers"` reports 0 and 1 around the river build
+(routing water, lakes, channels and waterfalls).
 
 See [`docs/world-design-guide.md`](world-design-guide.md#1-the-generation-pipeline-in-order)
 for the creative walkthrough, and

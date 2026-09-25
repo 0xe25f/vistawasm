@@ -297,6 +297,8 @@ pub fn validate_water(water: &WaterOptions) -> VistaResult<()> {
   )?;
   validate_positive("water.rivers.widthScale", water.rivers.width_scale)?;
   validate_non_negative("water.rivers.currentSpeed", water.rivers.current_speed)?;
+  validate_unit_range("water.rivers.snowmelt", water.rivers.snowmelt, 0.0, 2.0)?;
+  validate_unit_range("water.rivers.meanders", water.rivers.meanders, 0.0, 1.0)?;
   Ok(())
 }
 
@@ -990,6 +992,18 @@ mod tests {
 
     let mut water = WaterOptions::default();
     water.rivers.min_catchment_km2 = -1.0;
+    assert!(validate_water(&water).is_err());
+
+    let mut water = WaterOptions::default();
+    water.rivers.snowmelt = 2.5;
+    let error = validate_water(&water).unwrap_err().to_string();
+    assert!(
+      error.contains("water.rivers.snowmelt") && error.contains("0 and 2"),
+      "{error}"
+    );
+
+    let mut water = WaterOptions::default();
+    water.rivers.meanders = f32::NAN;
     assert!(validate_water(&water).is_err());
 
     assert!(validate_water(&WaterOptions::default()).is_ok());

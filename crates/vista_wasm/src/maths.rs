@@ -14,6 +14,12 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
 
+/// Length of a 2D vector. Cheaper in code size than `f32::hypot`, which
+/// pulls in a careful overflow-safe routine these distances never need.
+pub fn length2(x: f32, y: f32) -> f32 {
+  (x * x + y * y).sqrt()
+}
+
 /// Smooth interpolation curve used by value noise.
 pub fn smoothstep(t: f32) -> f32 {
   let t = clamp_f32(t, 0.0, 1.0);
