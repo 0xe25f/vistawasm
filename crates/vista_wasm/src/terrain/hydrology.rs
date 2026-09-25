@@ -569,7 +569,7 @@ impl InflowGrid<'_> {
     distance
   }
 
-  /// Valley mouths on an open edge: land border cells at least a quarter
+  /// Valley mouths on an open edge: land border cells at least an eighth
   /// of the map from the sea, lower than every border cell within
   /// [`MOUTH_REACH`] either side, whose steepest descent leads inwards.
   /// The lowest one.
@@ -578,9 +578,9 @@ impl InflowGrid<'_> {
     let n = border.len() as i32;
     let height = |cell: u32| self.ground[cell as usize];
     // A mouth near the coast would pour a river straight into the sea,
-    // so it must lie a quarter of the map from it.
+    // so it must lie an eighth of the map from it.
     let coast = self.sea_distance();
-    let inland = self.width.min(self.height) / 4;
+    let inland = self.width.min(self.height) / 8;
 
     (0..n)
       .filter_map(|i| {
@@ -1464,7 +1464,7 @@ mod tests {
       .is_empty());
 
     // A valley mouth a few samples from the sea is coast: the inflow goes
-    // to the one a quarter of the map inland.
+    // to the one an eighth of the map inland.
     let coastal = map_from(96, 30.0, |x, y| {
       let west = (x as f32 - 40.0).abs() * 0.8;
       let east = (x as f32 - 80.0).abs() * 0.8 + 5.0;
