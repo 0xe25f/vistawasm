@@ -175,7 +175,7 @@ modes replace the terrain's textured shading with a flat-lit overlay:
 | `"height"` | Height above sea level, green lowlands to pale peaks. |
 | `"slope"` | Flat (green) to steep (red). |
 | `"normals"` | World-space normals as colour. |
-| `"materials"` | The dominant surface material (lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic). |
+| `"materials"` | The dominant surface material (lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, glacier ice, tundra, river gravel). |
 | `"biomes"` | The biome map, one colour per biome (see [`docs/biomes.md`](biomes.md)). |
 
 `"lod"`, `"flow"`, and `"no-data"` are accepted but currently render like

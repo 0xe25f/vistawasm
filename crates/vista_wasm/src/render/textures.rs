@@ -13,7 +13,7 @@
 /// Edge length of each terrain material layer.
 pub const TERRAIN_TEXTURE_SIZE: u32 = 512;
 /// Number of terrain material layers.
-pub const TERRAIN_LAYERS: u32 = 10;
+pub const TERRAIN_LAYERS: u32 = 11;
 /// Edge length of each flora layer.
 pub const FLORA_TEXTURE_SIZE: u32 = 512;
 /// Edge length of the water ripple texture.

@@ -510,7 +510,7 @@ mod tests {
     let surface = |celsius: f32| {
       vec![
         SurfaceSample {
-          materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
           celsius_hundredths: (celsius * 100.0) as i16,
           ..SurfaceSample::default()
         };
@@ -567,7 +567,7 @@ mod tests {
     let wet = WetBanks::build(&map, &water, &water);
     let surface = vec![
       SurfaceSample {
-        materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         celsius_hundredths: 1200,
         ..SurfaceSample::default()
       };
@@ -642,7 +642,7 @@ mod tests {
     let options = grass_options();
     let bare_materials = vec![
       SurfaceSample {
-        materials: [0, 0, 0, 0, 255, 0, 0, 0, 0, 0],
+        materials: [0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0],
         ..SurfaceSample::default()
       };
       (map.metadata.width * map.metadata.height) as usize

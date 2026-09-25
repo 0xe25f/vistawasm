@@ -100,7 +100,7 @@ engine.replaceTexture("terrainAlbedo", 0, rgba);
 
 | Target | Layers | Channels |
 | --- | --- | --- |
-| `"terrainAlbedo"` | 0 lush grass, 1 dry grass, 2 forest floor, 3 sand, 4 rock, 5 snow, 6 mud, 7 volcanic, 8 glacier ice, 9 tundra | rgb colour (sRGB), a height for blending |
+| `"terrainAlbedo"` | 0 lush grass, 1 dry grass, 2 forest floor, 3 sand, 4 rock, 5 snow, 6 mud, 7 volcanic, 8 glacier ice, 9 tundra, 10 river gravel | rgb colour (sRGB), a height for blending |
 | `"terrainNormal"` | Same order | rg tangent-space normal, b occlusion, a roughness |
 | `"flora"` | See the table above | rgb colour (sRGB), a coverage |
 
@@ -127,5 +127,5 @@ engine.setSurface({
 ```
 
 Tints multiply each material's colour (0 to 4 per channel), in the same
-order as the terrain texture layers. List all 10, or only the first 8 to
-leave ice and tundra untinted.
+order as the terrain texture layers. List all 11, the first 10 to leave
+gravel untinted, or the first 8 to leave ice, tundra and gravel untinted.

@@ -404,6 +404,25 @@ fn tundra(uv: vec2<f32>) -> vec4<f32> {
   return vec4<f32>(colour, height);
 }
 
+// Rounded river cobbles, 3 to 15 cm on the 2 m tile, packed in two sizes
+// with dark, sandy crevices between them.
+fn gravel(uv: vec2<f32>) -> vec4<f32> {
+  let big = worley2(uv * 14.0, 14, 111u);
+  let small = worley2(uv * 36.0, 36, 112u);
+  // Distance to the cell border: a dome over each stone.
+  let big_dome = sqrt(smoothstep(0.0, 0.3 + big.z * 0.2, big.y - big.x));
+  let small_dome = sqrt(smoothstep(0.0, 0.3, small.y - small.x)) * 0.7;
+  let on_big = step(small_dome, big_dome);
+  let dome = max(big_dome, small_dome);
+  let id = mix(small.z, big.z, on_big);
+  let grey = vec3<f32>(0.44, 0.43, 0.41);
+  let brown = vec3<f32>(0.5, 0.41, 0.31);
+  var colour = mix(grey, brown, fract(id * 5.3)) * (0.7 + fract(id * 13.7) * 0.5);
+  colour = colour * (0.92 + fbm2(uv, 64, 2, 113u) * 0.16);
+  colour = mix(vec3<f32>(0.12, 0.1, 0.08), colour, smoothstep(0.0, 0.35, dome));
+  return vec4<f32>(colour, dome);
+}
+
 fn material(layer: i32, uv: vec2<f32>) -> vec4<f32> {
   switch layer {
     case 0: { return lush_grass(uv); }
@@ -415,6 +434,7 @@ fn material(layer: i32, uv: vec2<f32>) -> vec4<f32> {
     case 6: { return mud(uv); }
     case 8: { return ice(uv); }
     case 9: { return tundra(uv); }
+    case 10: { return gravel(uv); }
     default: { return volcanic(uv); }
   }
 }
@@ -429,6 +449,7 @@ fn material_roughness(layer: i32, height: f32) -> f32 {
     // Scoured hollows are polished bare ice; raised ice is weathered.
     case 8: { return mix(0.15, 0.35, smoothstep(0.35, 0.75, height)); }
     case 9: { return 0.85; }
+    case 10: { return mix(0.95, 0.7, height); }
     default: { return 0.9; }
   }
 }
@@ -441,6 +462,7 @@ fn material_bump(layer: i32) -> f32 {
     case 5: { return 1.5; }
     case 3: { return 1.6; }
     case 8: { return 1.2; }
+    case 10: { return 4.0; }
     default: { return 3.0; }
   }
 }

@@ -319,7 +319,7 @@ Passed to `engine.setSurface()`. Every field is optional.
 | `textures` | `boolean` | `true` | `false` shades each material as a flat colour. |
 | `detailNormals` | `boolean` | `true` | Detail normal maps. |
 | `textureScale` | `number` | `1` | `0.05` to `20`. Larger stretches textures over more ground. |
-| `materialTints` | `[r, g, b][10]` | all `[1, 1, 1]` | Colour multipliers (`0` to `4`) for lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra. A list of the first 8 is also accepted; ice and tundra then stay untinted. |
+| `materialTints` | `[r, g, b][11]` | all `[1, 1, 1]` | Colour multipliers (`0` to `4`) for lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra, river gravel. A list of the first 8 or 10 is also accepted; the rest then stay untinted. |
 
 ## `RenderQualityOptions`
 

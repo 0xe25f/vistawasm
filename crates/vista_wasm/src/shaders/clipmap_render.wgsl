@@ -27,7 +27,7 @@ struct VertexOut {
   @location(1) normal: vec3<f32>,
   @location(2) materials_a: vec4<f32>,
   @location(3) materials_b: vec4<f32>,
-  // xy: ice and tundra weights, z: permanent snow, w: unused.
+  // xy: ice and tundra weights, z: permanent snow, w: gravel weight.
   @location(4) materials_c: vec4<f32>,
   @location(5) climate: vec4<f32>,
   @location(6) @interpolate(flat) biome: u32,
@@ -53,8 +53,9 @@ fn vertex_main(in: VertexIn) -> VertexOut {
   out.normal = decode_normal(in.normal);
   out.materials_a = unpack4x8unorm(in.materials.x);
   out.materials_b = unpack4x8unorm(in.materials.y);
-  // Slots 10 and 11 are reserved.
-  out.materials_c = vec4<f32>(unpack4x8unorm(in.materials.z).xy, f32(in.biome.w) / 255.0, 0.0);
+  // Slot 11 is reserved.
+  let slots_c = unpack4x8unorm(in.materials.z);
+  out.materials_c = vec4<f32>(slots_c.xy, f32(in.biome.w) / 255.0, slots_c.z);
   out.climate = in.climate;
   out.biome = in.biome.x;
   return out;
@@ -70,7 +71,8 @@ const MAT_MUD: i32 = 6;
 const MAT_VOLCANIC: i32 = 7;
 const MAT_ICE: i32 = 8;
 const MAT_TUNDRA: i32 = 9;
-const MATERIAL_COUNT: i32 = 10;
+const MAT_GRAVEL: i32 = 10;
+const MATERIAL_COUNT: i32 = 11;
 
 // Metres covered by one repeat of each material texture (near scale).
 fn material_scale(material: i32) -> f32 {
@@ -84,6 +86,7 @@ fn material_scale(material: i32) -> f32 {
     case 6: { return 5.5; }
     case 8: { return 14.0; }
     case 9: { return 5.0; }
+    case 10: { return 2.0; }
     default: { return 10.0; }
   }
 }
@@ -267,6 +270,7 @@ fn material_debug_colour(material: i32) -> vec3<f32> {
     case 6: { return vec3<f32>(0.3, 0.2, 0.15); }
     case 8: { return vec3<f32>(0.45, 0.75, 1.0); }
     case 9: { return vec3<f32>(0.55, 0.55, 0.3); }
+    case 10: { return vec3<f32>(0.45, 0.4, 0.55); }
     default: { return vec3<f32>(0.6, 0.1, 0.05); }
   }
 }
@@ -344,10 +348,10 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // look the same.
   let low_detail = distance > frame.distances.y;
 
-  var weights = array<f32, 10>(
+  var weights = array<f32, 11>(
     in.materials_a.x, in.materials_a.y, in.materials_a.z, in.materials_a.w,
     in.materials_b.x, in.materials_b.y, in.materials_b.z, in.materials_b.w,
-    in.materials_c.x, in.materials_c.y
+    in.materials_c.x, in.materials_c.y, in.materials_c.w
   );
 
   let debug_view = i32(frame.sky_tint.w + 0.5);
@@ -434,6 +438,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   var volcanic_amount = 0.0;
   var volcanic_height = 1.0;
   var wet_amount = 0.0;
+  var gravel_amount = 0.0;
 
   for (var k = 0; k < 3; k = k + 1) {
     if (top_weight[k] > 0.02) {
@@ -460,6 +465,10 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       if (top[k] == MAT_MUD) {
         wet_amount = wet_amount + w;
       }
+
+      if (top[k] == MAT_GRAVEL) {
+        gravel_amount = gravel_amount + w;
+      }
     }
   }
 
@@ -472,6 +481,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   ice_amount = ice_amount / total;
   volcanic_amount = volcanic_amount / total;
   wet_amount = wet_amount / total;
+  gravel_amount = gravel_amount / total;
 
   // Climate tinting: grass yellows where it is hot and dry and deepens
   // where it is wet, so neighbouring biomes shade into each other.
@@ -512,13 +522,19 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // Wet banks: within 6 m of a river, lake or waterfall the ground is
   // darker and glossy, and gentle banks are muddy.
   if (frame.rivers.w > 0.5 && over_terrain(position.xz)) {
-    let bank = 1.0 - smoothstep(0.0, 6.0, water_distance_at(position.xz));
+    let water_distance = water_distance_at(position.xz);
+    let bank = 1.0 - smoothstep(0.0, 6.0, water_distance);
 
     if (bank > 0.001) {
       let gentle = smoothstep(0.88, 0.97, geometric_normal.y) * (1.0 - snow_amount);
       albedo = mix(albedo * (1.0 - 0.35 * bank), vec3<f32>(0.05, 0.036, 0.024), bank * gentle * 0.5);
       roughness = mix(roughness, 0.35, bank);
       wetness = max(wetness, bank * 0.6);
+      // Wet stones by the water are darker and glossier than wet ground.
+      let stones = gravel_amount * (1.0 - smoothstep(0.0, 2.0, water_distance));
+      albedo = albedo * (1.0 - 0.3 * stones);
+      roughness = mix(roughness, 0.12, stones);
+      wetness = max(wetness, stones);
     }
   }
 
@@ -636,14 +652,16 @@ fn fragment_bank(in: BankOut) -> @location(0) vec4<f32> {
   let distance = length(position - frame.camera_position.xyz);
   // The bank slopes down towards the water.
   let normal = normalize(vec3<f32>(-in.outward.x, 6.0, -in.outward.y));
-  // Mud where the water is slow, then sand.
-  let sandy = smoothstep(0.4, 0.6, in.speed);
+  // Mud where the water is slow, sand, then gravel at 1 m/s and over.
+  let sandy = smoothstep(0.3, 0.5, in.speed);
+  let gravelly = smoothstep(0.9, 1.1, in.speed);
   let mud = sample_material_far(MAT_MUD, position, ddx_p, ddy_p, normal);
-  let sand = sample_material_far(MAT_SAND, position, ddx_p, ddy_p, normal);
+  let sand = sample_material_far(select(MAT_SAND, MAT_GRAVEL, gravelly > 0.5), position, ddx_p, ddy_p, normal);
   // Darkened like the terrain's own wet banks, so the strip meets them
   // without a seam.
   let wet = 1.0 - in.edge * 0.6;
-  let tinted = mix(mud.albedo * world.material_tints[MAT_MUD].rgb, sand.albedo * world.material_tints[MAT_SAND].rgb, sandy);
+  let coarse = world.material_tints[MAT_SAND].rgb * (1.0 - gravelly) + world.material_tints[MAT_GRAVEL].rgb * gravelly;
+  let tinted = mix(mud.albedo * world.material_tints[MAT_MUD].rgb, sand.albedo * coarse, sandy);
   let albedo = mix(tinted * 0.65, vec3<f32>(0.05, 0.036, 0.024), 0.5);
   let colour = shade_surface(albedo, normal, position, mix(mud.occlusion, sand.occlusion, sandy), mix(0.35, 1.0, wet) * 0.65, 0.35);
   let alpha = (1.0 - smoothstep(0.55, 1.0, in.edge)) * (1.0 - smoothstep(300.0, 500.0, distance)) * in.coverage;

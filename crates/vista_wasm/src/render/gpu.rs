@@ -89,7 +89,7 @@ struct WorldInfo {
   material_tints: [[f32; 4]; vista_types::MATERIAL_COUNT],
 }
 
-const _: () = assert!(std::mem::size_of::<WorldInfo>() == 448);
+const _: () = assert!(std::mem::size_of::<WorldInfo>() == 464);
 
 /// Tree culling parameters. Mirrors `CullParams` in `tree_cull.wgsl`.
 #[repr(C)]

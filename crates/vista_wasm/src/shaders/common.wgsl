@@ -116,7 +116,7 @@ struct WorldInfo {
   // terrain's sea level.
   terrain2: vec4<f32>,
   // Per material colour multiplier (rgb).
-  material_tints: array<vec4<f32>, 10>,
+  material_tints: array<vec4<f32>, 11>,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

@@ -732,7 +732,9 @@ export interface SurfaceOptions {
   textureScale?: number;
   /**
    * Colour multiplier per material (0 to 4 per channel), in the order
-   * lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic.
+   * lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic,
+   * glacier ice, tundra, river gravel. Lists of 8, 10 or 11 are accepted;
+   * missing materials stay untinted.
    */
   materialTints?: [number, number, number][];
 }

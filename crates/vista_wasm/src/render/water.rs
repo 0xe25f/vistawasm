@@ -240,6 +240,10 @@ pub struct RiverNetwork {
   /// and half width along their drawn centrelines, for reeds on their true
   /// banks.
   pub brooks: Vec<Vec<[f32; 3]>>,
+  /// Bed materials by river banks: gravel, sand and mud weights (0 to
+  /// 255, summing to the share they take) for samples the channel stage
+  /// changed, one entry per sample. See [`bed_materials`].
+  pub bed: Vec<(u32, [u8; 3])>,
 }
 
 /// One bank strip vertex (36 bytes).
@@ -588,8 +592,117 @@ pub fn build_river_network(
   network.reaches = channels.reaches;
   network.falls = channels.falls;
   network.carved = record.into_original();
+  network.bed = bed_materials(map, &network.reaches, &network.carved, &network.mask);
   crate::terrain::heightmap::update_stats(&map.heights, &map.no_data, &mut map.metadata);
   network
+}
+
+/// Gravel, sand and mud along rivers at least 0.75 samples wide, sorted
+/// by the flow: gravel at 1 m/s and over, sand from 0.4 to 1 m/s, and
+/// mud below, which the wet banks darken. They cover a band beside the
+/// water and, on the inner side of bends, point bars reaching out to
+/// 1.5 w; mouths near sea level are sand. Only samples the channel stage
+/// touched (`carved` or `mask`), from the water surface up to the bank
+/// top, and only as weights blended with the ground that is there.
+/// Narrower streams get their bed look from the bank strips. One entry
+/// per sample, from the reach that claims the largest share of it.
+pub fn bed_materials(
+  map: &HeightMap,
+  reaches: &[Reach],
+  carved: &[(usize, f32)],
+  mask: &[bool],
+) -> Vec<(u32, [u8; 3])> {
+  let mut touched = mask.to_vec();
+
+  for (index, _) in carved {
+    touched[*index] = true;
+  }
+
+  // The largest share of each sample: a first pass finds it, and the
+  // second keeps the first stamp that reaches it.
+  let mut best = vec![0u8; touched.len()];
+  let mut bed = Vec::new();
+
+  for keep in [false, true] {
+    stamp_bed(map, reaches, &touched, &mut |index, share, weights| {
+      if !keep {
+        best[index] = best[index].max(share);
+      } else if share == best[index] {
+        best[index] = 0;
+        bed.push((
+          index as u32,
+          weights.map(|weight| (weight * f32::from(share)).round() as u8),
+        ));
+      }
+    });
+  }
+
+  bed
+}
+
+/// Call `out(index, share, [gravel, sand, mud])` for every touched sample
+/// each wide river segment covers, as [`bed_materials`] describes; the
+/// share is 1 to 255.
+fn stamp_bed(
+  map: &HeightMap,
+  reaches: &[Reach],
+  touched: &[bool],
+  out: &mut dyn FnMut(usize, u8, [f32; 3]),
+) {
+  let metres = map.metadata.metres_per_sample;
+  let (width, height) = (map.metadata.width as i32, map.metadata.height as i32);
+  let sea = map.metadata.sea_level_metres;
+
+  for pair in reaches.iter().flat_map(|reach| reach.points.windows(2)) {
+    let (a, b) = (pair[0], pair[1]);
+    let w = 0.5 * (a.width + b.width);
+
+    if a.width.min(b.width) < 0.75 * metres || a.falling || b.falling {
+      continue;
+    }
+
+    let band = metres.max(0.5 * w);
+    let reach = (0.5 * w + band.max(1.5 * w)) / metres;
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let length = (dx * dx + dy * dy).max(1e-6);
+    let x0 = ((a.x.min(b.x) - reach).floor() as i32).max(0);
+    let x1 = ((a.x.max(b.x) + reach).ceil() as i32).min(width - 1);
+    let y0 = ((a.y.min(b.y) - reach).floor() as i32).max(0);
+    let y1 = ((a.y.max(b.y) + reach).ceil() as i32).min(height - 1);
+
+    for y in y0..=y1 {
+      for x in x0..=x1 {
+        let index = (y * width + x) as usize;
+
+        if !touched[index] {
+          continue;
+        }
+
+        let (px, py) = (x as f32 - a.x, y as f32 - a.y);
+        let t = ((px * dx + py * dy) / length).clamp(0.0, 1.0);
+        let lerp = |u: f32, v: f32| u + (v - u) * t;
+        let edge = length2(px - dx * t, py - dy * t) * metres - 0.5 * lerp(a.width, b.width);
+        let curvature = lerp(a.curvature, b.curvature);
+        let inner = (dx * py - dy * px) * curvature > 0.0;
+        let bar = 1.5 * w * smoothstep(curvature.abs() / 0.2) * f32::from(u8::from(inner));
+        let level = lerp(a.level, b.level);
+        let ground = map.heights[index];
+        let share = (1.0 - smoothstep((edge - 0.5 * band) / (0.5 * band)))
+          .max(1.0 - smoothstep((edge - 0.7 * bar) / (0.3 * bar).max(1e-3)))
+          * smoothstep((ground - level + 0.1) / 0.1)
+          * (1.0 - smoothstep((ground - level - lerp(a.depth, b.depth).max(1.0)) / 0.5));
+        let share = (share * 255.0).round() as u8;
+
+        if share >= 5 {
+          let speed = lerp(a.speed, b.speed);
+          let mouth = 1.0 - smoothstep((level - sea) / 1.5);
+          let gravel = smoothstep((speed - 0.9) / 0.2) * (1.0 - mouth);
+          let mud = (1.0 - smoothstep((speed - 0.3) / 0.2)) * (1.0 - mouth);
+          out(index, share, [gravel, 1.0 - gravel - mud, mud]);
+        }
+      }
+    }
+  }
 }
 
 /// The flow cell nearest a heightmap sample position.
@@ -1606,6 +1719,93 @@ mod tests {
         falling: false,
       })
       .collect()
+  }
+
+  /// A 64 x 48 flat map on a 10 m grid at 50.2 m, with every sample
+  /// marked as touched by the channel stage, and a straight river 20 m
+  /// wide along row 20 at `speed`, its surface at 50 m.
+  fn bed_scene(speed: f32, curvature: f32) -> (HeightMap, Vec<Reach>, Vec<bool>) {
+    let map = HeightMap::flat(
+      64,
+      48,
+      50.2,
+      TerrainMetadata {
+        width: 64,
+        height: 48,
+        metres_per_sample: 10.0,
+        sea_level_metres: 0.0,
+        ..TerrainMetadata::default()
+      },
+    );
+    let points = straight_reach(100)
+      .into_iter()
+      .map(|mut point| {
+        point.width = 20.0;
+        point.level = 50.0;
+        point.speed = speed;
+        point.curvature = curvature;
+        point
+      })
+      .collect();
+    let mask = vec![true; 64 * 48];
+    (map, vec![Reach { points }], mask)
+  }
+
+  fn bed_at(bed: &[(u32, [u8; 3])], x: u32, y: u32) -> [u8; 3] {
+    bed
+      .iter()
+      .find(|(index, _)| *index == y * 64 + x)
+      .map_or([0; 3], |(_, weights)| *weights)
+  }
+
+  #[test]
+  fn river_beds_sort_gravel_sand_and_mud_by_speed() {
+    for (speed, slot) in [(1.5, 0), (0.7, 1), (0.2, 2)] {
+      let (map, reaches, mask) = bed_scene(speed, 0.0);
+      let bed = bed_materials(&map, &reaches, &[], &mask);
+      let beside = bed_at(&bed, 30, 21);
+      assert!(beside[slot] > 200, "{speed} m/s: {beside:?}");
+      // Far from the water the ground is left alone.
+      assert_eq!(bed_at(&bed, 30, 40), [0; 3]);
+    }
+  }
+
+  #[test]
+  fn river_beds_only_touch_changed_samples_by_wide_rivers() {
+    let (map, reaches, _) = bed_scene(1.5, 0.0);
+    let untouched = vec![false; 64 * 48];
+    assert!(bed_materials(&map, &reaches, &[], &untouched).is_empty());
+    let carved = [(21 * 64 + 30, 51.0)];
+    let bed = bed_materials(&map, &reaches, &carved, &untouched);
+    assert_eq!(bed.len(), 1);
+
+    let (map, mut reaches, mask) = bed_scene(1.5, 0.0);
+    for point in &mut reaches[0].points {
+      point.width = 5.0;
+    }
+    assert!(bed_materials(&map, &reaches, &[], &mask).is_empty());
+  }
+
+  #[test]
+  fn point_bars_reach_out_on_the_inner_side_of_bends() {
+    // Turning left (positive curvature), the inner side is +y.
+    let (map, reaches, mask) = bed_scene(0.7, 0.5);
+    let bed = bed_materials(&map, &reaches, &[], &mask);
+    let sum = |w: [u8; 3]| w.iter().map(|v| u32::from(*v)).sum::<u32>();
+    assert!(sum(bed_at(&bed, 30, 20 + 3)) > 200);
+    assert_eq!(sum(bed_at(&bed, 30, 20 - 3)), 0);
+  }
+
+  #[test]
+  fn river_mouths_near_sea_level_are_sand() {
+    let (mut map, mut reaches, mask) = bed_scene(1.5, 0.0);
+    map.metadata.sea_level_metres = 49.8;
+    for point in &mut reaches[0].points {
+      point.level = 50.0;
+    }
+    let bed = bed_materials(&map, &reaches, &[], &mask);
+    let beside = bed_at(&bed, 30, 21);
+    assert!(beside[1] > beside[0], "{beside:?}");
   }
 
   #[test]

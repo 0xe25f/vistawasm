@@ -1708,23 +1708,23 @@ pub struct ShadowOptions {
 }
 
 /// Number of terrain surface materials.
-pub const MATERIAL_COUNT: usize = 10;
+pub const MATERIAL_COUNT: usize = 11;
 
 fn default_material_tints() -> [Rgb; MATERIAL_COUNT] {
   [[1.0, 1.0, 1.0]; MATERIAL_COUNT]
 }
 
-/// Accept 8 tints, as before ice and tundra were added, or all 10. Missing
-/// tints stay white.
+/// Accept 8 tints, as before ice and tundra were added, 10, as before
+/// gravel was added, or all 11. Missing tints stay white.
 fn deserialize_material_tints<'de, D>(deserializer: D) -> Result<[Rgb; MATERIAL_COUNT], D::Error>
 where
   D: serde::Deserializer<'de>,
 {
   let tints = Vec::<Rgb>::deserialize(deserializer)?;
 
-  if tints.len() != 8 && tints.len() != MATERIAL_COUNT {
+  if ![8, 10, MATERIAL_COUNT].contains(&tints.len()) {
     return Err(serde::de::Error::custom(format!(
-      "materialTints must list 8 or {MATERIAL_COUNT} colours, but {} were given.",
+      "materialTints must list 8, 10 or {MATERIAL_COUNT} colours, but {} were given.",
       tints.len()
     )));
   }
@@ -2166,15 +2166,17 @@ mod tests {
   }
 
   #[test]
-  fn material_tints_accept_eight_or_ten_colours() {
+  fn material_tints_accept_eight_ten_or_eleven_colours() {
     let eight = tints(8).unwrap();
     assert_eq!(eight[7], [0.5, 0.25, 2.0]);
     assert_eq!(eight[8], [1.0, 1.0, 1.0]);
     assert_eq!(eight[9], [1.0, 1.0, 1.0]);
 
     assert_eq!(tints(10).unwrap()[9], [0.5, 0.25, 2.0]);
+    assert_eq!(tints(10).unwrap()[10], [1.0, 1.0, 1.0]);
+    assert_eq!(tints(11).unwrap()[10], [0.5, 0.25, 2.0]);
     assert!(tints(9).is_err());
-    assert!(tints(11).is_err());
+    assert!(tints(12).is_err());
   }
 
   #[test]

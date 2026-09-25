@@ -44,6 +44,8 @@ pub const MAT_VOLCANIC: usize = 7;
 pub const MAT_ICE: usize = 8;
 /// Tundra moss, lichen, and stones.
 pub const MAT_TUNDRA: usize = 9;
+/// River gravel and cobbles.
+pub const MAT_GRAVEL: usize = 10;
 
 /// Number of surface materials.
 pub const MATERIAL_COUNT: usize = vista_types::MATERIAL_COUNT;
@@ -876,6 +878,27 @@ pub fn reclassify_surface(
   classify_into(map, normals, river_mask, options, Some(indices), samples);
 }
 
+/// Blend river bed materials (gravel, sand and mud weights for listed
+/// samples, from `render::water::bed_materials`) into classified
+/// samples, scaling the ground already there by the share they take.
+pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 3])]) {
+  for (index, weights) in bed {
+    let Some(sample) = samples.get_mut(*index as usize) else {
+      continue;
+    };
+    let share: u32 = weights.iter().map(|weight| u32::from(*weight)).sum();
+    let keep = 255 - share.min(255);
+
+    for slot in sample.materials.iter_mut() {
+      *slot = ((u32::from(*slot) * keep + 127) / 255) as u8;
+    }
+
+    for (material, weight) in [MAT_GRAVEL, MAT_SAND, MAT_MUD].into_iter().zip(weights) {
+      sample.materials[material] = sample.materials[material].saturating_add(*weight);
+    }
+  }
+}
+
 /// Inputs for [`apply_cold_materials`].
 struct ColdMaterials {
   gate: f32,
@@ -1093,6 +1116,28 @@ mod tests {
   use crate::terrain::heightmap::update_stats;
   use crate::terrain::normals::generate_normals;
   use vista_types::TerrainMetadata;
+
+  #[test]
+  fn bed_materials_blend_with_the_ground_there() {
+    let mut sample = SurfaceSample {
+      materials: [0; MATERIAL_COUNT],
+      moisture: 0,
+      temperature: 0,
+      heat: 0,
+      occlusion: 0,
+      biome: 0,
+      forest: 0,
+      river: 0,
+      permanent_snow: 0,
+      celsius_hundredths: 0,
+    };
+    sample.materials[MAT_LUSH_GRASS] = 255;
+    let mut samples = vec![sample; 2];
+    apply_bed_materials(&mut samples, &[(1, [102, 0, 0]), (7, [255, 0, 0])]);
+    assert_eq!(samples[0].materials[MAT_LUSH_GRASS], 255);
+    assert_eq!(samples[1].materials[MAT_LUSH_GRASS], 153);
+    assert_eq!(samples[1].materials[MAT_GRAVEL], 102);
+  }
 
   #[test]
   fn low_hills_get_no_automatic_snow_line_below_the_floor() {

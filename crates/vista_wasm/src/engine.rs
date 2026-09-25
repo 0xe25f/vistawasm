@@ -34,7 +34,7 @@ use crate::weather::WeatherSystem;
 /// Edge length, in texels, of every replaceable texture layer.
 pub const TEXTURE_LAYER_SIZE: u32 = 512;
 /// Number of terrain material texture layers.
-pub const TERRAIN_TEXTURE_LAYERS: u32 = 10;
+pub const TERRAIN_TEXTURE_LAYERS: u32 = 11;
 /// Largest custom tree instance list accepted by `set_tree_instances`.
 pub const MAX_CUSTOM_TREES: usize = 1_000_000;
 /// Sea colder than this, in °C, starts to freeze over (see `water.wgsl`).
@@ -1117,7 +1117,7 @@ impl EngineCore {
           None
         };
         let normals = crate::terrain::normals::generate_normals(terrain);
-        let surface = match before_rivers {
+        let mut surface = match before_rivers {
           Some((mut samples, relief)) if relief == SurfaceRelief::of(terrain, &self.biomes) => {
             let touched = touched_samples(terrain, &self.rivers);
             crate::terrain::biomes::reclassify_surface(
@@ -1132,6 +1132,7 @@ impl EngineCore {
           }
           _ => crate::terrain::biomes::classify_surface(terrain, &normals, mask, &self.biomes),
         };
+        crate::terrain::biomes::apply_bed_materials(&mut surface, &self.rivers.bed);
         self.surface = surface;
         let ocean = BiomeKind::Ocean as u8;
         self.sea_ice_possible = self
@@ -1139,6 +1140,12 @@ impl EngineCore {
           .iter()
           .any(|sample| sample.biome == ocean && sample.celsius() < SEA_ICE_CELSIUS);
         self.terrain_materials = terrain_materials(&self.surface);
+
+        // Bank strips shade mud, sand or gravel whatever the ground is.
+        if !self.rivers.bank_vertices.is_empty() {
+          use crate::terrain::biomes::{MAT_GRAVEL, MAT_MUD};
+          self.terrain_materials |= (1 << MAT_MUD) | (1 << MAT_GRAVEL);
+        }
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -1906,10 +1913,10 @@ mod tests {
       .replace_texture(TextureTarget::Flora, 9, &texels)
       .is_ok());
     assert!(engine
-      .replace_texture(TextureTarget::TerrainAlbedo, 9, &texels)
+      .replace_texture(TextureTarget::TerrainAlbedo, 10, &texels)
       .is_ok());
     assert!(engine
-      .replace_texture(TextureTarget::TerrainAlbedo, 10, &texels)
+      .replace_texture(TextureTarget::TerrainAlbedo, 11, &texels)
       .is_err());
     assert!(engine
       .replace_texture(TextureTarget::TerrainNormal, 0, &texels[4..])

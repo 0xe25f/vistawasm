@@ -736,17 +736,17 @@ mod tests {
   }
 
   #[test]
-  fn vertices_carry_ice_tundra_and_permanent_snow() {
+  fn vertices_carry_ice_tundra_gravel_and_permanent_snow() {
     let sample = SurfaceSample {
-      materials: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      materials: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
       permanent_snow: 200,
       ..SurfaceSample::default()
     };
     let vertex = TerrainVertex::new([0.0; 3], [0.0, 1.0, 0.0], &sample);
     let bytes: &[u8] = bytemuck::cast_slice(&vertex.materials);
 
-    assert_eq!(&bytes[..10], &sample.materials);
-    assert_eq!(&bytes[10..], &[0, 0]);
+    assert_eq!(&bytes[..11], &sample.materials);
+    assert_eq!(bytes[11], 0);
     assert_eq!(vertex.biome[3], 200);
   }
 
