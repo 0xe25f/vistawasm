@@ -19,7 +19,7 @@ use crate::maths::length2;
 use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::channels::{
   channel_depth, condition_channels, height_at, raw_streams, CarveRecord, ChannelContext,
-  ChannelPoint, Fall, Oxbow, RawStream, Reach, GRAVITY,
+  ChannelPoint, Fall, FallStep, Oxbow, RawStream, Reach, GRAVITY,
 };
 use crate::terrain::drainage::NO_RECEIVER;
 use crate::terrain::heightmap::HeightMap;
@@ -1033,84 +1033,82 @@ fn add_lakes(network: &mut RiverNetwork, hydrology: &Hydrology, map: &HeightMap,
   }
 }
 
-/// Rows down a waterfall sheet.
+/// Rows down a waterfall sheet, and down each step of a cascade.
 const FALL_ROWS: usize = 12;
+const CASCADE_STEP_ROWS: usize = 6;
 
-/// A waterfall: the churned plunge pool (with the other water surfaces),
-/// and in a buffer of their own, the falling sheet and mist sprites at its
-/// foot.
-fn add_fall(
+/// A churned plunge pool at `foot`: a full pool when `depth` is over 0,
+/// or, below the upper steps of a cascade, a churned film on the ground.
+/// Its water stands only as high as where it spills: the lowest ground
+/// just outside its rim, or the water in its outlet channel, and at most
+/// the foot. Below that it is flat; above it, and all over where the bowl
+/// holds nothing, as on a slope, it is a thin film over the ground, so it
+/// never stands out as a shelf. The shader fades it towards its rim, so
+/// where the pool is smaller than a heightmap sample it does not end in a
+/// hard edge.
+#[allow(clippy::too_many_arguments)]
+fn add_pool(
   network: &mut RiverNetwork,
   map: &HeightMap,
   fall: &Fall,
+  foot: [f32; 2],
+  foot_level: f32,
+  radius: f32,
+  depth: f32,
+  energy: f32,
   metres: f32,
   half: [f32; 2],
-  seed: u64,
 ) {
-  let height = fall.height();
-  let speed = fall.speed.max(0.5);
-  let fall_time = (2.0 * height / GRAVITY).sqrt();
-  let run = length2(fall.foot[0] - fall.lip[0], fall.foot[1] - fall.lip[1]) * metres;
-  let reach = (speed * fall_time).max(run);
-  let columns = ((fall.width / 4.0).ceil() as usize).max(3);
-  let direction = fall.direction;
-  let side = [-direction[1], direction[0]];
-  let impact = (2.0 * GRAVITY * height).sqrt();
-  let foot = to_world(fall.foot, metres, half);
+  let ring = radius / metres + 0.5;
+  let mut level = if depth > 0.0 {
+    foot_level
+  } else {
+    f32::NEG_INFINITY
+  };
 
-  // The churned plunge pool. Its water stands only as high as where it
-  // spills: the lowest ground just outside its rim, or the water in its
-  // outlet channel, and at most the foot. Below that it is flat; above
-  // it, and all over where the bowl holds nothing, as on a slope, it is a
-  // thin film over the ground, so it never stands out as a shelf. The
-  // shader fades it towards its rim, so where the pool is smaller than a
-  // heightmap sample it does not end in a hard edge.
-  let ring = fall.pool_radius / metres + 0.5;
-  let mut level = fall.foot_level;
-
-  for k in 0..POOL_SEGMENTS {
-    let angle = k as f32 / POOL_SEGMENTS as f32 * std::f32::consts::TAU;
-    let (cos, sin) = (angle.cos(), angle.sin());
-    let ground = height_at(map, fall.foot[0] + cos * ring, fall.foot[1] + sin * ring);
-    let outlet = cos * direction[0] + sin * direction[1] > 0.77;
-    level = level.min(if outlet {
-      ground + channel_depth(fall.discharge)
-    } else {
-      ground
-    });
+  if depth > 0.0 {
+    for k in 0..POOL_SEGMENTS {
+      let angle = k as f32 / POOL_SEGMENTS as f32 * std::f32::consts::TAU;
+      let (cos, sin) = (angle.cos(), angle.sin());
+      let ground = height_at(map, foot[0] + cos * ring, foot[1] + sin * ring);
+      let outlet = cos * fall.direction[0] + sin * fall.direction[1] > 0.77;
+      level = level.min(if outlet {
+        ground + channel_depth(fall.discharge)
+      } else {
+        ground
+      });
+    }
   }
 
   let surface = |x: f32, y: f32| {
     let ground = height_at(map, x, y).max(mesh_height_at(map, x, y));
-    fall.foot_level.min(level.max(ground + POOL_FILM_METRES))
+    foot_level.min(level.max(ground + POOL_FILM_METRES))
   };
-  let held = (level - (fall.foot_level - fall.pool_depth)).max(0.0);
+  let held = (level - (foot_level - depth)).max(0.0);
   let centre = network.vertices.len() as u32;
+  let world = to_world(foot, metres, half);
   // Bowl depth, the fall's energy (drop times discharge) and, where
   // frozen water expects it, the temperature.
-  let pool = [held, height * fall.discharge, 0.0, fall.celsius];
+  let pool = [held, energy, 0.0, fall.celsius];
   network.vertices.push(WaterVertex {
-    position: [foot[0], surface(fall.foot[0], fall.foot[1]) + 0.02, foot[1]],
+    position: [world[0], surface(foot[0], foot[1]) + 0.02, world[1]],
     flow: [0.0, 0.0],
     params: [WATER_KIND_POOL, 0.0, 0.0],
     extra: pool,
   });
 
-  let rings = ((3.0 * fall.pool_radius / metres).ceil() as usize).clamp(2, POOL_RINGS);
+  let rings = ((3.0 * radius / metres).ceil() as usize).clamp(2, POOL_RINGS);
 
   for ring in 1..=rings {
     let across = ring as f32 / rings as f32;
-    let radius = fall.pool_radius * across;
+    let r = radius * across;
 
     for k in 0..POOL_SEGMENTS {
       let angle = k as f32 / POOL_SEGMENTS as f32 * std::f32::consts::TAU;
       let (cos, sin) = (angle.cos(), angle.sin());
-      let level = surface(
-        fall.foot[0] + cos * radius / metres,
-        fall.foot[1] + sin * radius / metres,
-      );
+      let level = surface(foot[0] + cos * r / metres, foot[1] + sin * r / metres);
       network.vertices.push(WaterVertex {
-        position: [foot[0] + cos * radius, level + 0.02, foot[1] + sin * radius],
+        position: [world[0] + cos * r, level + 0.02, world[1] + sin * r],
         flow: [cos, sin],
         params: [WATER_KIND_POOL, across, 0.0],
         extra: pool,
@@ -1139,56 +1137,147 @@ fn add_fall(
       ]);
     }
   }
+}
 
+/// A waterfall or cascade: churned plunge pools (with the other water
+/// surfaces), and in a buffer of their own, one falling sheet over every
+/// step and one mist cloud at the bottom. Trickles have none of these:
+/// their step is whitewater on the river ribbon.
+fn add_fall(
+  network: &mut RiverNetwork,
+  map: &HeightMap,
+  fall: &Fall,
+  metres: f32,
+  half: [f32; 2],
+  seed: u64,
+) {
+  if fall.trickle {
+    return;
+  }
+
+  let height = fall.height();
+  let single = [FallStep {
+    lip: fall.lip,
+    lip_level: fall.lip_level,
+    foot: fall.foot,
+    foot_level: fall.foot_level,
+    pool_radius: fall.pool_radius,
+  }];
+  let steps: &[FallStep] = if fall.steps.is_empty() {
+    &single
+  } else {
+    &fall.steps
+  };
+
+  for step in &steps[..steps.len() - 1] {
+    let drop = step.lip_level - step.foot_level;
+    let energy = drop * fall.discharge;
+    add_pool(
+      network,
+      map,
+      fall,
+      step.foot,
+      step.foot_level,
+      step.pool_radius,
+      0.0,
+      energy,
+      metres,
+      half,
+    );
+  }
+
+  add_pool(
+    network,
+    map,
+    fall,
+    fall.foot,
+    fall.foot_level,
+    fall.pool_radius,
+    fall.pool_depth,
+    height * fall.discharge,
+    metres,
+    half,
+  );
+
+  let speed = fall.speed.max(0.5);
+  let columns = ((fall.width / 4.0).ceil() as usize).max(3);
+  let per_step = if steps.len() > 1 {
+    CASCADE_STEP_ROWS
+  } else {
+    FALL_ROWS
+  };
+  let highest = steps
+    .iter()
+    .map(|step| step.lip_level - step.foot_level)
+    .fold(0.0f32, f32::max);
+  let impact = (2.0 * GRAVITY * highest).sqrt();
+  let foot = to_world(fall.foot, metres, half);
   let vertices = &mut network.fall_vertices;
   let indices = &mut network.fall_indices;
 
-  // The sheet follows the path of water leaving the lip, x = v t and
+  // The sheet follows the path of water leaving each lip, x = v t and
   // y = -g t^2 / 2, but never cuts into the rock: where the face is less
-  // than vertical it is pushed out to lie just over it.
-  let mut rows = Vec::with_capacity(FALL_ROWS + 1);
-  let mut travelled = 0.0;
+  // than vertical it is pushed out to lie just over it. Between the steps
+  // of a cascade it runs straight from one foot to the next lip.
+  let mut rows: Vec<([f32; 2], f32, [f32; 2])> = Vec::new();
 
-  for k in 0..=FALL_ROWS {
-    let along = reach * k as f32 / FALL_ROWS as f32;
-    let t = along / speed;
-    let projectile = if t <= fall_time {
-      fall.lip_level - 0.5 * GRAVITY * t * t
-    } else {
-      fall.foot_level
-    };
-    let sx = fall.lip[0] + direction[0] * along / metres;
-    let sy = fall.lip[1] + direction[1] * along / metres;
-    let rock = height_at(map, sx, sy);
-    let y = if k == FALL_ROWS {
-      fall.foot_level
-    } else {
-      projectile.max(rock + 0.3).max(fall.foot_level)
-    };
+  for step in steps {
+    let drop = step.lip_level - step.foot_level;
+    let fall_time = (2.0 * drop / GRAVITY).sqrt();
+    let dx = step.foot[0] - step.lip[0];
+    let dy = step.foot[1] - step.lip[1];
+    let run = length2(dx, dy).max(1e-4);
+    let direction = [dx / run, dy / run];
+    let reach = (speed * fall_time).max(run * metres);
 
-    if let Some((_, _, py)) = rows.last() {
-      let py: f32 = *py;
-      travelled += length2(reach / FALL_ROWS as f32, py - y);
+    for k in 0..=per_step {
+      let along = reach * k as f32 / per_step as f32;
+      let t = along / speed;
+      let projectile = if t <= fall_time {
+        step.lip_level - 0.5 * GRAVITY * t * t
+      } else {
+        step.foot_level
+      };
+      let sx = step.lip[0] + direction[0] * along / metres;
+      let sy = step.lip[1] + direction[1] * along / metres;
+      let rock = height_at(map, sx, sy);
+      let y = if k == per_step {
+        step.foot_level
+      } else {
+        projectile.max(rock + 0.3).max(step.foot_level)
+      };
+      rows.push(([sx, sy], y, direction));
     }
-
-    rows.push((sx, sy, y));
   }
 
-  let total = travelled.max(0.01);
+  let distance = |a: &([f32; 2], f32, [f32; 2]), b: &([f32; 2], f32, [f32; 2])| {
+    length2(
+      length2(b.0[0] - a.0[0], b.0[1] - a.0[1]) * metres,
+      b.1 - a.1,
+    )
+  };
+  let total = rows
+    .windows(2)
+    .map(|pair| distance(&pair[0], &pair[1]))
+    .sum::<f32>()
+    .max(0.01);
   let mut travelled = 0.0;
   let first = vertices.len() as u32;
 
-  for (k, (sx, sy, y)) in rows.iter().enumerate() {
+  for (k, row) in rows.iter().enumerate() {
     if k > 0 {
-      travelled += length2(reach / FALL_ROWS as f32, rows[k - 1].2 - y);
+      travelled += distance(&rows[k - 1], row);
     }
+
+    let ([sx, sy], y, direction) = *row;
+    let side = [-direction[1], direction[0]];
 
     for column in 0..=columns {
       let across = column as f32 / columns as f32 * 2.0 - 1.0;
       let offset = across * fall.width * 0.5 / metres;
       let world = to_world([sx + side[0] * offset, sy + side[1] * offset], metres, half);
       vertices.push(WaterVertex {
-        position: [world[0], *y, world[1]],
+        position: [world[0], y, world[1]],
         flow: [direction[0] * speed, direction[1] * speed],
         params: [WATER_KIND_FALL, across, impact],
         extra: [travelled, total, fall.celsius, height],
@@ -1198,7 +1287,7 @@ fn add_fall(
 
   let stride = columns as u32 + 1;
 
-  for k in 0..FALL_ROWS as u32 {
+  for k in 0..rows.len().saturating_sub(1) as u32 {
     for column in 0..columns as u32 {
       let a = first + k * stride + column;
       let b = a + 1;
@@ -1428,8 +1517,14 @@ mod tests {
     }
 
     update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    // A river entering at the top of the valley: the valley alone drains
+    // only a trickle, which has no pool.
     let options = RiverOptions {
       min_catchment_km2: 0.005,
+      inflow: vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+        position: [0.0, 120.0],
+        discharge_cubic_metres_per_second: 4.0,
+      }]),
       ..RiverOptions::default()
     };
     let sources = plain(map.heights.len());
@@ -1464,6 +1559,47 @@ mod tests {
         "pool {above} m above the ground at {x}, {y}"
       );
     }
+  }
+
+  #[test]
+  fn a_trickle_fall_has_no_sheet_mist_or_pool() {
+    let size = 128;
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 2.0,
+      sea_level_metres: 0.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(size, size, 0.0, metadata);
+
+    for y in 0..size {
+      for x in 0..size {
+        let step = if y >= 64 { 20.0 } else { 0.0 };
+        let _ = map.set_height(
+          x,
+          y,
+          y as f32 * 0.1 - 0.5 + (x as f32 - 64.0).abs() * 0.5 + step,
+        );
+      }
+    }
+
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    let options = RiverOptions {
+      min_catchment_km2: 0.005,
+      inflow: vista_types::RiverInflows::Mode(vista_types::InflowMode::None),
+      ..RiverOptions::default()
+    };
+    let sources = plain(map.heights.len());
+    let network = build_river_network(&mut map, &options, sources);
+
+    assert!(!network.falls.is_empty());
+    assert!(network.falls.iter().all(|fall| fall.trickle));
+    assert!(network.fall_vertices.is_empty());
+    assert!(!network
+      .vertices
+      .iter()
+      .any(|vertex| vertex.params[0] == WATER_KIND_POOL));
   }
 
   #[test]

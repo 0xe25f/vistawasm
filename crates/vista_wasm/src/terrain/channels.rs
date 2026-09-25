@@ -156,8 +156,24 @@ pub struct Reach {
   pub points: Vec<ChannelPoint>,
 }
 
-/// A waterfall where a channel drops over a step.
+/// One step of a cascade.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FallStep {
+  /// Lip, in heightmap sample coordinates.
+  pub lip: [f32; 2],
+  /// Water level at the lip, in metres.
+  pub lip_level: f32,
+  /// Foot, in heightmap sample coordinates.
+  pub foot: [f32; 2],
+  /// Water level at the foot, in metres.
+  pub foot_level: f32,
+  /// Radius of the churned water at its foot, in metres.
+  pub pool_radius: f32,
+}
+
+/// A waterfall where a channel drops over a step, or a cascade of falls
+/// close together, from the first lip to the last foot.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Fall {
   /// Lip, in heightmap sample coordinates.
   pub lip: [f32; 2],
@@ -181,13 +197,38 @@ pub struct Fall {
   pub pool_depth: f32,
   /// Mean annual temperature at the lip, in °C.
   pub celsius: f32,
+  /// A trickle (under [`TRICKLE_DISCHARGE`] and [`TRICKLE_WIDTH`]): its
+  /// step is whitewater on the river ribbon, with no sheet, mist or pool.
+  pub trickle: bool,
+  /// For a cascade, its steps from the top; empty for a single fall.
+  pub steps: Vec<FallStep>,
 }
 
 impl Fall {
-  /// Height of the drop, in metres.
+  /// Height of the drop, in metres: for a cascade, the total drop.
   pub fn height(&self) -> f32 {
     self.lip_level - self.foot_level
   }
+}
+
+/// Falls carrying less than this, in cubic metres per second, and
+/// narrower than [`TRICKLE_WIDTH`], are trickles.
+pub const TRICKLE_DISCHARGE: f32 = 0.05;
+
+/// See [`TRICKLE_DISCHARGE`], in metres.
+pub const TRICKLE_WIDTH: f32 = 1.0;
+
+/// Plunge pool radius and depth, in metres, under a fall of `height`
+/// metres landing in a channel `width` metres wide with `discharge` m³/s:
+/// `0.3 height + width` and `0.15 height`, both scaled by
+/// `clamp(sqrt(Q) / 2, 0.15, 1)`, so a trickle does not dig a pool the size
+/// of a river's. The depth is at least 0.3 m.
+pub fn pool_size(height: f32, width: f32, discharge: f32) -> (f32, f32) {
+  let scale = (discharge.max(0.0).sqrt() / 2.0).clamp(0.15, 1.0);
+  (
+    (0.3 * height + width) * scale,
+    (0.15 * height * scale).max(0.3),
+  )
 }
 
 /// A cut-off meander loop holding still water.
@@ -414,7 +455,8 @@ fn condition_with(
     }
 
     // Pools first, so the channel below cuts its outlet through the lip.
-    for fall in &falls {
+    // A cascade's upper steps leave only churned water, and trickles none.
+    for fall in falls.iter().filter(|fall| !fall.trickle) {
       carve_pool(map, fall, metres, record, &mut channels.mask);
     }
 
@@ -684,7 +726,23 @@ fn shape_stream(
   };
   condition_profile(&mut levels, &steps);
 
-  let in_step = |i: usize| steps.iter().any(|(a, b)| i >= *a && i < *b);
+  // Trickles are drawn as whitewater down their step, so their drop
+  // counts towards the slope, and only real falls are left out of it.
+  let trickle =
+    |(a, _): &(usize, usize)| raw.discharge[*a] < TRICKLE_DISCHARGE && widths[*a] < TRICKLE_WIDTH;
+  let falling: Vec<(usize, usize)> = steps
+    .iter()
+    .copied()
+    .filter(|step| !trickle(step))
+    .collect();
+  let in_step = |i: usize| falling.iter().any(|(a, b)| i >= *a && i < *b);
+
+  for step in steps.iter().filter(|step| trickle(step)) {
+    for value in &mut rapids[step.0..=step.1] {
+      *value = 1.0;
+    }
+  }
+
   let celsius =
     |x: f32, y: f32| surface_at(context.surface, map, x, y).map_or(15.0, |s| s.celsius());
   let mut points: Vec<ChannelPoint> = (0..n)
@@ -720,38 +778,93 @@ fn shape_stream(
         curvature: 0.0,
         celsius: celsius(raw.points[i][0], raw.points[i][1]),
         rapids: rapids[i],
-        falling: steps.iter().any(|(a, b)| i >= *a && i <= *b),
+        falling: false,
       }
     })
     .collect();
 
-  let falls: Vec<Fall> = steps
-    .iter()
-    .map(|(a, b)| {
-      let lip = points[*a];
-      let foot = points[*b];
-      let dx = foot.x - lip.x;
-      let dy = foot.y - lip.y;
-      let length = length2(dx, dy).max(1e-4);
-      let height = lip.level - foot.level;
+  // Falls whose foot lies within three pool radii of the next lip form
+  // one cascade, with one sheet over its steps and one pool at the bottom.
+  let step_of = |(a, b): (usize, usize)| {
+    let (lip, foot) = (&points[a], &points[b]);
+    let height = lip.level - foot.level;
+    FallStep {
+      lip: [lip.x, lip.y],
+      lip_level: lip.level,
+      foot: [foot.x, foot.y],
+      foot_level: foot.level,
+      pool_radius: pool_size(height, foot.width, lip.discharge).0,
+    }
+  };
+  let mut groups: Vec<Vec<(usize, usize)>> = Vec::new();
+
+  for step in &falling {
+    match groups.last_mut() {
+      Some(group)
+        if {
+          let last = group[group.len() - 1];
+          s[step.0] - s[last.1] <= 3.0 * step_of(last).pool_radius
+        } =>
+      {
+        group.push(*step)
+      }
+      _ => groups.push(vec![*step]),
+    }
+  }
+
+  let fall = |(a, b): (usize, usize), steps: Vec<FallStep>, trickle: bool| {
+    let lip = points[a];
+    let foot = points[b];
+    let dx = foot.x - lip.x;
+    let dy = foot.y - lip.y;
+    let length = length2(dx, dy).max(1e-4);
+    let (pool_radius, pool_depth) = if trickle {
+      (0.0, 0.0)
+    } else {
+      pool_size(lip.level - foot.level, foot.width, lip.discharge)
+    };
+
+    Fall {
+      lip: [lip.x, lip.y],
+      lip_level: lip.level,
+      foot: [foot.x, foot.y],
+      foot_level: foot.level,
+      direction: [dx / length, dy / length],
+      width: lip.width,
+      discharge: lip.discharge,
       // The water arrives at the lip at the speed of the reach above.
-      let approach = points[a.saturating_sub(1)].speed;
-
-      Fall {
-        lip: [lip.x, lip.y],
-        lip_level: lip.level,
-        foot: [foot.x, foot.y],
-        foot_level: foot.level,
-        direction: [dx / length, dy / length],
-        width: lip.width,
-        discharge: lip.discharge,
-        speed: approach,
-        pool_radius: 0.3 * height + foot.width,
-        pool_depth: 0.15 * height,
-        celsius: lip.celsius,
-      }
+      speed: points[a.saturating_sub(1)].speed,
+      pool_radius,
+      pool_depth,
+      celsius: lip.celsius,
+      trickle,
+      steps,
+    }
+  };
+  let mut falls: Vec<Fall> = groups
+    .iter()
+    .map(|group| {
+      let span = (group[0].0, group[group.len() - 1].1);
+      let steps = if group.len() > 1 {
+        group.iter().map(|step| step_of(*step)).collect()
+      } else {
+        Vec::new()
+      };
+      fall(span, steps, false)
     })
     .collect();
+  falls.extend(
+    steps
+      .iter()
+      .filter(|step| trickle(step))
+      .map(|step| fall(*step, Vec::new(), true)),
+  );
+
+  for group in &groups {
+    for point in &mut points[group[0].0..=group[group.len() - 1].1] {
+      point.falling = true;
+    }
+  }
 
   let mut oxbows = Vec::new();
   // Distance along the stream to the nearest step, in metres.
@@ -1786,29 +1899,42 @@ mod tests {
     })
   }
 
+  /// Options for the cliff fixtures: a river of `discharge` m³/s entering
+  /// at the top of the valley, as the valley alone drains only a trickle.
+  fn cliff_options(discharge: f32) -> RiverOptions {
+    RiverOptions {
+      min_catchment_km2: 0.005,
+      inflow: vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+        position: [0.0, 120.0],
+        discharge_cubic_metres_per_second: discharge,
+      }]),
+      ..RiverOptions::default()
+    }
+  }
+
   #[test]
   fn a_cliff_step_makes_one_waterfall_with_a_plunge_pool() {
     let mut map = cliff_valley();
-    let options = RiverOptions {
-      min_catchment_km2: 0.005,
-      ..RiverOptions::default()
-    };
+    let options = cliff_options(4.0);
     let (channels, _) = condition(&mut map, &options);
 
     assert_eq!(channels.falls.len(), 1, "falls {:?}", channels.falls);
-    let fall = channels.falls[0];
+    let fall = channels.falls[0].clone();
+    assert!(!fall.trickle && fall.steps.is_empty());
     assert!(
       (fall.height() - 20.0).abs() <= 2.0,
       "height {}",
       fall.height()
     );
-    assert!((fall.pool_radius - (0.3 * fall.height() + fall.width)).abs() < 1e-4);
+    // At 4 m³/s the pool keeps plan 3's size.
+    assert!((fall.pool_radius - (0.3 * fall.height() + fall.width)).abs() < 1e-3);
 
     // The pool is cut to about its radius around the foot, and no further.
+    // The outlet channel downstream (north) of the foot is left out.
     let metres = map.metadata.metres_per_sample;
     let mut deepest_reach = 0.0f32;
 
-    for y in 0..128u32 {
+    for y in fall.foot[1].floor() as u32..128u32 {
       for x in 0..128u32 {
         let index = (y * 128 + x) as usize;
         let below_foot = fall.foot_level - map.heights[index];
@@ -1841,6 +1967,64 @@ mod tests {
   }
 
   #[test]
+  fn pools_scale_with_discharge() {
+    let plan_three = |height: f32, width: f32| 0.3 * height + width;
+    let (small, small_depth) = pool_size(20.0, 0.6, 0.03);
+    let (large, large_depth) = pool_size(20.0, 5.4, 4.0);
+
+    assert!(small <= 0.2 * plan_three(20.0, 0.6), "{small}");
+    assert!((large - plan_three(20.0, 5.4)).abs() < 1e-4);
+    assert!((large_depth - 3.0).abs() < 1e-4);
+    assert!(small_depth >= 0.3);
+  }
+
+  #[test]
+  fn a_trickle_over_a_cliff_is_listed_but_has_no_pool() {
+    let mut map = cliff_valley();
+    let before = map.heights.clone();
+    let (channels, _) = condition(&mut map, &cliff_options(0.01));
+
+    assert_eq!(channels.falls.len(), 1);
+    let fall = &channels.falls[0];
+    assert!(fall.trickle && fall.pool_radius == 0.0);
+    // Its step stays on the ribbon, as whitewater, not a fall.
+    let reach = &channels.reaches[0];
+    assert!(reach.points.iter().all(|point| !point.falling));
+    assert!(reach.points.iter().any(|point| point.rapids > 0.0));
+
+    // Nothing is dug below the foot: only the channel is cut there.
+    let foot = (fall.foot[1].round() as u32 * 128 + fall.foot[0].round() as u32) as usize;
+    assert!(before[foot] - map.heights[foot] <= 1.0);
+  }
+
+  #[test]
+  fn falls_close_together_form_one_cascade() {
+    // Three 8 m steps 6 samples apart.
+    let mut map = map_from(128, 2.0, |x, y| {
+      let steps = [40.0, 46.0, 52.0].iter().filter(|at| y >= **at).count() as f32;
+      y * 0.1 - 0.5 + (x - 64.0).abs() * 0.5 + steps * 8.0
+    });
+    let (channels, _) = condition(&mut map, &cliff_options(3.0));
+    let cascades: Vec<&Fall> = channels.falls.iter().filter(|f| !f.trickle).collect();
+
+    assert_eq!(cascades.len(), 1, "{:?}", channels.falls);
+    let cascade = cascades[0];
+    assert_eq!(cascade.steps.len(), 3);
+    let total: f32 = cascade
+      .steps
+      .iter()
+      .map(|step| step.lip_level - step.foot_level)
+      .sum();
+    assert!(
+      (cascade.height() - total).abs() < 2.0,
+      "{} {}",
+      cascade.height(),
+      total
+    );
+    assert!(cascade.height() > 20.0);
+  }
+
+  #[test]
   fn plunge_pools_on_a_steep_slope_never_raise_the_ground() {
     // A 20 m cliff above a hillside falling at about 30 degrees,
     // in a valley that gathers the water.
@@ -1850,11 +2034,7 @@ mod tests {
     };
     let original = map_from(128, 2.0, shape);
     let mut map = map_from(128, 2.0, shape);
-    let options = RiverOptions {
-      min_catchment_km2: 0.005,
-      ..RiverOptions::default()
-    };
-    let (channels, _) = condition(&mut map, &options);
+    let (channels, _) = condition(&mut map, &cliff_options(4.0));
 
     assert!(!channels.falls.is_empty());
 
@@ -2032,10 +2212,7 @@ mod tests {
   fn the_carve_record_restores_exactly() {
     let mut map = cliff_valley();
     let before = map.heights.clone();
-    let options = RiverOptions {
-      min_catchment_km2: 0.005,
-      ..RiverOptions::default()
-    };
+    let options = cliff_options(4.0);
     let (_, original) = condition(&mut map, &options);
     assert!(!original.is_empty());
 

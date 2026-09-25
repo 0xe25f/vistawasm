@@ -257,6 +257,8 @@ mod tests {
         pool_radius: 10.0,
         pool_depth: 3.0,
         celsius,
+        trickle: false,
+        steps: Vec::new(),
       }],
       ..RiverNetwork::default()
     }

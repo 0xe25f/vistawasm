@@ -2513,4 +2513,47 @@ mod tests {
     engine.set_water(water).unwrap();
     assert!(engine.inflows().is_empty());
   }
+
+  #[test]
+  fn a_cascade_is_listed_once_with_its_total_drop() {
+    let mut engine = EngineCore::new_for_tests(VistaEngineOptions::default()).unwrap();
+    let size = 128u32;
+    let metadata = vista_types::TerrainMetadata {
+      metres_per_sample: 2.0,
+      sea_level_metres: 0.0,
+      ..Default::default()
+    };
+    // Three 8 m steps 6 samples apart, in a valley draining north.
+    let heights = (0..size * size)
+      .map(|i| {
+        let (x, y) = ((i % size) as f32, (i / size) as f32);
+        let steps = [40.0, 46.0, 52.0].iter().filter(|at| y >= **at).count() as f32;
+        y * 0.1 - 0.5 + (x - 64.0).abs() * 0.5 + steps * 8.0
+      })
+      .collect();
+    let map = HeightMap::from_values(
+      size,
+      size,
+      heights,
+      vec![false; (size * size) as usize],
+      metadata,
+    )
+    .unwrap();
+    engine.install_terrain(map, &mut |_, _| {});
+    let mut water = WaterOptions::default();
+    water.rivers.min_catchment_km2 = 0.005;
+    water.rivers.inflow = vista_types::RiverInflows::List(vec![vista_types::RiverInflow {
+      position: [0.0, 120.0],
+      discharge_cubic_metres_per_second: 3.0,
+    }]);
+    engine.set_water(water).unwrap();
+    let listed: Vec<_> = engine
+      .waterfalls()
+      .into_iter()
+      .filter(|fall| fall.discharge_cubic_metres_per_second > 1.0)
+      .collect();
+
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].height_metres > 20.0, "{listed:?}");
+  }
 }
