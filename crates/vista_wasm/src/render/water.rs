@@ -530,6 +530,16 @@ pub fn build_river_network(
   };
 
   let table = kinoshita_table();
+  // Sub-sample loops multiply a stream's points. On wide, gentle country
+  // full of small streams they would run to millions, so the map shares a
+  // budget of twice its channel points, main stems first.
+  let mut loop_budget = 2
+    * channels
+      .reaches
+      .iter()
+      .map(|reach| reach.points.len())
+      .sum::<usize>()
+    + 100_000;
 
   for (index, reach) in channels.reaches.iter().enumerate() {
     let phase = crate::maths::hash_u64(seed ^ index as u64) as f32 / u64::MAX as f32;
@@ -540,6 +550,7 @@ pub fn build_river_network(
       phase,
       &table,
       &anchored,
+      &mut loop_budget,
     );
     let drawn = add_ribbon(&mut network, &centre, metres, half, current, &anchored);
     add_bank_strips(&mut network, map, &drawn, metres, half);
@@ -1114,6 +1125,7 @@ fn sub_sample_centreline(
   phase: f32,
   table: &[f32; 64],
   joined: &dyn Fn(&ChannelPoint) -> bool,
+  budget: &mut usize,
 ) -> Vec<ChannelPoint> {
   let strength = strength.clamp(0.0, 1.0);
   // Loops shorter than a sixth of a sample would need many points for
@@ -1127,6 +1139,29 @@ fn sub_sample_centreline(
   if points.len() < 3 || strength <= 0.0 || points.iter().all(|p| amplitude(p) < 0.02 * metres) {
     return points.to_vec();
   }
+
+  // Loops need six points per wavelength. A reach whose loops would
+  // overrun the map's share keeps its carved path.
+  let pieces = |a: &ChannelPoint, b: &ChannelPoint| {
+    if amplitude(a).max(amplitude(b)) > 0.0 {
+      let length = length2(b.x - a.x, b.y - a.y) * metres;
+      (length / (11.0 * a.width.min(b.width) / 6.0))
+        .ceil()
+        .clamp(1.0, 256.0) as usize
+    } else {
+      1
+    }
+  };
+  let count: usize = points
+    .windows(2)
+    .map(|pair| pieces(&pair[0], &pair[1]))
+    .sum();
+
+  if count > *budget {
+    return points.to_vec();
+  }
+
+  *budget -= count;
 
   let mut out = vec![points[0]];
   let mut phase = phase;
@@ -1153,12 +1188,7 @@ fn sub_sample_centreline(
       -(b.y - a.y) * metres / length.max(1e-4),
       (b.x - a.x) * metres / length.max(1e-4),
     ];
-    let wavelength = 11.0 * a.width.min(b.width);
-    let pieces = if amplitude(&a).max(amplitude(&b)) > 0.0 {
-      (length / (wavelength / 6.0)).ceil().clamp(1.0, 256.0) as usize
-    } else {
-      1
-    };
+    let pieces = pieces(&a, &b);
 
     for k in 1..=pieces {
       let t = k as f32 / pieces as f32;
@@ -2099,12 +2129,41 @@ mod tests {
       .collect()
   }
 
+  /// A loop budget that never runs out.
+  fn unlimited() -> usize {
+    usize::MAX
+  }
+
+  #[test]
+  fn narrow_stream_loops_share_a_budget() {
+    let table = kinoshita_table();
+    let carved = flat_brook(2.0);
+    let mut budget = usize::MAX;
+    let looped = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|_| false, &mut budget);
+    let used = usize::MAX - budget;
+    assert!(looped.len() > carved.len() && used >= looped.len() - 1);
+
+    // Too little left: the stream keeps its carved path, and spends none.
+    let mut short = used - 1;
+    let kept = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|_| false, &mut short);
+    assert_eq!(kept, carved);
+    assert_eq!(short, used - 1);
+  }
+
   #[test]
   fn narrow_stream_loops_pass_through_joins() {
     let table = kinoshita_table();
     let carved = flat_brook(2.0);
     let join = carved[80];
-    let centre = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|point| *point == join);
+    let centre = sub_sample_centreline(
+      &carved,
+      30.0,
+      1.0,
+      0.3,
+      &table,
+      &|point| *point == join,
+      &mut unlimited(),
+    );
     let at_join = centre
       .iter()
       .min_by(|a, b| (a.x - join.x).abs().total_cmp(&(b.x - join.x).abs()))
@@ -2122,7 +2181,15 @@ mod tests {
   fn narrow_streams_meander_within_their_carved_corridor() {
     let table = kinoshita_table();
     let carved = flat_brook(2.0);
-    let centre = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|_| false);
+    let centre = sub_sample_centreline(
+      &carved,
+      30.0,
+      1.0,
+      0.3,
+      &table,
+      &|_| false,
+      &mut unlimited(),
+    );
     let y = carved[0].y;
 
     for point in &centre {
@@ -2144,11 +2211,19 @@ mod tests {
     // Streams a sample wide or more keep their carved path.
     let wide = flat_brook(40.0);
     assert_eq!(
-      sub_sample_centreline(&wide, 30.0, 1.0, 0.3, &table, &|_| false),
+      sub_sample_centreline(&wide, 30.0, 1.0, 0.3, &table, &|_| false, &mut unlimited()),
       wide
     );
     assert_eq!(
-      sub_sample_centreline(&carved, 30.0, 0.0, 0.3, &table, &|_| false),
+      sub_sample_centreline(
+        &carved,
+        30.0,
+        0.0,
+        0.3,
+        &table,
+        &|_| false,
+        &mut unlimited()
+      ),
       carved
     );
   }
