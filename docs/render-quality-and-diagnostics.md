@@ -14,6 +14,41 @@ top is the one worth making cheaper. It needs the browser's
 is `null`. Readings arrive a few frames late and are only taken when the
 previous one has arrived, so measuring never stalls rendering.
 
+## Load time and pipeline warm-up
+
+The first frame waits for the textures and pipelines it draws with, and
+nothing else. Pipelines are created when the scene needs them, in the
+order the frame draws: a map without rivers never compiles the river
+pipeline, and one without grass never compiles grass. Procedural textures
+are baked the same way: only the terrain materials the ground uses, the
+bark and leaves of the species present, and the cloud volume when clouds
+or volumetric mist need it. What the scene may need soon, such as rain
+and its clouds when the weather can turn, is created after the first
+frame is on screen, one pipeline per frame, so it never holds the first
+frame back and is ready when it is needed.
+
+To see the effect, time the first frame from `createVistaEngine()`:
+
+```ts
+const started = performance.now();
+const engine = await createVistaEngine({ canvas });
+await engine.generateFractal({
+  seed: 1,
+  size: 512,
+  horizontalScaleMetres: 12,
+  verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.52, lacunarity: 2.05 }
+});
+engine.renderOnce();
+await new Promise(requestAnimationFrame);
+console.log(`first frame after ${Math.round(performance.now() - started)} ms`);
+```
+
+Under software WebGPU the default scene's first frame arrives in about
+half the time it took before pipelines and textures were created on
+demand. Turning a system on later (grass, clouds, screen reflections)
+compiles its pipeline once, on the next frame.
+
 ## Frame rate and resolution
 
 VistaWASM aims for a steady frame rate on any display, from a 1080p

@@ -93,11 +93,17 @@ configuration through `wgpu` (`render/gpu.rs`).
 When the engine is created, and never again:
 
 1. **Procedural textures** (`render/textures.rs` +
-    `shaders/texture_gen.wgsl`, mipmapped by `shaders/mipgen.wgsl`): eight
-    terrain materials (albedo + height, normal + occlusion + roughness),
-    ten bark and foliage layers, water ripples and foam, general 2D noise,
-    and a 64³ Perlin-Worley volume for clouds and mist. All are generated
-    from seamlessly tiling noise on the GPU; no image files are shipped.
+    `shaders/texture_gen.wgsl`, mipmapped by `shaders/mipgen.wgsl`):
+    eleven terrain materials (albedo + height, normal + occlusion +
+    roughness), ten bark and foliage layers, water ripples and foam,
+    general 2D noise, and a 64³ Perlin-Worley volume for clouds and mist.
+    All are generated from seamlessly tiling noise on the GPU; no image
+    files are shipped. Most are baked only when first needed: the terrain
+    layers of the materials the surface uses (plus rock and sand for the
+    skirt, and mud and gravel when there are bank strips), the bark and
+    foliage of the species present, and the cloud volume when clouds or
+    volumetric mist sample it. The terrain bake writes heights in one
+    pass and normals from them in a second.
 2. **Tree species** (`render/tree_models.rs`): eight species meshes built
     from code with fixed seeds, merged into one vertex/index buffer.
 3. **Impostors**: each species mesh is rendered once, orthographically,
@@ -105,6 +111,20 @@ When the engine is created, and never again:
 4. **Ocean grid** (`render/water.rs::build_ocean_grid`): a camera-following
     grid whose spacing doubles every 16 steps and whose outer ring reaches
     the horizon.
+
+### Pipelines
+
+Render and compute pipelines are created when the scene needs them
+(`render/pipelines.rs`). Each frame the engine describes what the scene
+draws as `Needs` (trees, grass, clouds, rivers, falls, bank strips, sea
+ice, screen reflections, the final pass), and every pipeline those need
+that does not exist yet is created, in the order the frame draws. What
+the scene is likely to need soon (weather that can reach rain, clouds
+and lens drops) is created after the first frame has been presented, at
+most one pipeline per frame, so the browser compiles it while the scene
+is already on screen. Pipelines no longer needed are kept, so switching a
+system back on never compiles it again. `wgpu` has no public
+asynchronous pipeline creation, so the warm-up relies on this ordering.
 
 ### Per-terrain work
 
@@ -120,27 +140,36 @@ When the engine is created, and never again:
     2. a painted water mask flattens its lakes and yields its river
         centrelines (`terrain/water_mask.rs`);
     3. hydrology (`terrain/hydrology.rs`) routes water on a flow grid at
-        full resolution up to 1024 per side: a priority flood fills
-        basins to their spill height, discharge is accumulated from rain,
-        snowmelt and springs, lakes overflow or stay endorheic, channels
-        are marked, and the network is split into streams, main stems
-        first;
+        full resolution up to 1024 per side: inflows from beyond an open
+        edge are placed, a priority flood fills basins to their spill
+        height (inflow cells are not outlets), discharge is accumulated
+        from rain, snowmelt, springs and inflows, lakes overflow or stay
+        endorheic, channels are marked, and the network is split into
+        streams, main stems first;
     4. the channel stage (`terrain/channels.rs::condition_channels`)
         shapes beds and banks: hydraulic geometry, a level that never
-        rises, V or floodplain cross-sections, meanders and oxbows,
-        deltas, waterfall steps and plunge pools;
-    5. geometry is built (`render/water.rs`): river ribbons, lake and
-        oxbow surfaces and plunge pools in one buffer, waterfall sheets and
-        mist in another; then the wet-bank field and the sound map
-        (`water_sounds.rs`).
+        rises, V or floodplain cross-sections (rock walls on powerful,
+        steep reaches), valley floors for big rivers, meanders and
+        oxbows, deltas, waterfall steps and cascades, and plunge pools
+        sized by discharge. The carve visits each sample once per
+        segment, with a scratch running height;
+    5. geometry is built (`render/water.rs`): river ribbons (with
+        sub-sample loops for streams narrower than a sample, and
+        straight runs merged), lake and oxbow surfaces and plunge pools in
+        one buffer, waterfall sheets and mist in another, and bank strips
+        in a third; then the wet-bank field, the riparian field (a
+        two-pass chamfer on the heightmap grid), the bed materials, and
+        the sound map (`water_sounds.rs`).
 
     Every changed sample (mask, channels, pools, delta fans) is recorded
     in one `CarveRecord`, so the terrain can be restored exactly.
 3. Normals and the biome/surface map are baked
-    (`terrain/biomes.rs::classify_surface`). After a river build, only
-    the samples within two samples of a change or a channel are classified
-    again (`reclassify_surface`), which gives the same result as a full
-    pass.
+    (`terrain/biomes.rs::classify_surface`), with the riparian field
+    adding moisture near water, then the bed materials are blended in
+    (`apply_bed_materials`). After a river build, only the samples within
+    two samples of a change or a channel, and those with a riparian
+    value, are classified again (`reclassify_surface`), which gives the
+    same result as a full pass.
 4. The LOD terrain mesh, tree and grass instances, river and waterfall
     geometry, a height texture (for water depth), and the surface
     textures are uploaded.
@@ -168,17 +197,19 @@ Shaders sample it with `textureSampleLevel` and the clamp sampler
 
 `@group(1) @binding(13) surface_texture_b` is a second `rgba8unorm`
 texture at the same resolution, uploaded by
-`GpuContext::upload_wet_banks` after the river build. Every pipeline that
-uses group 1 binds it:
+`GpuContext::upload_surface` with the first. Every pipeline that uses
+group 1 binds it:
 
 | Channel | Contents |
 | --- | --- |
 | r | Distance to the nearest river, lake or waterfall edge / 40 m: 0 at the water, 1 at 40 m or more (and everywhere when there is no water). |
-| g, b, a | Reserved, always 0, for later plans. |
+| g | Snow and ice cover, 0 to 1: the sample's snow and ice material weights or its permanent snow, whichever is more (`SurfaceSample::snow_cover`). Bank strips fade out under it. |
+| b, a | Reserved, always 0, for later plans. |
 
-It is built on the CPU with a two-pass chamfer distance transform
-(`render/water.rs::WetBanks`) and sampled with `textureSampleLevel`
-(`common.wgsl::water_distance_at`).
+The distance is built on the CPU with a two-pass chamfer distance
+transform (`render/water.rs::WetBanks`). Both channels are sampled with
+`textureSampleLevel` (`common.wgsl::water_distance_at` and
+`snow_cover_at`).
 
 ### Terrain vertices
 
@@ -188,7 +219,7 @@ Each terrain vertex is 36 bytes:
 | --- | --- | --- |
 | 0–11 | `float32x3` | Position in terrain metres. |
 | 12–15 | `snorm16x2` | Octahedron-encoded normal (`terrain_mesh::encode_normal`). |
-| 16–27 | `uint32x3` | Twelve `unorm8` material weights, unpacked with `unpack4x8unorm`: lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra, and two reserved slots that are always 0. |
+| 16–27 | `uint32x3` | Twelve `unorm8` material weights, unpacked with `unpack4x8unorm`: lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, ice, tundra, gravel, and one reserved slot that is always 0. |
 | 28–31 | `unorm8x4` | Moisture, temperature, volcanic heat, occlusion. |
 | 32–35 | `uint8x4` | Biome index, tree cover, river flag, permanent snow. |
 
@@ -224,6 +255,10 @@ Each terrain vertex is 36 bytes:
       ice and steep snow (one projection path, blending smoothly from
       top-down as slopes steepen), detail normals, climate tinting,
       wetness, puddles, snow, and glacier crevasses;
+    - bank strips beside streams narrower than a sample
+      (`clipmap_render.wgsl`, `vertex_bank` and `fragment_bank`), right
+      after the terrain, alpha-blended with a depth bias and no depth
+      writes;
     - tree meshes and impostors (`shaders/trees.wgsl`) via indirect draws;
     - grass (`shaders/grass_instances.wgsl`), alpha-tested.
 6. **Cloud pass** (`shaders/atmosphere.wgsl`, `cloud_main`) raymarches the
@@ -244,7 +279,12 @@ Each terrain vertex is 36 bytes:
     the HDR target, depth, and upsampled clouds, draws sky and sun, applies
     haze and mist along each pixel's true view ray, adds rain and snow, and
     tone maps (ACES).
-8. **Water pass** (`shaders/water.wgsl`): the ocean grid, then rivers,
+8. **Scene copy pass** (`shaders/atmosphere.wgsl`, `scene_copy_main`),
+    only with `WaterOptions.reflections` `"screen"`: copies the HDR target
+    and linear view depth into a half-resolution `rgba16float` image for
+    water to reflect. Water is not in it, so water never reflects water.
+    Its GPU time is counted in the water pass.
+9. **Water pass** (`shaders/water.wgsl`): the ocean grid, then rivers,
     lakes and plunge pools, then waterfall sheets and mist, depth-tested
     against the opaque scene, alpha-blended, fogged, and tone mapped in
     the same way. The ocean draws with one of two pipelines from the same
@@ -255,10 +295,12 @@ Each terrain vertex is 36 bytes:
     no waves or sea ice. Waterfalls draw with a fourth, with their own
     fragment entry point (`fragment_fall`). Frozen water and waterfalls
     are also behind uniform guards (`frame.rivers`), so maps without them
-    skip that code.
-9. **Present pass** (`shaders/atmosphere.wgsl`, `present_main`), only when
+    skip that code. The water pipelines bind the scene copy as group 3
+    (`@group(3) @binding(0) scene_copy`), and trace reflected rays through
+    it behind the `frame.water_origin.w` guard.
+10. **Present pass** (`shaders/atmosphere.wgsl`, `present_main`), only when
     the scene is rendered below the canvas resolution or lens drops are on.
-    Steps 5 to 8 then draw into an off-screen image at the render scale,
+    Steps 5 to 9 then draw into an off-screen image at the render scale,
     and this pass upscales it to the canvas with contrast-adaptive
     sharpening, refracting it through raindrops on the lens. The drops
     are simulated on the CPU (`lens_drops.rs`) and uploaded with a screen

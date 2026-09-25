@@ -172,10 +172,38 @@ for changed defaults.
   river, waterfall, lake shore and surf with their loudness, and
   `getWaterfalls()` lists every waterfall, for hosts that play their own
   audio.
+- **Big rivers from beyond the map.** `RiverOptions.inflow` brings water
+  in across an open edge: `"auto"` (the default) places one inflow at the
+  lowest valley mouth an eighth of the map from the sea, sized from a
+  basin ten times the map's land area; `"none"` adds nothing; or list up
+  to 8 inflows with a position and a discharge. `getInflows()` returns the
+  inflows in use. Big rivers on gentle ground get a flat valley floor
+  beside their banks instead of a canal.
+- **Small streams at their true size.** Streams narrower than a heightmap
+  sample meander at their own wavelength inside their carved trench, get
+  crisp muddy, sandy or gravelly banks from a new bank-strip pass, and
+  stay continuous faint lines in the distance instead of dashes. Reeds
+  line the true banks of slow brooks on coarse maps.
+- **River beds.** A gravel terrain material in slot 10: rounded cobbles
+  with dark crevices. River banks sort by the flow into gravel, sand and
+  mud, with point bars on the inner side of bends and sand at mouths;
+  wet stones by the water are dark and glossy. Shallow, fast water shows
+  stones on its bed, some breaking the surface with foam rings, and
+  powerful, steep reaches (stream power over 300 W/m²) get bigger stones,
+  wilder rapids and rock walls. `materialTints` accepts 11 colours and
+  `replaceTexture()` accepts terrain layer 10.
+- **Green banks.** `RiverOptions.riparian` (0 to 2, default 1) greens the
+  ground within 25 to 400 m of rivers, by discharge, and 40 m of lakes:
+  moister soil, meadow and thicket in dry country, and more trees.
+- **Reflections.** `WaterOptions.reflections`: `"screen"` (the default)
+  reflects the terrain, trees and banks on screen in rivers, lakes and the
+  sea, falling back to the sky; `"sky"` reflects the sky and clouds only.
 - `FlyCameraControls.lookAt([x, y, z])` turns the camera towards a point.
   The demo has snowmelt and meander sliders, springs and waterfalls
   checkboxes, a button that jumps to a waterfall, and a water sounds
-  readout.
+  readout; a River valley preset, a button that jumps to the main river,
+  an inflow select with a discharge slider, a green banks slider and a
+  reflections select.
 
 ### Changed
 
@@ -183,6 +211,22 @@ for changed defaults.
   depend on the climate's rain and snow, and river-bed samples are no
   longer classified as sand or mud; wet banks show mud instead.
 - Terrain generation reports a `"rivers"` progress phase.
+- **Faster first frame.** Pipelines and procedural textures are created
+  when the scene needs them: only the terrain layers, tree species and
+  cloud noise in use are baked, and pipelines the first frame does not
+  draw are warmed up one per frame afterwards. The default scene's first
+  frame arrives in about half the time under software WebGPU.
+- **Cheaper rivers.** The channel carve visits each sample once, and
+  straight, uniform runs of river ribbon are merged: the carve runs about
+  2.6 times faster and ribbons use about half as many vertices.
+- **Falls at their size.** Plunge pools scale with discharge, trickles
+  under 0.05 m³/s fall as whitewater with no sheet, mist or pool, and
+  falls close together form one cascade. `getWaterfalls()` lists a
+  cascade as one waterfall, from its first lip to its last foot.
+- Open-edge maps now have a big river by default (`inflow: "auto"`), the
+  ground by rivers is greener (`riparian: 1`), and water reflects the
+  scene (`reflections: "screen"`). Set `inflow: "none"`, `riparian: 0` or
+  `reflections: "sky"` for the previous look.
 
 - **Fractal terrain is geology-led.** Continents with an exact land
   fraction and uplifted ranges are carved by a stream-power model into

@@ -83,7 +83,7 @@ installed, and whenever `rivers` or the water mask changes, the engine
 routes water over the finished heights (after erosion, glaciers and any
 painted water) on a grid at full terrain resolution up to 1024 samples
 per side. The river build is reported as the `"rivers"` progress phase;
-at 512 × 512 it takes about 100 to 250 ms in the browser.
+at 512 × 512 it takes about 100 to 350 ms in the browser.
 
 ### Sources
 
@@ -100,11 +100,39 @@ at 512 × 512 it takes about 100 to 250 ms in the browser.
     (under 8 degrees) in a hollow draining more than 0.05 km², a small
     spring (0.02 m³/s) starts a stream. Springs are placed by the terrain
     and at most one per 600 m. `springs: false` turns them off.
+- **Inflow.** On a map with open edges (`edges: "open"`), a river can
+    arrive from beyond the map. `inflow: "auto"` (the default) places one
+    at the lowest valley mouth on the edge that lies at least an eighth
+    of the map from the sea, with the discharge of a basin ten times the
+    map's land area at its mean rain. `inflow: "none"` adds nothing, and
+    a list places up to 8 inflows yourself; each snaps to the nearest
+    land sample. `getInflows()` returns the inflows in use.
 - A sample becomes a channel when its discharge reaches
     `minCatchmentKm2` × 0.03 m³/s per km², about the flow of that
     catchment in an average climate.
 
 With biomes switched off, rain and snow follow the default climate.
+
+```ts
+const water = {
+  enabled: true,
+  seaLevelMetres: 0,
+  waveScale: 0.8,
+  reflectivity: 0.35,
+  shorelineSoftnessMetres: 6
+};
+
+// A 40 m³/s river entering 2 km west of the centre of the map.
+engine.setWater({
+  ...water,
+  rivers: { inflow: [{ position: [-2000, 0], dischargeCubicMetresPerSecond: 40 }] }
+});
+const [inflow] = engine.getInflows();
+console.log(inflow.position, inflow.dischargeCubicMetresPerSecond);
+
+// Back to the automatic inflow on open edges.
+engine.setWater({ ...water, rivers: { inflow: "auto" } });
+```
 
 ### Lakes
 
@@ -131,6 +159,10 @@ shapes their beds and banks:
     V; on gentle ground (under 2 %) it is flat-bottomed, with a floodplain
     four widths wide on each side levelled towards the bank; in between
     it blends.
+- **Valley floors.** A river at least 20 m wide on ground flatter than
+    1 % lowers the ground beside it to half a metre above the bank for
+    three widths, blending back over six more, so a big river flows
+    through a floor, not a canal.
 - **Meanders.** On lowland reaches flatter than 1.5 % and wider than 4 m,
     the river swings in Kinoshita curves, 11 widths long and up to 2.5
     widths wide times `meanders`. The sharpest tenth of the loops leave
@@ -143,9 +175,12 @@ shapes their beds and banks:
     within two samples far more steeply than the reach around it, or runs
     steeper than 35 degrees. A long steep run becomes a staircase of steps
     of at most two samples each, with pools between them, as steep
-    mountain streams are. Steps under 3 m become rapids. Each fall has a
-    plunge pool 0.3 × its height + its width across and 0.15 × its
-    height deep. The bowl is cut into the ground, never built up, and
+    mountain streams are. Steps under 3 m become rapids. Falls close
+    together form one cascade. Each fall has a plunge pool 0.3 × its
+    height + its width across and 0.15 × its height deep, scaled by its
+    discharge (from 0.15 for a trickle to the full size at 4 m³/s), at
+    least 0.3 m deep. A trickle under 0.05 m³/s and under 1 m wide falls
+    as whitewater down the step, with no sheet, mist or pool. The bowl is cut into the ground, never built up, and
     its water stands only as high as where it spills, over its lowest
     rim point or into its outlet. Around that, and all over on a slope
     where the bowl holds nothing, it is a thin film of churned water over
@@ -174,6 +209,66 @@ returns the shaped terrain while rivers are on.
     and foamier and rise up to a fifth of their depth in their channels;
     where it is cold they run slow and low.
 
+### Small streams
+
+Streams narrower than a heightmap sample carry detail the grid cannot:
+
+- **Loops.** On slopes under 1 %, the ribbon meanders at the stream's
+    own wavelength (about 11 widths), inside a corridor of ±0.45 samples
+    around the carved path so the water stays in its trench. The loops
+    pass through the stream's ends and every join with another stream.
+    The hydrology, carving and sounds keep the carved path.
+- **Bank strips.** A strip beside each bank, from half the width out to
+    half the width plus `max(0.5 m, 0.4 w)`, shades a muddy bank under
+    0.4 m/s, sand to 1 m/s and gravel above, with the terrain's
+    materials and lighting, fading out between 300 and 500 m. On snow
+    and ice, and under settled snow, the strip fades out so the snow
+    shows.
+- **No dashes.** Ribbons and strips widen to at least 0.75 pixel each
+    side and fade by how much of that the water covers, so a far brook is
+    a faint continuous line.
+- **Reeds** grow along the true banks of slow brooks, where the grid is
+    too coarse to find them.
+
+### Beds, stones and rapids
+
+- **Bed materials.** Beside rivers at least 0.75 samples wide, the banks
+    the river shaped turn to gravel where the water runs at 1 m/s and
+    over, sand from 0.4 to 1 m/s and mud below, blended with the ground
+    there. Point bars of gravel or sand reach out to 1.5 widths on the
+    inner side of bends; mouths near sea level are sand. Gravel within
+    2 m of the water is wet: darker and glossy.
+- **Stones.** In water under 1 m deep running over 0.5 m/s, stones 0.3
+    to 0.8 m across lie on the bed. Those breaking the surface are drawn
+    as wet stones with foam on their upstream side; those just under it
+    make a bright riffle.
+- **Rock-walled rapids.** Where the stream power, 1000 × 9.81 × Q × S /
+    w, is over 300 W/m² and the slope over 2 %, the banks turn to rock,
+    the carved walls steepen towards vertical, the stones grow to 0.8 to
+    2 m with foam streaks behind them, and standing waves and whitewater
+    grow.
+
+### Green banks
+
+Ground near water is moister: within `R = 25 + 12 √Q` metres of a river
+(25 to 400 m) and 40 m of a lake, classification adds up to 0.45 to the
+moisture above the bank, falling off as `(1 - d / R)²`. Dry country by
+water turns to meadow and thicket, trees in meadows and savannah grow up
+to 2.5 times as dense, and grass grows denser. `riparian` scales it from
+0 (off) to 2; the default is 1. Glacier ice stays as it is, and trees
+never grow on bars or in the channel.
+
+```ts
+engine.setWater({
+  enabled: true,
+  seaLevelMetres: 0,
+  waveScale: 0.8,
+  reflectivity: 0.35,
+  shorelineSoftnessMetres: 6,
+  rivers: { riparian: 2 }
+});
+```
+
 ### Waterfalls
 
 Each waterfall has:
@@ -189,7 +284,8 @@ Each waterfall has:
     1.5 km;
 - **a plunge pool** of churned foam in rings spreading from the foot.
 
-`engine.getWaterfalls()` lists every waterfall, where its water lands:
+`engine.getWaterfalls()` lists every waterfall, and a cascade as one
+waterfall from its first lip to its last foot, where its water lands:
 
 ```ts
 const [fall] = engine.getWaterfalls();
@@ -324,7 +420,13 @@ engine.on("stats", () => {
   `shallowColour`; it fades to `deepColour` by `clarityMetres`.
 - **Reflections.** Schlick Fresnel reflects the same analytic sky as the
   sky pass, including cloud reflections, plus a GGX sun glitter.
-  `reflectivity` scales reflection strength.
+  `reflectivity` scales reflection strength. With `reflections:
+  "screen"` (the default), water also reflects what is on screen: the
+  terrain, trees and banks. A reflected ray is followed through a
+  half-resolution copy of the scene, and falls back to the sky where it
+  leaves the screen or finds nothing, so the edges of the screen show
+  the sky. Ripples and waves break the reflection up. `reflections:
+  "sky"` reflects the sky and clouds only, and costs less.
 - **Subsurface light** glows through thin wave crests facing the sun.
 - **Foam** appears on folding crests, along shorelines, in rapids, on the
   outer bank of bends and in plunge pools, scaled by `foam`.
@@ -386,7 +488,8 @@ settings. See [`docs/weather.md`](weather.md).
 - No buoyancy or gameplay interaction. Compare your own height query (see
   [`docs/game-development.md`](game-development.md#querying-terrain-height-for-gameplay))
   against `seaLevelMetres` yourself.
-- No reflections of scene geometry; reflections show the sky and clouds.
+- No reflections of water in water, and nothing off screen is reflected:
+  screen reflections fall back to the sky there.
 - Rivers do not change sea level or flood terrain: discharge is a yearly
   mean, with no floods or droughts.
 - No audio playback; `getWaterSounds()` tells your own audio where the

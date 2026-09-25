@@ -168,6 +168,7 @@ for you (see [`docs/weather.md`](weather.md#cloud-types)).
 | `deepColour` | `[number, number, number]?` | `[0.015, 0.09, 0.16]` | sRGB colour of deep water. |
 | `clarityMetres` | `number?` | `6` | Depth at which the sea bed stops being visible. Must be `> 0`. |
 | `foam` | `number?` | `0.7` | Foam on crests, shorelines, and rapids, `0` to `1`. |
+| `reflections` | `"screen" \| "sky"?` | `"screen"` | `"screen"` reflects the terrain, trees and banks on screen, falling back to the sky where a reflected ray leaves the screen; `"sky"` reflects the sky and clouds only, and costs less. |
 
 ### `WaveOptions`
 
@@ -193,8 +194,13 @@ for you (see [`docs/weather.md`](weather.md#cloud-types)).
 | `springs` | `boolean?` | `true` | Small springs at the foot of steep slopes. |
 | `meanders` | `number?` | `0.6` | Lowland meander strength, `0` (straight) to `1`. |
 | `waterfalls` | `boolean?` | `true` | Waterfalls, with mist and plunge pools, where rivers cross steps and cliffs. |
+| `inflow` | `"auto" \| "none" \| RiverInflow[]?` | `"auto"` | Water from beyond the map. `"auto"` places one inflow at the lowest valley mouth on an open edge, an eighth of the map from the sea, sized from a basin ten times the map's land area; `"none"` adds nothing; or up to 8 `{ position: [x, z], dischargeCubicMetresPerSecond }` (`0` to `100000`), each snapped to the nearest land sample. Positions must be on the map. |
+| `riparian` | `number?` | `1` | Bankside greening and trees, `0` (off) to `2`: moister ground, greener biomes and more trees within 25 to 400 m of rivers (by discharge) and 40 m of lakes. |
 
 `minCatchmentKm2` becomes a discharge threshold of 0.03 m³/s per km².
+`getInflows()` returns the inflows in use as `WaterInflow` objects:
+`position` (world x, y, z on the land sample the inflow snapped to) and
+`dischargeCubicMetresPerSecond`.
 See [`docs/water.md`](water.md#rivers-and-lakes-rivers) for how rivers
 form.
 
