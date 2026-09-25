@@ -878,10 +878,10 @@ pub fn reclassify_surface(
   classify_into(map, normals, river_mask, options, Some(indices), samples);
 }
 
-/// Blend river bed materials (gravel, sand and mud weights for listed
+/// Blend river bed materials (gravel, sand, mud and rock weights for listed
 /// samples, from `render::water::bed_materials`) into classified
 /// samples, scaling the ground already there by the share they take.
-pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 3])]) {
+pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 4])]) {
   for (index, weights) in bed {
     let Some(sample) = samples.get_mut(*index as usize) else {
       continue;
@@ -893,7 +893,10 @@ pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 3])]
       *slot = ((u32::from(*slot) * keep + 127) / 255) as u8;
     }
 
-    for (material, weight) in [MAT_GRAVEL, MAT_SAND, MAT_MUD].into_iter().zip(weights) {
+    for (material, weight) in [MAT_GRAVEL, MAT_SAND, MAT_MUD, MAT_ROCK]
+      .into_iter()
+      .zip(weights)
+    {
       sample.materials[material] = sample.materials[material].saturating_add(*weight);
     }
   }
@@ -1133,7 +1136,7 @@ mod tests {
     };
     sample.materials[MAT_LUSH_GRASS] = 255;
     let mut samples = vec![sample; 2];
-    apply_bed_materials(&mut samples, &[(1, [102, 0, 0]), (7, [255, 0, 0])]);
+    apply_bed_materials(&mut samples, &[(1, [102, 0, 0, 0]), (7, [255, 0, 0, 0])]);
     assert_eq!(samples[0].materials[MAT_LUSH_GRASS], 255);
     assert_eq!(samples[1].materials[MAT_LUSH_GRASS], 153);
     assert_eq!(samples[1].materials[MAT_GRAVEL], 102);

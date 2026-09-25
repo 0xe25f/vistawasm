@@ -575,6 +575,18 @@ fn fragment_fall(in: VertexOut) -> @location(0) vec4<f32> {
   return vec4<f32>(finish_colour(apply_fog(colour, position, in.clip_position.xy)), saturate(alpha));
 }
 
+// The stone in the cell of a grid `size` metres apart around `p`, if the
+// cell has one (with probability `chance`): xy its centre, z its radius
+// (from `radius.x` to `radius.y`), or 0 without one. Each stone stays
+// inside its cell, so one cell is all a pixel needs.
+fn bed_stone(p: vec2<f32>, size: f32, radius: vec2<f32>, chance: f32) -> vec3<f32> {
+  let cell = floor(p / size) + size;
+  let r = mix(radius.x, radius.y, hash12(cell + 7.3));
+  let jitter = vec2<f32>(hash12(cell + 1.7), hash12(cell + 4.1)) - 0.5;
+  let centre = (cell - size + 0.5) * size + jitter * (size - 2.0 * r);
+  return vec3<f32>(centre, select(0.0, r, hash12(cell) < chance));
+}
+
 @fragment
 fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   let t = time_seconds();
@@ -628,6 +640,11 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
   // Rapids: on slopes of 2 to 8 %, and below small steps.
   let rapids = smoothstep(0.015, 0.025, slope);
+  // Unit stream power (rho g Q S / w = rho g v d S): over 300 W/m² on
+  // slopes over 2 % the banks are rock, the stones big and the rapids
+  // wild (see `rock_banks` in `terrain/channels.rs`).
+  let power = 9810.0 * flow_speed * in.extra.z * slope;
+  let wild = select(0.0, smoothstep(300.0, 600.0, power) * smoothstep(0.02, 0.03, slope), river);
 
   if (river) {
     detail = mix(flow_a, flow_b, flow_blend) * mix(0.12, 1.2, smoothstep(0.5, 2.0, flow_speed));
@@ -639,7 +656,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       let spacing = max(TAU * flow_speed * flow_speed / 9.81, 0.8);
       let wobble = textureSampleLevel(noise_texture, linear_sampler, in.rest_xz / 23.0, texture_lod(footprint, 23.0)).r;
       let crest = cos((dot(in.rest_xz, along) / spacing + wobble * 3.0) * TAU);
-      detail = detail + vec3<f32>(along.x, 0.0, along.y) * crest * rapids * 0.45;
+      detail = detail + vec3<f32>(along.x, 0.0, along.y) * crest * rapids * 0.45 * (1.0 + wild);
     }
   }
 
@@ -785,11 +802,45 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
       foam = max(breaking, surf_zone * mix(0.35, 1.0, bands) * shore_foam_texel * 1.6);
     } else if (river) {
       // Whitewater on rapids, and on the outer bank of bends.
-      let whitewater = saturate((flow_speed - 1.5) / 2.5) * rapids;
+      let whitewater = saturate((flow_speed - 1.5) / 2.5) * rapids * (1.0 + wild);
       foam = saturate(whitewater * foam_texel * 1.6 + outer * 0.5 * foam_texel) * melt;
     } else {
       let edge = 1.0 - smoothstep(0.0, 0.8, depth);
       foam = max(edge * shore_foam_texel * 0.4, churn);
+    }
+
+    // Stones on the bed of shallow, fast water, 0.3 to 0.8 m across, or
+    // 0.8 to 2 m in wild water: those breaking the surface are drawn as
+    // wet stones with foam on their upstream side and, in wild water,
+    // streaks downstream; those just under it make a bright riffle.
+    var stone = 0.0;
+    var stone_normal = vec3<f32>(0.0, 1.0, 0.0);
+    var stone_shade = 0.0;
+    let shallow = min(depth, in.extra.z);
+
+    if (river && flow_speed > 0.5 && shallow < 1.0 && distance < 150.0) {
+      let small = bed_stone(in.rest_xz, 2.0, vec2<f32>(0.15, 0.4), 0.5 * (1.0 - wild));
+      let large = bed_stone(in.rest_xz, 3.5, vec2<f32>(0.4, 1.0), 0.75 * wild);
+      let pick = select(small, large, large.z > 0.0);
+
+      if (pick.z > 0.0) {
+        let offset = (in.rest_xz - pick.xy) / pick.z;
+        let d = length(offset);
+        let downstream = normalize(flow + vec2<f32>(1.0e-5, 0.0));
+        let along = dot(offset, downstream);
+        let dome = sqrt(max(1.0 - d * d, 0.0));
+        let top = 1.1 * pick.z;
+        let emerge = top * dome - shallow;
+        let breaks = step(shallow, top);
+        let ring = (1.0 - smoothstep(1.0, 1.4, d)) * step(1.0, d) * smoothstep(0.0, -0.5, along) * breaks;
+        let streak = wild * breaks * step(0.0, along) * (1.0 - smoothstep(0.0, 7.0, along))
+          * (1.0 - smoothstep(0.3, 0.8, abs(offset.x * downstream.y - offset.y * downstream.x))) * foam_texel;
+        let riffle = step(d, 1.0) * smoothstep(-0.1, 0.0, emerge) * (1.0 - step(0.0, emerge)) * foam_texel * 0.7;
+        foam = max(foam, max(ring, max(streak, riffle)) * melt);
+        stone = step(d, 1.0) * step(0.0, emerge);
+        stone_normal = normalize(vec3<f32>(offset.x, dome + 0.3, offset.y));
+        stone_shade = hash12(pick.xy);
+      }
     }
 
     foam = saturate(foam * foam_strength * (1.0 - smoothstep(400.0, 2500.0, distance) * 0.7)) * (1.0 - ice);
@@ -809,6 +860,14 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
     // A soft edge where a river's ribbon ends over lower ground.
     if (river) {
       alpha_out = alpha_out * (1.0 - smoothstep(0.7, 1.0, abs(in.across))) * in.coverage;
+    }
+
+    // Stones stand out of the water even where the film at the edge
+    // fades.
+    if (stone > 0.0) {
+      let albedo = mix(vec3<f32>(0.2, 0.19, 0.18), vec3<f32>(0.25, 0.2, 0.15), stone_shade) * (0.7 + stone_shade * 0.5);
+      colour = shade_surface(albedo, stone_normal, position, 1.0, 0.9, 0.15);
+      alpha_out = 1.0 - smoothstep(0.85, 1.0, abs(in.across));
     }
 
     if (INLAND && freezing_possible() && (in.kind == KIND_LAKE || river || in.kind == KIND_POOL)) {

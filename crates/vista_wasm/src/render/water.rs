@@ -19,7 +19,8 @@ use crate::maths::{length2, smoothstep};
 use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::channels::{
   channel_depth, condition_channels, height_at, kinoshita, kinoshita_table, raw_streams,
-  CarveRecord, ChannelContext, ChannelPoint, Fall, FallStep, Oxbow, RawStream, Reach, GRAVITY,
+  rock_banks, CarveRecord, ChannelContext, ChannelPoint, Fall, FallStep, Oxbow, RawStream, Reach,
+  GRAVITY,
 };
 use crate::terrain::drainage::NO_RECEIVER;
 use crate::terrain::heightmap::HeightMap;
@@ -240,10 +241,10 @@ pub struct RiverNetwork {
   /// and half width along their drawn centrelines, for reeds on their true
   /// banks.
   pub brooks: Vec<Vec<[f32; 3]>>,
-  /// Bed materials by river banks: gravel, sand and mud weights (0 to
-  /// 255, summing to the share they take) for samples the channel stage
+  /// Bed materials by river banks: gravel, sand, mud and rock weights (0
+  /// to 255, summing to the share they take) for samples the channel stage
   /// changed, one entry per sample. See [`bed_materials`].
-  pub bed: Vec<(u32, [u8; 3])>,
+  pub bed: Vec<(u32, [u8; 4])>,
 }
 
 /// One bank strip vertex (36 bytes).
@@ -604,14 +605,16 @@ pub fn build_river_network(
 /// 1.5 w; mouths near sea level are sand. Only samples the channel stage
 /// touched (`carved` or `mask`), from the water surface up to the bank
 /// top, and only as weights blended with the ground that is there.
-/// Narrower streams get their bed look from the bank strips. One entry
+/// Narrower streams get their bed look from the bank strips. Rock walls
+/// ([`rock_banks`]) take over the banks of powerful, steep reaches of any
+/// width, up the wall to w or a sample above the water. One entry
 /// per sample, from the reach that claims the largest share of it.
 pub fn bed_materials(
   map: &HeightMap,
   reaches: &[Reach],
   carved: &[(usize, f32)],
   mask: &[bool],
-) -> Vec<(u32, [u8; 3])> {
+) -> Vec<(u32, [u8; 4])> {
   let mut touched = mask.to_vec();
 
   for (index, _) in carved {
@@ -640,14 +643,14 @@ pub fn bed_materials(
   bed
 }
 
-/// Call `out(index, share, [gravel, sand, mud])` for every touched sample
+/// Call `out(index, share, [gravel, sand, mud, rock])` for every touched sample
 /// each wide river segment covers, as [`bed_materials`] describes; the
 /// share is 1 to 255.
 fn stamp_bed(
   map: &HeightMap,
   reaches: &[Reach],
   touched: &[bool],
-  out: &mut dyn FnMut(usize, u8, [f32; 3]),
+  out: &mut dyn FnMut(usize, u8, [f32; 4]),
 ) {
   let metres = map.metadata.metres_per_sample;
   let (width, height) = (map.metadata.width as i32, map.metadata.height as i32);
@@ -656,13 +659,20 @@ fn stamp_bed(
   for pair in reaches.iter().flat_map(|reach| reach.points.windows(2)) {
     let (a, b) = (pair[0], pair[1]);
     let w = 0.5 * (a.width + b.width);
+    let rock = rock_banks(&a).max(rock_banks(&b));
+    // Beds of narrower streams come from the bank strips; rock walls
+    // come to streams of any width.
+    let bed = a.width.min(b.width) >= 0.75 * metres;
 
-    if a.width.min(b.width) < 0.75 * metres || a.falling || b.falling {
+    if !(bed || rock > 0.0) || a.falling || b.falling {
       continue;
     }
 
     let band = metres.max(0.5 * w);
-    let reach = (0.5 * w + band.max(1.5 * w)) / metres;
+    // Rock covers the band 1.5 samples out, so a diagonal reach does not
+    // leave beads of rock on alternate samples.
+    let rock_band = (1.5 * metres).max(w) * f32::from(u8::from(rock > 0.0));
+    let reach = (0.5 * w + band.max(1.5 * w).max(rock_band)) / metres;
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let length = (dx * dx + dy * dy).max(1e-6);
     let x0 = ((a.x.min(b.x) - reach).floor() as i32).max(0);
@@ -687,18 +697,36 @@ fn stamp_bed(
         let bar = 1.5 * w * smoothstep(curvature.abs() / 0.2) * f32::from(u8::from(inner));
         let level = lerp(a.level, b.level);
         let ground = map.heights[index];
-        let share = (1.0 - smoothstep((edge - 0.5 * band) / (0.5 * band)))
+        let above = smoothstep((ground - level + 0.1) / 0.1);
+        // Loose beds end at the bank top; rock walls climb above it.
+        let below_top = 1.0 - smoothstep((ground - level - lerp(a.depth, b.depth).max(1.0)) / 0.5);
+        let loose = (1.0 - smoothstep((edge - 0.5 * band) / (0.5 * band)))
           .max(1.0 - smoothstep((edge - 0.7 * bar) / (0.3 * bar).max(1e-3)))
-          * smoothstep((ground - level + 0.1) / 0.1)
-          * (1.0 - smoothstep((ground - level - lerp(a.depth, b.depth).max(1.0)) / 0.5));
-        let share = (share * 255.0).round() as u8;
+          * below_top
+          * f32::from(u8::from(bed))
+          * (1.0 - rock);
+        let rock =
+          rock * (1.0 - smoothstep((edge - 0.5 * rock_band) / (0.5 * rock_band).max(1e-3)));
+        let keep = loose.max(rock);
+        let share = (keep * above * 255.0).round() as u8;
 
         if share >= 5 {
           let speed = lerp(a.speed, b.speed);
           let mouth = 1.0 - smoothstep((level - sea) / 1.5);
           let gravel = smoothstep((speed - 0.9) / 0.2) * (1.0 - mouth);
           let mud = (1.0 - smoothstep((speed - 0.3) / 0.2)) * (1.0 - mouth);
-          out(index, share, [gravel, 1.0 - gravel - mud, mud]);
+          let total = loose + rock;
+          let (loose, rock) = (loose / total, rock / total);
+          out(
+            index,
+            share,
+            [
+              gravel * loose,
+              (1.0 - gravel - mud) * loose,
+              mud * loose,
+              rock,
+            ],
+          );
         }
       }
     }
@@ -1751,11 +1779,11 @@ mod tests {
     (map, vec![Reach { points }], mask)
   }
 
-  fn bed_at(bed: &[(u32, [u8; 3])], x: u32, y: u32) -> [u8; 3] {
+  fn bed_at(bed: &[(u32, [u8; 4])], x: u32, y: u32) -> [u8; 4] {
     bed
       .iter()
       .find(|(index, _)| *index == y * 64 + x)
-      .map_or([0; 3], |(_, weights)| *weights)
+      .map_or([0; 4], |(_, weights)| *weights)
   }
 
   #[test]
@@ -1766,7 +1794,7 @@ mod tests {
       let beside = bed_at(&bed, 30, 21);
       assert!(beside[slot] > 200, "{speed} m/s: {beside:?}");
       // Far from the water the ground is left alone.
-      assert_eq!(bed_at(&bed, 30, 40), [0; 3]);
+      assert_eq!(bed_at(&bed, 30, 40), [0; 4]);
     }
   }
 
@@ -1791,9 +1819,22 @@ mod tests {
     // Turning left (positive curvature), the inner side is +y.
     let (map, reaches, mask) = bed_scene(0.7, 0.5);
     let bed = bed_materials(&map, &reaches, &[], &mask);
-    let sum = |w: [u8; 3]| w.iter().map(|v| u32::from(*v)).sum::<u32>();
+    let sum = |w: [u8; 4]| w.iter().map(|v| u32::from(*v)).sum::<u32>();
     assert!(sum(bed_at(&bed, 30, 20 + 3)) > 200);
     assert_eq!(sum(bed_at(&bed, 30, 20 - 3)), 0);
+  }
+
+  #[test]
+  fn powerful_steep_reaches_get_rock_banks_at_any_width() {
+    let (map, mut reaches, mask) = bed_scene(2.0, 0.0);
+    for point in &mut reaches[0].points {
+      point.width = 5.0;
+      point.discharge = 10.0;
+      point.slope = 0.05;
+    }
+    let bed = bed_materials(&map, &reaches, &[], &mask);
+    let beside = bed_at(&bed, 30, 21);
+    assert!(beside[3] > 100 && beside[..3] == [0; 3], "{beside:?}");
   }
 
   #[test]

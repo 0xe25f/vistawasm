@@ -28,6 +28,20 @@ const MANNING_N: f32 = 0.035;
 /// Gravity, in metres per second squared.
 pub const GRAVITY: f32 = 9.81;
 
+/// Unit stream power, 1000 x g x Q x S / w, in W/m².
+pub fn stream_power(point: &ChannelPoint) -> f32 {
+  1000.0 * GRAVITY * point.discharge * point.slope / point.width.max(0.1)
+}
+
+/// How far a reach has cut down to bedrock: 0 where its stream power is
+/// 300 W/m² or less or its slope 2 % or less, rising to 1 at 600 W/m²
+/// and 3 %. Its banks become rock walls, steepening towards vertical, and
+/// its stones grow. Plan 5b's outcrops and boulders can read the same
+/// rule.
+pub fn rock_banks(point: &ChannelPoint) -> f32 {
+  smoothstep((stream_power(point) - 300.0) / 300.0) * smoothstep((point.slope - 0.02) / 0.01)
+}
+
 /// Valley slope above which channels are cut as a V.
 const V_SLOPE: f32 = 0.06;
 
@@ -1329,7 +1343,8 @@ fn carve_reach(
     // the two samples beside it and the water never breaks up between
     // samples.
     let r = (0.5 * w).max(0.75 * metres);
-    let steep = steepness(a.slope.max(b.slope));
+    let wall = rock_banks(&a).max(rock_banks(&b));
+    let steep = steepness(a.slope.max(b.slope)).max(wall);
     // V walls may climb several samples up a steep valley side; on gentle
     // ground the floodplain meets the ground 4 w beyond the bank, and
     // nothing further out is cut.
@@ -1369,7 +1384,7 @@ fn carve_reach(
     let radius = reach_metres / metres;
     let reach_sq = radius * radius;
     let mask_sq = (mask_metres / metres) * (mask_metres / metres);
-    let shape = ChannelShape::new(r, w, steep, valley);
+    let shape = ChannelShape::new(r, w, steep, wall, valley);
     let r_samples = r / metres;
     let plain_sq = ((r + plain_metres) / metres).powi(2);
 
@@ -1512,13 +1527,17 @@ struct ChannelShape {
   /// One over the floodplain's reach, 4 w.
   inv_plain: f32,
   steep: f32,
+  /// The wall slope from `r` to `r + w`: 1 (45 degrees), up to 6 where
+  /// the banks are rock (see [`rock_banks`]).
+  wall_slope: f32,
+  w: f32,
   /// Where a big river's valley floor ends, 3 w beyond the bank, and one
   /// over the 6 w it takes to meet the ground; `None` for other rivers.
   valley: Option<(f32, f32)>,
 }
 
 impl ChannelShape {
-  fn new(r: f32, w: f32, steep: f32, valley: bool) -> Self {
+  fn new(r: f32, w: f32, steep: f32, wall: f32, valley: bool) -> Self {
     Self {
       r,
       inv_r: 1.0 / r,
@@ -1526,6 +1545,8 @@ impl ChannelShape {
       inv_band: 1.0 / (0.3 * r),
       inv_plain: 1.0 / (4.0 * w),
       steep,
+      wall_slope: 1.0 + 5.0 * wall,
+      w,
       valley: valley.then(|| (r + 3.0 * w, 1.0 / (6.0 * w))),
     }
   }
@@ -1541,7 +1562,11 @@ impl ChannelShape {
     let rise = ((distance - self.inner) * self.inv_band).clamp(0.0, 1.0);
     let plain = smoothstep((distance - r) * self.inv_plain);
     let trapezoid = bed + (bank - bed) * rise + (ground - bank) * plain;
-    let v_shape = bed + depth * distance.min(r) * self.inv_r + (distance - r).max(0.0);
+    let beyond = (distance - r).max(0.0);
+    let v_shape = bed
+      + depth * distance.min(r) * self.inv_r
+      + beyond
+      + (self.wall_slope - 1.0) * beyond.min(self.w);
     let target = trapezoid + (v_shape - trapezoid) * self.steep;
 
     match self.valley {
@@ -1590,7 +1615,8 @@ fn carve_reach_reference(
     // the two samples beside it and the water never breaks up between
     // samples.
     let r = (0.5 * w).max(0.75 * metres);
-    let steep = smoothstep((a.slope.max(b.slope) - FLAT_SLOPE) / (V_SLOPE - FLAT_SLOPE));
+    let wall = rock_banks(&a).max(rock_banks(&b));
+    let steep = smoothstep((a.slope.max(b.slope) - FLAT_SLOPE) / (V_SLOPE - FLAT_SLOPE)).max(wall);
     let reach_metres = r + (4.0 * w * (1.0 - steep)).max(3.0 * metres);
     let reach_samples = (reach_metres / metres).ceil() as i32 + 1;
     let min_x = (a.x.min(b.x).floor() as i32 - reach_samples).max(0);
@@ -1628,7 +1654,7 @@ fn carve_reach_reference(
         let v_shape = if distance <= r {
           bed + depth * distance / r
         } else {
-          level + (distance - r)
+          level + (distance - r) + 5.0 * wall * (distance - r).min(w)
         };
         let bank = level + 0.25 * depth;
         let trapezoid = if distance <= 0.7 * r {
@@ -1765,6 +1791,40 @@ mod tests {
       let branch = (x - 64.0 - (y - 40.0).max(0.0) * 0.8).abs();
       y * 1.5 - 6.0 + main.min(branch) * 3.0
     })
+  }
+
+  #[test]
+  fn powerful_steep_reaches_get_rock_walls() {
+    let point = |discharge: f32, slope: f32| ChannelPoint {
+      x: 0.0,
+      y: 0.0,
+      level: 10.0,
+      bed: 9.0,
+      width: 5.0,
+      depth: 1.0,
+      discharge,
+      slope,
+      speed: 2.0,
+      curvature: 0.0,
+      celsius: 10.0,
+      rapids: 0.0,
+      falling: false,
+    };
+    // 1000 x 9.81 x 10 x 0.05 / 5 = 981 W/m².
+    assert!((stream_power(&point(10.0, 0.05)) - 981.0).abs() < 0.5);
+    assert_eq!(rock_banks(&point(10.0, 0.05)), 1.0);
+    // Powerful but gentle, or steep but weak: alluvial banks.
+    assert_eq!(rock_banks(&point(100.0, 0.015)), 0.0);
+    assert_eq!(rock_banks(&point(1.0, 0.05)), 0.0);
+
+    // Within r to r + w the wall climbs six times as steeply, so it cuts
+    // less: the ground is only ever lowered.
+    let soft = ChannelShape::new(2.5, 5.0, 1.0, 0.0, false);
+    let rock = ChannelShape::new(2.5, 5.0, 1.0, 1.0, false);
+    let at = |shape: &ChannelShape, distance: f32| shape.target(100.0, 10.0, 1.0, distance);
+    assert_eq!(at(&soft, 1.0), at(&rock, 1.0));
+    assert!((at(&rock, 5.0) - at(&soft, 5.0) - 12.5).abs() < 1e-4);
+    assert!((at(&rock, 10.0) - at(&soft, 10.0) - 25.0).abs() < 1e-4);
   }
 
   #[test]
