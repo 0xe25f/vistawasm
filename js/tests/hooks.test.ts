@@ -21,6 +21,20 @@ const raw = new Proxy(
       return (...args: unknown[]) => {
         calls.push({ name, args });
 
+        if (name === "setWaterMask") {
+          return args[2] ? "resampled" : undefined;
+        }
+
+        if (name === "getWaterSounds") {
+          const packed = new Float32Array(20).fill(Number.NaN);
+          packed.set([12, 0.75, 1, 2, 3], 0);
+          return packed;
+        }
+
+        if (name === "getWaterfalls") {
+          return new Float32Array([1, 2, 3, 20, 4, 1.5]);
+        }
+
         if (name === "renderOnce") {
           return {
             frameIndex: skippedFrameIndex ?? calls.length,
@@ -166,5 +180,48 @@ describe("frame pacing", () => {
 
     expect(skipped).toBe(drawn);
     expect(seen).toEqual([drawn.frameIndex, next.frameIndex]);
+  });
+});
+
+describe("water", () => {
+  it("validates water masks before they reach the engine", () => {
+    const before = calls.length;
+
+    expect(() => engine.setWaterMask({ width: 2, height: 2, data: [0, 0, 0, 0] } as never)).toThrow(TypeError);
+    expect(() => engine.setWaterMask(undefined as never)).toThrow(TypeError);
+    expect(() => engine.setWaterMask({ width: 3, height: 2, data: new Uint8Array(5) })).toThrow(
+      expect.objectContaining({ code: "OPTIONS_INVALID" })
+    );
+    expect(() => engine.setWaterMask({ width: 1, height: 2, data: new Uint8Array(2) })).toThrow(
+      expect.objectContaining({ code: "OPTIONS_INVALID" })
+    );
+    expect(calls.length).toBe(before);
+  });
+
+  it("passes masks through, reports warnings, and clears with null", () => {
+    const warnings: string[] = [];
+    const stop = engine.on("warning", ({ message }) => warnings.push(message));
+    const data = new Uint8Array([0, 60, 200, 0]);
+
+    engine.setWaterMask({ width: 2, height: 2, data });
+    expect(lastCall("setWaterMask")).toEqual([2, 2, data]);
+    expect(warnings).toEqual(["resampled"]);
+
+    engine.setWaterMask(null);
+    expect(lastCall("setWaterMask")).toEqual([0, 0, undefined]);
+    stop();
+  });
+
+  it("unpacks water sounds and waterfalls", () => {
+    const sounds = engine.getWaterSounds(0, 0, 0);
+
+    expect(sounds.river).toEqual({ distanceMetres: 12, loudness: 0.75, position: [1, 2, 3] });
+    expect(sounds.waterfall).toBeNull();
+    expect(sounds.lakeShore).toBeNull();
+    expect(sounds.surf).toBeNull();
+    expect(() => engine.getWaterSounds(Number.NaN, 0, 0)).toThrow(TypeError);
+    expect(engine.getWaterfalls()).toEqual([
+      { position: [1, 2, 3], heightMetres: 20, widthMetres: 4, dischargeCubicMetresPerSecond: 1.5 }
+    ]);
   });
 });

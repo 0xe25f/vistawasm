@@ -35,7 +35,11 @@ import type {
   VistaWasmGeneratedModule,
   VistaWasmInitOptions,
   VistaWasmRawEngine,
+  WaterMask,
   WaterOptions,
+  WaterSound,
+  WaterSounds,
+  Waterfall,
   WeatherKind,
   WeatherOptions,
   WeatherState
@@ -322,6 +326,94 @@ class VistaEngineWrapper implements VistaEngine {
     }
 
     return this.call(() => this.raw.temperatureAt(x, z)) ?? null;
+  }
+
+  public setWaterMask(mask: WaterMask | null): void {
+    if (mask === null) {
+      this.callWhenIdle(() => this.raw.setWaterMask(0, 0, undefined));
+      return;
+    }
+
+    if (
+      !mask ||
+      typeof mask !== "object" ||
+      !(mask.data instanceof Uint8Array) ||
+      !Number.isInteger(mask.width) ||
+      !Number.isInteger(mask.height)
+    ) {
+      throw new TypeError(
+        "setWaterMask() expects { width, height, data } with whole-number sizes and a Uint8Array, or null."
+      );
+    }
+
+    if (mask.width < 2 || mask.width > 8192 || mask.height < 2 || mask.height > 8192) {
+      throw new VistaWasmError(
+        "OPTIONS_INVALID",
+        `setWaterMask() width and height must be from 2 to 8192, but they are ${mask.width} and ${mask.height}.`
+      );
+    }
+
+    if (mask.data.length !== mask.width * mask.height) {
+      throw new VistaWasmError(
+        "OPTIONS_INVALID",
+        `setWaterMask() data must hold width x height = ${mask.width * mask.height} bytes, but it holds ${mask.data.length}.`
+      );
+    }
+
+    let warning: string | undefined;
+    this.callWhenIdle(() => {
+      warning = this.raw.setWaterMask(mask.width, mask.height, mask.data);
+    });
+
+    if (warning) {
+      this.emit("warning", { message: warning });
+    }
+  }
+
+  public getWaterSounds(x: number, y: number, z: number): WaterSounds {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new TypeError("getWaterSounds() expects finite x, y and z world positions in metres.");
+    }
+
+    const none: WaterSounds = { river: null, waterfall: null, lakeShore: null, surf: null };
+
+    if (this.pendingCall) {
+      return none;
+    }
+
+    const packed = this.call<Float32Array>(() => this.raw.getWaterSounds(x, y, z));
+    const sound = (kind: number): WaterSound | null => {
+      const at = kind * 5;
+      return Number.isNaN(packed[at])
+        ? null
+        : {
+          distanceMetres: packed[at],
+          loudness: packed[at + 1],
+          position: [packed[at + 2], packed[at + 3], packed[at + 4]]
+        };
+    };
+
+    return { river: sound(0), waterfall: sound(1), lakeShore: sound(2), surf: sound(3) };
+  }
+
+  public getWaterfalls(): Waterfall[] {
+    if (this.pendingCall) {
+      return [];
+    }
+
+    const packed = this.call<Float32Array>(() => this.raw.getWaterfalls());
+    const falls: Waterfall[] = [];
+
+    for (let at = 0; at + 6 <= packed.length; at += 6) {
+      falls.push({
+        position: [packed[at], packed[at + 1], packed[at + 2]],
+        heightMetres: packed[at + 3],
+        widthMetres: packed[at + 4],
+        dischargeCubicMetresPerSecond: packed[at + 5]
+      });
+    }
+
+    return falls;
   }
 
   public setDebugView(debugView: DebugView): void {
@@ -643,7 +735,7 @@ class VistaEngineWrapper implements VistaEngine {
     if (this.pendingCall) {
       throw new VistaWasmError(
         "INTERNAL_ERROR",
-        "Cannot replace trees or textures while terrain is generating. Await the terrain call first."
+        "Cannot replace trees, textures or the water mask while terrain is generating. Await the terrain call first."
       );
     }
 

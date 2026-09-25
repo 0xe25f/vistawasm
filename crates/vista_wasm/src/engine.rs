@@ -87,6 +87,10 @@ pub struct EngineCore {
   glaciers: Vec<(usize, f32)>,
   /// Seed for springs, meanders and deltas, from the terrain's heights.
   terrain_seed: u64,
+  /// The painted water mask, resampled to the terrain, if one is set.
+  water_mask: Option<Vec<u8>>,
+  /// Where water can be heard.
+  sounds: crate::water_sounds::SoundMap,
   /// Whether any sea on the terrain is cold enough to freeze.
   sea_ice_possible: bool,
   /// Cached per-sample normals for the active terrain, computed once when
@@ -204,6 +208,8 @@ impl EngineCore {
       applied_rivers: None,
       glaciers: Vec::new(),
       terrain_seed: 0,
+      water_mask: None,
+      sounds: Default::default(),
       sea_ice_possible: false,
     })
   }
@@ -260,6 +266,8 @@ impl EngineCore {
       applied_rivers: None,
       glaciers: Vec::new(),
       terrain_seed: 0,
+      water_mask: None,
+      sounds: Default::default(),
       sea_ice_possible: false,
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
@@ -805,6 +813,8 @@ impl EngineCore {
     self.rivers = RiverNetwork::default();
     self.applied_rivers = None;
     self.glaciers = Vec::new();
+    self.water_mask = None;
+    self.sounds = Default::default();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -825,6 +835,8 @@ impl EngineCore {
     self.applied_rivers = None;
     self.glaciers = Vec::new();
     self.terrain_seed = terrain_seed(&map);
+    // A mask belongs to the terrain it was painted for.
+    self.water_mask = None;
     self.terrain = Some(map);
     self.active_terrain_id = Some(id);
 
@@ -844,9 +856,88 @@ impl EngineCore {
     TerrainHandle { id, metadata }
   }
 
-  /// River options that should currently be carved, if any.
+  /// Paint rivers and lakes into the terrain, or remove the painted water
+  /// with `None`, which restores the terrain exactly. The mask is
+  /// resampled to the terrain's size; the returned warning says when it
+  /// had to be. It stays through `set_water` and is cleared when a new
+  /// terrain loads.
+  pub fn set_water_mask(
+    &mut self,
+    mask: Option<vista_types::WaterMask>,
+  ) -> VistaResult<Option<String>> {
+    self.ensure_live()?;
+    let mut warning = None;
+
+    self.water_mask = match mask {
+      None => None,
+      Some(mask) => {
+        crate::terrain::water_mask::validate(&mask)?;
+        let terrain = self.terrain.as_ref().ok_or_else(|| {
+          VistaError::options("setWaterMask needs a terrain: generate or load one first.")
+        })?;
+        let (width, height) = (terrain.metadata.width, terrain.metadata.height);
+
+        if (mask.width, mask.height) != (width, height) {
+          warning = Some(format!(
+            "The water mask is {} x {} but the terrain is {width} x {height}, so it was resampled to fit.",
+            mask.width, mask.height
+          ));
+        }
+
+        Some(crate::terrain::water_mask::resample(&mask, width, height))
+      }
+    };
+    self.rebuild_world();
+    Ok(warning)
+  }
+
+  /// The loudest river, waterfall, lake shore and surf near a position,
+  /// for hosts that play their own audio. Reads only the grid cells
+  /// around the position.
+  pub fn water_sounds(&self, x: f32, y: f32, z: f32) -> vista_types::WaterSounds {
+    if !self.water.enabled {
+      return Default::default();
+    }
+
+    let waves = &self.water.waves;
+    let wave_height = if waves.enabled {
+      waves.amplitude_metres * 2.0
+    } else {
+      0.2
+    };
+    self.sounds.query([x, y, z], wave_height)
+  }
+
+  /// Every waterfall, where its water lands.
+  pub fn waterfalls(&self) -> Vec<vista_types::Waterfall> {
+    let Some(terrain) = self.terrain.as_ref() else {
+      return Vec::new();
+    };
+    let metres = terrain.metadata.metres_per_sample.max(0.001);
+    let half_x = (terrain.metadata.width as f32 - 1.0) * metres * 0.5;
+    let half_z = (terrain.metadata.height as f32 - 1.0) * metres * 0.5;
+
+    self
+      .rivers
+      .falls
+      .iter()
+      .map(|fall| vista_types::Waterfall {
+        position: [
+          fall.foot[0] * metres - half_x,
+          fall.foot_level,
+          fall.foot[1] * metres - half_z,
+        ],
+        height_metres: fall.height(),
+        width_metres: fall.width,
+        discharge_cubic_metres_per_second: fall.discharge,
+      })
+      .collect()
+  }
+
+  /// River options that should currently be carved, if any: rivers need
+  /// water, and either rivers switched on or painted water.
   fn wanted_rivers(&self, water: &WaterOptions) -> Option<RiverOptions> {
-    if water.enabled && water.rivers.enabled {
+    if water.enabled && (water.rivers.enabled || self.water_mask.is_some()) {
       Some(water.rivers.clone())
     } else {
       None
@@ -890,16 +981,19 @@ impl EngineCore {
             )
             .1
           });
-          let record = CarveRecord::new(terrain.heights.len());
           let relief = SurfaceRelief::of(terrain, &self.biomes);
           progress("rivers", 0.0);
+          let mut record = CarveRecord::new(terrain.heights.len());
+          let painted = self.water_mask.as_ref().map_or(Vec::new(), |mask| {
+            crate::terrain::water_mask::apply(terrain, mask, &mut record)
+          });
           let network = build_river_network(
             terrain,
             options,
             RiverSources {
               surface: default_climate.as_deref().unwrap_or(&surface),
               seed: self.terrain_seed,
-              painted: Vec::new(),
+              painted,
               record,
             },
           );
@@ -921,6 +1015,9 @@ impl EngineCore {
     }
 
     self.applied_rivers = wanted;
+    self.sounds = self.terrain.as_ref().map_or(Default::default(), |terrain| {
+      crate::water_sounds::SoundMap::build(terrain, &self.rivers)
+    });
     self.height_range = self
       .terrain
       .as_ref()
@@ -1832,6 +1929,160 @@ mod tests {
     water.rivers.enabled = false;
     engine.set_water(water).unwrap();
     assert_eq!(engine.export_heightmap().unwrap(), uncarved);
+  }
+
+  /// A plain sloping up to the east, with a sea along its west edge, and
+  /// only painted rivers.
+  fn slope_engine() -> EngineCore {
+    let mut engine = EngineCore::new_for_tests(VistaEngineOptions::default()).unwrap();
+    let size = 128u32;
+    let metadata = vista_types::TerrainMetadata {
+      metres_per_sample: 40.0,
+      sea_level_metres: 0.0,
+      ..Default::default()
+    };
+    let heights = (0..size * size)
+      .map(|i| (i % size) as f32 * 0.8 - 6.0 + ((i / size) as f32 * 0.3).sin() * 0.2)
+      .collect();
+    let map = HeightMap::from_values(
+      size,
+      size,
+      heights,
+      vec![false; (size * size) as usize],
+      metadata,
+    )
+    .unwrap();
+    engine.install_terrain(map, &mut |_, _| {});
+    let mut water = WaterOptions::default();
+    water.rivers.enabled = false;
+    engine.set_water(water).unwrap();
+    engine
+  }
+
+  fn painted(size: u32, paint: impl Fn(u32, u32) -> u8) -> vista_types::WaterMask {
+    vista_types::WaterMask {
+      width: size,
+      height: size,
+      data: (0..size * size)
+        .map(|i| paint(i % size, i / size))
+        .collect(),
+    }
+  }
+
+  #[test]
+  fn water_masks_are_validated() {
+    let mut engine = slope_engine();
+    let mut mask = painted(64, |_, _| 0);
+    mask.data.pop();
+    let error = engine.set_water_mask(Some(mask)).unwrap_err().to_string();
+    assert!(error.contains("4096 bytes"), "{error}");
+    assert!(engine
+      .set_water_mask(Some(vista_types::WaterMask {
+        width: 1,
+        height: 5,
+        data: vec![0; 5],
+      }))
+      .is_err());
+    // A mask of another size is resampled, with a warning.
+    let warning = engine.set_water_mask(Some(painted(64, |_, _| 0))).unwrap();
+    assert!(warning.unwrap().contains("resampled"));
+    assert!(engine
+      .set_water_mask(Some(painted(128, |_, _| 0)))
+      .unwrap()
+      .is_none());
+  }
+
+  #[test]
+  fn a_painted_line_becomes_one_river_running_downhill() {
+    let mut engine = slope_engine();
+    engine
+      .set_water_mask(Some(painted(128, |x, y| {
+        if y == 64 && (30..100).contains(&x) {
+          60
+        } else {
+          0
+        }
+      })))
+      .unwrap();
+
+    assert_eq!(engine.rivers.reaches.len(), 1);
+    let points = &engine.rivers.reaches[0].points;
+    assert!(
+      points[0].x > points[points.len() - 1].x,
+      "runs west, downhill"
+    );
+    assert!(points.iter().all(|p| p.width >= 28.0));
+
+    // Beside the river it is loud; 2 km away it cannot be heard.
+    let middle = points[points.len() / 2];
+    let (x, z) = (middle.x * 40.0 - 2540.0, middle.y * 40.0 - 2540.0);
+    let near = engine
+      .water_sounds(x, middle.level + 1.0, z + 5.0)
+      .river
+      .unwrap();
+    assert!(near.loudness > 0.5, "loudness {}", near.loudness);
+    assert!(engine
+      .water_sounds(x, middle.level, z + 2000.0)
+      .river
+      .is_none());
+  }
+
+  #[test]
+  fn a_painted_blob_becomes_one_lake_and_clearing_restores_the_terrain() {
+    let mut engine = slope_engine();
+    let before = engine.export_heightmap().unwrap();
+    engine
+      .set_water_mask(Some(painted(128, |x, y| {
+        let (dx, dy) = (x as f32 - 80.0, y as f32 - 60.0);
+        if dx * dx + dy * dy < 100.0 {
+          200
+        } else {
+          0
+        }
+      })))
+      .unwrap();
+
+    assert_eq!(engine.rivers.lakes.len(), 1);
+    assert_ne!(engine.export_heightmap().unwrap(), before);
+
+    engine.set_water_mask(None).unwrap();
+    assert!(engine.rivers.lakes.is_empty());
+    assert_eq!(engine.export_heightmap().unwrap(), before);
+  }
+
+  #[test]
+  fn a_mask_survives_water_changes_and_is_cleared_by_new_terrain() {
+    let mut engine = slope_engine();
+    engine
+      .set_water_mask(Some(painted(128, |x, y| {
+        u8::from(y == 64 && (30..100).contains(&x)) * 60
+      })))
+      .unwrap();
+    let mut water = WaterOptions::default();
+    water.rivers.enabled = false;
+    water.rivers.width_scale = 2.0;
+    engine.set_water(water).unwrap();
+    assert_eq!(engine.rivers.reaches.len(), 1);
+
+    let map = engine.terrain.clone().unwrap();
+    engine.install_terrain(map, &mut |_, _| {});
+    assert!(engine.water_mask.is_none());
+    assert!(engine.rivers.reaches.is_empty());
+  }
+
+  #[test]
+  fn waterfalls_are_listed_where_their_water_lands() {
+    let mut engine = basin_engine();
+    engine.set_water(WaterOptions::default()).unwrap();
+    let falls = engine.waterfalls();
+
+    assert_eq!(falls.len(), engine.rivers.falls.len());
+    assert!(!falls.is_empty());
+    let fall = &falls[0];
+    let ground = engine.surface_at(fall.position[0], fall.position[2]);
+    assert!(ground.is_some());
+    assert!(fall.height_metres >= 3.0 && fall.width_metres > 0.0);
+    assert!(fall.discharge_cubic_metres_per_second > 0.0);
   }
 
   #[test]

@@ -604,6 +604,63 @@ impl Default for RiverOptions {
   }
 }
 
+/// The loudest water sound of one kind near a listener.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WaterSound {
+  /// Distance from the listener to the source, in metres.
+  pub distance_metres: f32,
+  /// Loudness from 0 to 1: the source's strength over its distance
+  /// squared.
+  pub loudness: f32,
+  /// Where the sound comes from, in world metres.
+  pub position: Vec3,
+}
+
+/// The water sounds near a listener. Each is `None` when there is no
+/// such source within its search radius.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WaterSounds {
+  /// Running water, within 400 m.
+  pub river: Option<WaterSound>,
+  /// A waterfall, within 1500 m.
+  pub waterfall: Option<WaterSound>,
+  /// Water lapping on a lake shore, within 400 m.
+  pub lake_shore: Option<WaterSound>,
+  /// Waves breaking on the coast, within 600 m.
+  pub surf: Option<WaterSound>,
+}
+
+/// A waterfall.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Waterfall {
+  /// Where the water lands, at the surface of its plunge pool, in world
+  /// metres.
+  pub position: Vec3,
+  /// Height of the drop, in metres.
+  pub height_metres: f32,
+  /// Width of the falling water, in metres.
+  pub width_metres: f32,
+  /// Mean discharge, in cubic metres per second.
+  pub discharge_cubic_metres_per_second: f32,
+}
+
+/// Painted water for `setWaterMask`: one byte per sample, row-major,
+/// north row first. 0 is no water, 1 to 127 a river brush of that
+/// strength (1 is 1 m wide, 127 is 60 m), and 128 to 255 a lake or pond.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WaterMask {
+  /// Samples per row, 2 to 8192.
+  pub width: u32,
+  /// Rows, 2 to 8192.
+  pub height: u32,
+  /// `width x height` bytes.
+  pub data: Vec<u8>,
+}
+
 fn default_shallow_colour() -> Rgb {
   [0.10, 0.52, 0.50]
 }

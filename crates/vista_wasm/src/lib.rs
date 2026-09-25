@@ -14,6 +14,7 @@ pub mod maths;
 pub mod pacing;
 pub mod render;
 pub mod terrain;
+pub mod water_sounds;
 pub mod weather;
 
 #[cfg(target_arch = "wasm32")]

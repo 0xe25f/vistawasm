@@ -21,8 +21,10 @@ use crate::terrain::channels::{
   condition_channels, raw_streams, CarveRecord, ChannelContext, ChannelPoint, Fall, Oxbow,
   RawStream, Reach, GRAVITY,
 };
+use crate::terrain::drainage::NO_RECEIVER;
 use crate::terrain::heightmap::HeightMap;
-use crate::terrain::hydrology::{build_hydrology, Hydrology};
+use crate::terrain::hydrology::{build_hydrology, Hydrology, Mouth, NO_LAKE};
+use crate::terrain::water_mask::PaintedRiver;
 
 /// CPU mirror of water uniforms used by shaders.
 #[derive(Clone, Debug, PartialEq)]
@@ -333,7 +335,7 @@ pub struct RiverSources<'a> {
   /// Seeds springs, meanders and deltas.
   pub seed: u64,
   /// Painted rivers from a water mask, already oriented downhill.
-  pub painted: Vec<RawStream>,
+  pub painted: Vec<PaintedRiver>,
   /// Samples a painted mask already changed, with their original heights.
   pub record: CarveRecord,
 }
@@ -382,14 +384,38 @@ pub fn build_river_network(
   }
 
   let hydrology = build_hydrology(map, surface, options, seed);
+  let mut painted_cells = vec![false; hydrology.ground.len()];
+  let painted: Vec<RawStream> = painted
+    .iter()
+    .filter_map(|river| painted_stream(&hydrology, map, river, &mut painted_cells))
+    .collect();
   let mut streams = if options.enabled {
     raw_streams(&hydrology)
   } else {
     Vec::new()
   };
 
-  // Painted rivers win over the drainage: they are cut first, at their
-  // painted width, and natural streams join them.
+  // Painted rivers win over the drainage: natural streams end where they
+  // reach painted water, and the painted rivers are cut first so the
+  // streams joining them meet them at their level.
+  streams.retain_mut(|stream| {
+    let cut = stream
+      .points
+      .iter()
+      .position(|p| painted_cells[cell_at(&hydrology, *p) as usize]);
+
+    match cut {
+      Some(0) => false,
+      Some(i) => {
+        stream.points.truncate(i + 1);
+        stream.levels.truncate(i + 1);
+        stream.discharge.truncate(i + 1);
+        stream.mouth = Mouth::Join;
+        true
+      }
+      None => true,
+    }
+  });
   streams.splice(0..0, painted);
   let channels = condition_channels(
     map,
@@ -459,6 +485,81 @@ pub fn build_river_network(
   network.carved = record.into_original();
   crate::terrain::heightmap::update_stats(&map.heights, &map.no_data, &mut map.metadata);
   network
+}
+
+/// The flow cell nearest a heightmap sample position.
+fn cell_at(hydrology: &Hydrology, point: [f32; 2]) -> u32 {
+  let stride = hydrology.stride as f32;
+  let x = ((point[0] / stride).round() as u32).min(hydrology.width - 1);
+  let y = ((point[1] / stride).round() as u32).min(hydrology.height - 1);
+  y * hydrology.width + x
+}
+
+/// A painted river as a stream: its discharge comes from the drainage,
+/// and below its end it follows the drainage on until it meets a natural
+/// channel, a lake, the sea or the map edge, so it joins the network.
+fn painted_stream(
+  hydrology: &Hydrology,
+  map: &HeightMap,
+  river: &PaintedRiver,
+  painted_cells: &mut [bool],
+) -> Option<RawStream> {
+  let mut points = river.points.clone();
+  let mut levels: Vec<f32> = points
+    .iter()
+    .map(|p| crate::terrain::channels::height_at(map, p[0], p[1]))
+    .collect();
+  let mut discharge: Vec<f32> = points
+    .iter()
+    .map(|p| hydrology.discharge[cell_at(hydrology, *p) as usize])
+    .collect();
+
+  for point in &points {
+    painted_cells[cell_at(hydrology, *point) as usize] = true;
+  }
+
+  let mut cell = cell_at(hydrology, *points.last()?);
+  let mouth = loop {
+    let r = hydrology.receiver[cell as usize];
+
+    if r == NO_RECEIVER {
+      break Mouth::Edge;
+    }
+
+    let (x, y) = hydrology.sample_xy(r);
+    let lake = hydrology.lake[r as usize];
+    let mouth = if lake != NO_LAKE {
+      Some(Mouth::Lake(lake))
+    } else if hydrology.is_sea(r) {
+      Some(Mouth::Sea)
+    } else if hydrology.is_drawn(r) && !painted_cells[r as usize] {
+      Some(Mouth::Join)
+    } else {
+      None
+    };
+    points.push([x as f32, y as f32]);
+    levels.push(match mouth {
+      Some(Mouth::Sea) => hydrology.sea,
+      Some(Mouth::Lake(id)) => hydrology.lakes[id as usize].surface,
+      _ => hydrology.filled[r as usize],
+    });
+    discharge.push(hydrology.discharge[r as usize].max(*discharge.last()?));
+
+    if let Some(mouth) = mouth {
+      break mouth;
+    }
+
+    painted_cells[r as usize] = true;
+    cell = r;
+  };
+
+  Some(RawStream {
+    points,
+    levels,
+    discharge,
+    min_width: river.width,
+    mouth,
+  })
 }
 
 /// Restore every sample changed by [`build_river_network`].

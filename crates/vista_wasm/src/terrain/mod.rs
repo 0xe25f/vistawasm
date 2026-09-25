@@ -17,6 +17,7 @@ pub mod normals;
 mod realism_tests;
 pub mod stream_power;
 pub mod tectonics;
+pub mod water_mask;
 
 pub use fractal::{
   finish_fractal_heightmap, generate_fractal_heightmap, generate_fractal_heightmap_base,

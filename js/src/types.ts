@@ -73,6 +73,9 @@ export interface VistaWasmRawEngine {
   setBiomes(biomes: unknown): void;
   biomeAt(x: number, z: number): unknown;
   temperatureAt(x: number, z: number): number | undefined;
+  setWaterMask(width: number, height: number, data?: Uint8Array): string | undefined;
+  getWaterSounds(x: number, y: number, z: number): Float32Array;
+  getWaterfalls(): Float32Array;
   setDebugView(debugView: unknown): void;
   renderOnce(): unknown;
   resize(width: number, height: number, devicePixelRatio?: number): void;
@@ -386,6 +389,57 @@ export interface RiverOptions {
   meanders?: number;
   /** Waterfalls where rivers cross cliffs. Defaults to `true`. */
   waterfalls?: boolean;
+}
+
+/**
+ * Painted water for `setWaterMask()`.
+ */
+export interface WaterMask {
+  /** Samples per row, 2 to 8192. */
+  width: number;
+  /** Rows, 2 to 8192. */
+  height: number;
+  /**
+   * One byte per sample, row-major, north row first:
+   * 0 = no water, 1 to 127 = river brush strength, 128 to 255 = lake/pond.
+   * A strength of 1 paints a river 1 m wide, and 127 one 60 m wide.
+   */
+  data: Uint8Array;
+}
+
+/**
+ * The loudest water sound of one kind near a listener.
+ */
+export interface WaterSound {
+  /** Distance from the listener to the source, in metres. */
+  distanceMetres: number;
+  /** Loudness from 0 to 1: the source's strength over its distance squared. */
+  loudness: number;
+  /** Where the sound comes from, in world metres. */
+  position: [number, number, number];
+}
+
+/**
+ * Water sounds near a listener. Each is null when there is no such
+ * source within its search radius: 400 m for rivers and lake shores,
+ * 1500 m for waterfalls and 600 m for surf. Frozen water is silent.
+ */
+export interface WaterSounds {
+  river: WaterSound | null;
+  waterfall: WaterSound | null;
+  lakeShore: WaterSound | null;
+  surf: WaterSound | null;
+}
+
+/**
+ * A waterfall.
+ */
+export interface Waterfall {
+  /** Where the water lands, at the surface of its plunge pool, in world metres. */
+  position: [number, number, number];
+  heightMetres: number;
+  widthMetres: number;
+  dischargeCubicMetresPerSecond: number;
 }
 
 /**
@@ -1046,6 +1100,21 @@ export interface VistaEngine {
   biomeAt(x: number, z: number): BiomeKind | undefined;
   /** Mean annual temperature in °C at a world position, or null off the terrain. */
   temperatureAt(x: number, z: number): number | null;
+  /**
+   * Paint rivers and lakes into the terrain, which carves and draws them
+   * like its own, or remove them with `null`, which restores the terrain
+   * exactly. A mask of another size is resampled, with a `"warning"`
+   * event. The mask stays through `setWater()` and is cleared when new
+   * terrain loads.
+   */
+  setWaterMask(mask: WaterMask | null): void;
+  /**
+   * The loudest river, waterfall, lake shore and surf near a world
+   * position, for your own audio. Cheap enough to call every frame.
+   */
+  getWaterSounds(x: number, y: number, z: number): WaterSounds;
+  /** Every waterfall on the terrain. */
+  getWaterfalls(): Waterfall[];
   setDebugView(debugView: DebugView): void;
   /** Replace weather controls. Changing `state` blends to the new weather. */
   setWeather(weather: WeatherOptions): void;

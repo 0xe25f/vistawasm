@@ -1,4 +1,4 @@
-use js_sys::{ArrayBuffer, Uint8Array};
+use js_sys::{ArrayBuffer, Float32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -219,6 +219,76 @@ impl VistaEngine {
   #[wasm_bindgen(js_name = temperatureAt)]
   pub fn temperature_at(&self, x: f32, z: f32) -> Result<Option<f32>, JsValue> {
     Ok(self.core_ref()?.celsius_at(x, z))
+  }
+
+  /// Paint rivers and lakes (`data` is `width x height` bytes), or clear
+  /// the painted water with `undefined`. Returns a warning when the mask
+  /// had to be resampled to the terrain's size.
+  #[wasm_bindgen(js_name = setWaterMask)]
+  pub fn set_water_mask(
+    &mut self,
+    width: u32,
+    height: u32,
+    data: Option<Vec<u8>>,
+  ) -> Result<Option<String>, JsValue> {
+    let mask = data.map(|data| vista_types::WaterMask {
+      width,
+      height,
+      data,
+    });
+    self
+      .core_mut()?
+      .set_water_mask(mask)
+      .map_err(|error| error.to_js_value())
+  }
+
+  /// The loudest river, waterfall, lake shore and surf near a position,
+  /// as five numbers each (distance, loudness, x, y, z), with a NaN
+  /// distance where there is none.
+  #[wasm_bindgen(js_name = getWaterSounds)]
+  pub fn get_water_sounds(&self, x: f32, y: f32, z: f32) -> Result<Float32Array, JsValue> {
+    let sounds = self.core_ref()?.water_sounds(x, y, z);
+    let mut packed = Vec::with_capacity(20);
+
+    for sound in [
+      sounds.river,
+      sounds.waterfall,
+      sounds.lake_shore,
+      sounds.surf,
+    ] {
+      match sound {
+        Some(sound) => {
+          packed.extend([sound.distance_metres, sound.loudness]);
+          packed.extend(sound.position);
+        }
+        None => packed.extend([f32::NAN; 5]),
+      }
+    }
+
+    Ok(floats(&packed))
+  }
+
+  /// Every waterfall as six numbers (x, y, z where the water lands,
+  /// height, width, discharge).
+  #[wasm_bindgen(js_name = getWaterfalls)]
+  pub fn get_waterfalls(&self) -> Result<Float32Array, JsValue> {
+    let packed: Vec<f32> = self
+      .core_ref()?
+      .waterfalls()
+      .iter()
+      .flat_map(|fall| {
+        let [x, y, z] = fall.position;
+        [
+          x,
+          y,
+          z,
+          fall.height_metres,
+          fall.width_metres,
+          fall.discharge_cubic_metres_per_second,
+        ]
+      })
+      .collect();
+    Ok(floats(&packed))
   }
 
   /// Replace render quality controls.
@@ -457,6 +527,11 @@ impl VistaEngine {
       .as_ref()
       .ok_or_else(|| VistaError::EngineDisposed.to_js_value())
   }
+}
+
+/// Copy numbers out to JavaScript.
+fn floats(values: &[f32]) -> Float32Array {
+  Float32Array::from(values)
 }
 
 fn from_js<T>(value: JsValue) -> Result<T, JsValue>
