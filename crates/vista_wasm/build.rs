@@ -1,44 +1,58 @@
 //! Minifies WGSL shaders at build time.
 //!
-//! Shader source is embedded in the WASM binary as text, so comments and
-//! indentation cost real download size. This strips `//` comments, leading
-//! indentation, and blank lines, and collapses runs of spaces. WGSL has no
-//! string literals, so this is safe; `render::shaders` tests validate every
-//! minified shader with naga.
+//! Shader source is embedded in the WASM binary as text, so comments,
+//! indentation and spacing cost real download size. This strips `//`
+//! comments and drops every space and line break that does not separate
+//! two words (identifiers, keywords or numbers) or two operator
+//! characters, which could otherwise join into another token, such as
+//! `- -` into `--`. WGSL has no string literals, so this is safe;
+//! `render::shaders` tests validate every minified shader with naga.
 
 use std::fs;
 use std::path::Path;
 
+fn is_word(character: char) -> bool {
+  character.is_ascii_alphanumeric() || character == '_' || character == '.'
+}
+
+fn is_operator(character: char) -> bool {
+  "+-*/%&|^!=<>".contains(character)
+}
+
 fn minify(source: &str) -> String {
   let mut out = String::with_capacity(source.len() / 2);
+  // A space or line break seen since the last character written.
+  let mut gap = false;
 
   for line in source.lines() {
     let code = match line.find("//") {
       Some(index) => &line[..index],
       None => line,
     };
-    let mut previous_space = false;
-    let mut compact = String::with_capacity(code.len());
 
-    for character in code.trim().chars() {
-      if character == ' ' || character == '\t' {
-        if !previous_space {
-          compact.push(' ');
+    for character in code.chars().chain(std::iter::once('\n')) {
+      if character.is_whitespace() {
+        gap = !out.is_empty();
+        continue;
+      }
+
+      if gap {
+        let previous = out.chars().next_back().unwrap_or(' ');
+
+        if (is_word(previous) && is_word(character))
+          || (is_operator(previous) && is_operator(character))
+        {
+          out.push(' ');
         }
 
-        previous_space = true;
-      } else {
-        compact.push(character);
-        previous_space = false;
+        gap = false;
       }
-    }
 
-    if !compact.is_empty() {
-      out.push_str(&compact);
-      out.push('\n');
+      out.push(character);
     }
   }
 
+  out.push('\n');
   out
 }
 
