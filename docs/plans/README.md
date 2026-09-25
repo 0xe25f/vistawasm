@@ -17,6 +17,7 @@ check it is there.
 | 3 | [Rivers, lakes and waterfalls](03-rivers-lakes-and-waterfalls.md) | Erosion-coupled drainage from rain, snowmelt, springs and overflowing lakes; flowing water, real waterfalls, wet banks and audio queries. |
 | 4 | [Tree placement](04-tree-placement.md) | Trees on the rendered ground at every distance, and ecological placement rules. |
 | 5 | [Vegetation density](05-vegetation-density.md) | Closed-canopy forests and full grass cover at 60 FPS: streamed placement, a far canopy layer and a forest floor. |
+| 5b | [Rock outcrops and scree](05b-rock-outcrops-and-scree.md) | Rock where soil is thin, in banded crags and ledges; jointed, lichened, streaked stone; scree fans and grounded boulders below outcrops. |
 | 6 | [Tree realism](06-tree-realism.md) | Grown branching, real leaf clumps, per-tree variation and layered wind. |
 | 7 | [Sky and weather presets](07-sky-and-weather-presets.md) | One blended, editable preset table; regional weather cells; humidity haze; wet surfaces that dry; wind on trees and sea; overcast light; time of day with a golden-hour clearing bias. |
 | 8 | [Cloud bases and mid-level clouds](08-cloud-bases-and-mid-level-clouds.md) | Lumpy, shaded low-cloud bases and an optional altocumulus and altostratus layer. |

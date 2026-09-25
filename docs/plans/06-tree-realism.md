@@ -199,6 +199,9 @@ GPU-time deltas, and any risks. Keep the report short.
         instance's packed variant and age word in this plan. Both
         generators must set it from the same cover-texture bit, and a test
         must check that they agree.
+- **Plan 5b** (rock outcrops and scree) should be merged first: check
+    for `terrain/soil.rs` and `MAT_SCREE`. Trees don't depend on it, but
+    the verification shots assume today's terrain look.
 - If any of plans 4 and 5 is missing, carry it out first (it will
     require plans 1, 2, 2b and 3).
 
