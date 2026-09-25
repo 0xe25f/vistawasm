@@ -542,19 +542,24 @@ impl InflowGrid<'_> {
     None
   }
 
-  /// Valley mouths on an open edge: land border cells lower than every
-  /// border cell within [`MOUTH_REACH`] either side, whose steepest
-  /// descent leads inwards. The lowest one.
+  /// Valley mouths on an open edge: border cells at least 5 % of the
+  /// land's relief above sea level, lower than every border cell within
+  /// [`MOUTH_REACH`] either side, whose steepest descent leads inwards.
+  /// The lowest one.
   fn lowest_mouth(&self) -> Option<u32> {
     let border = self.border();
     let n = border.len() as i32;
     let height = |cell: u32| self.ground[cell as usize];
+    // A mouth low on the coast would pour a river straight into the sea,
+    // so it must stand 5 % of the land's relief above sea level.
+    let top = self.ground.iter().copied().fold(self.sea, f64::max);
+    let floor = self.sea + 0.05 * (top - self.sea);
 
     (0..n)
       .filter_map(|i| {
         let cell = border[i as usize];
 
-        if !self.land(cell) {
+        if height(cell) <= floor {
           return None;
         }
 
@@ -1430,5 +1435,21 @@ mod tests {
     assert!(build_hydrology(&island, &[], &options(), 4)
       .inflows
       .is_empty());
+
+    // A valley mouth barely above the sea is coast, not a valley: the
+    // inflow goes to the higher one.
+    let coastal = map_from(96, 30.0, |x, y| {
+      let west = (x as f32 - 40.0).abs() * 0.8;
+      let east = (x as f32 - 80.0).abs() * 0.8 + 5.0;
+      let ground = y as f32 * 0.5 - 3.0 + west.min(east);
+      if y > 90 && x < 60 {
+        ground.min(0.5 - (95 - y) as f32 * 0.1 + west * 0.05)
+      } else {
+        ground
+      }
+    });
+    let hydrology = build_hydrology(&coastal, &[], &options(), 4);
+    assert_eq!(hydrology.inflows.len(), 1, "{:?}", hydrology.inflows);
+    assert_eq!(hydrology.sample_xy(hydrology.inflows[0].cell), (80, 95));
   }
 }
