@@ -29,7 +29,14 @@ pub struct FloraInstance {
   pub tint: f32,
   /// Climate dryness from 0 (lush green) to 1 (straw).
   pub dryness: f32,
+  /// [`GRASS_STYLE_TUFT`] or [`GRASS_STYLE_REED`].
+  pub style: f32,
 }
+
+/// A grass tuft.
+pub const GRASS_STYLE_TUFT: f32 = 0.0;
+/// A clump of reeds, 1.4 to 2.2 m tall, beside still or slow water.
+pub const GRASS_STYLE_REED: f32 = 1.0;
 
 /// One base-geometry vertex shared by every grass tuft instance.
 #[repr(C)]

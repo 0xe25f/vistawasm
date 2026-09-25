@@ -506,9 +506,22 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
   // turns glossy; flat hollows collect puddles that mirror the sky.
   let shore = saturate(1.0 - (position.y - frame.water_shallow.w) / 2.5);
   let rain_wet = frame.weather.z * (1.0 - snow_amount);
-  let wetness = saturate(max(max(wet_amount * 0.7, shore * 0.8), rain_wet * 0.85) + (moisture - 0.8) * 0.5);
+  var wetness = saturate(max(max(wet_amount * 0.7, shore * 0.8), rain_wet * 0.85) + (moisture - 0.8) * 0.5);
   albedo = albedo * (1.0 - wetness * 0.35);
   roughness = mix(roughness, 0.18, wetness * 0.8);
+  // Wet banks: within 6 m of a river, lake or waterfall the ground is
+  // darker and glossy, and gentle banks are muddy.
+  if (frame.rivers.w > 0.5 && over_terrain(position.xz)) {
+    let bank = 1.0 - smoothstep(0.0, 6.0, water_distance_at(position.xz));
+
+    if (bank > 0.001) {
+      let gentle = smoothstep(0.88, 0.97, geometric_normal.y) * (1.0 - snow_amount);
+      albedo = mix(albedo * (1.0 - 0.35 * bank), vec3<f32>(0.05, 0.036, 0.024), bank * gentle * 0.5);
+      roughness = mix(roughness, 0.35, bank);
+      wetness = max(wetness, bank * 0.6);
+    }
+  }
+
   var blend_height_avg = 0.0;
 
   for (var k = 0; k < 3; k = k + 1) {

@@ -138,6 +138,8 @@ pub struct Hydrology {
   pub springs: Vec<u32>,
   /// Explicit sources: glacier snouts, snow-field edges and springs.
   pub sources: Vec<u32>,
+  /// Every cell after its receiver.
+  pub order: Vec<u32>,
 }
 
 impl Hydrology {
@@ -245,7 +247,7 @@ impl Hydrology {
     let mut taken: Vec<Option<Stream>> = streams.into_iter().map(Some).collect();
     let mut ordered = Vec::with_capacity(taken.len());
 
-    for cell in drainage::stack_order(&self.receiver) {
+    for cell in self.order.iter().copied() {
       let mut index = ending[cell as usize];
 
       while index != NO_RECEIVER {
@@ -357,10 +359,12 @@ pub fn build_hydrology(
     glacier,
     springs: Vec::new(),
     sources: Vec::new(),
+    order: Vec::new(),
   };
   find_lakes(&mut hydrology, &filled64, &ground64, &mut receiver);
   hydrology.receiver = receiver;
-  let order = drainage::stack_order(&hydrology.receiver);
+  hydrology.order = drainage::stack_order(&hydrology.receiver);
+  let order = std::mem::take(&mut hydrology.order);
   let area_cells = drainage::accumulate(&order, &hydrology.receiver, vec![1.0; count]);
 
   // Runoff from rain and snowmelt, in cubic metres per second.
@@ -426,6 +430,7 @@ pub fn build_hydrology(
 
   hydrology.sources.extend(hydrology.springs.iter().copied());
   mark_channels(&mut hydrology, discharge_threshold(options));
+  hydrology.order = order;
   hydrology
 }
 

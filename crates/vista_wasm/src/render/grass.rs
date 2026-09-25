@@ -1,7 +1,11 @@
 use vista_types::GrassOptions;
 
 use crate::maths::hash_noise;
-use crate::render::flora::{unit_from_hash, FloraInstance, FloraVertex};
+use crate::maths::smoothstep;
+use crate::render::flora::{
+  unit_from_hash, FloraInstance, FloraVertex, GRASS_STYLE_REED, GRASS_STYLE_TUFT,
+};
+use crate::render::water::WetBanks;
 use crate::terrain::biomes::{
   SurfaceSample, MAT_DRY_GRASS, MAT_FOREST_FLOOR, MAT_LUSH_GRASS, MAT_TUNDRA,
 };
@@ -109,6 +113,26 @@ pub fn build_grass_instances(
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
+  build_grass_instances_by_water(map, materials, None, options, density_scale)
+}
+
+/// Reeds grow within this distance of still or slow water, in metres, or
+/// on the first samples from the shore where samples are further apart.
+const REED_METRES: f32 = 3.0;
+
+/// Reeds need a mean temperature above this, in °C.
+const REED_CELSIUS: f32 = 4.0;
+
+/// [`build_grass_instances`] beside water: within 12 m of it grass grows
+/// denser and greener, and reeds grow by still or slow water in
+/// temperate and warm climates.
+pub fn build_grass_instances_by_water(
+  map: &HeightMap,
+  materials: Option<&[SurfaceSample]>,
+  wet: Option<&WetBanks>,
+  options: &GrassOptions,
+  density_scale: f32,
+) -> Vec<FloraInstance> {
   let density = (options.density * density_scale).clamp(0.0, 1.0);
 
   if !options.enabled || density <= 0.0 || options.max_instances == 0 {
@@ -141,6 +165,7 @@ pub fn build_grass_instances(
       if let Some(instance) = candidate_at(
         map,
         materials,
+        wet,
         x,
         y,
         width,
@@ -163,6 +188,7 @@ pub fn build_grass_instances(
           scale: instance.scale,
           tint: instance.tint,
           dryness: instance.dryness,
+          style: instance.style,
         });
       }
 
@@ -191,6 +217,7 @@ pub fn build_grass_instances(
 fn candidate_at(
   map: &HeightMap,
   materials: Option<&[SurfaceSample]>,
+  wet: Option<&WetBanks>,
   x: u32,
   y: u32,
   width: u32,
@@ -241,6 +268,19 @@ fn candidate_at(
     }
   };
 
+  let (water_metres, still_metres) = wet.map_or((f32::MAX, f32::MAX), |wet| wet.at(x, y));
+  let shore = wet.map_or(0.0, |wet| wet.stride as f32 * metres_per_sample * 0.5 + 0.5);
+  let reeds = still_metres > 0.0
+    && still_metres <= REED_METRES.max(shore)
+    && sample.is_some_and(|sample| !sample.is_glacier() && sample.celsius() > REED_CELSIUS);
+  // Within 12 m of water grass grows denser and greener.
+  let near_water = 1.0 - smoothstep(water_metres / 12.0);
+  let acceptance_weight = if reeds {
+    acceptance_weight.max(0.9)
+  } else {
+    acceptance_weight * (1.0 + 0.6 * near_water)
+  };
+
   if acceptance_weight <= 0.0 {
     return None;
   }
@@ -253,6 +293,20 @@ fn candidate_at(
 
   let scale_roll = unit_from_hash(hash_noise(seed ^ 0x0a2b_c3d4, x as i32, y as i32));
   let tint_roll = unit_from_hash(hash_noise(seed ^ 0x5f2e_1d0c, x as i32, y as i32));
+
+  if reeds {
+    return Some(FloraInstance {
+      position: [
+        x as f32 * metres_per_sample,
+        elevation,
+        y as f32 * metres_per_sample,
+      ],
+      scale: 1.4 + scale_roll * 0.8,
+      tint: tint_roll,
+      dryness: 0.0,
+      style: GRASS_STYLE_REED,
+    });
+  }
 
   if let Some(sample) = sample.filter(|sample| sample.is_tundra()) {
     let tundra = sample.weight(MAT_TUNDRA);
@@ -269,6 +323,7 @@ fn candidate_at(
         scale: (0.5 + scale_roll * 0.6) * TUNDRA_GRASS_HEIGHT,
         tint: tint_roll,
         dryness: 0.5,
+        style: GRASS_STYLE_TUFT,
       });
     }
   }
@@ -288,7 +343,8 @@ fn candidate_at(
       } else {
         0.0
       }
-    }),
+    }) * (1.0 - 0.7 * near_water),
+    style: GRASS_STYLE_TUFT,
   })
 }
 
@@ -346,6 +402,72 @@ mod tests {
     assert!(tufts
       .iter()
       .all(|tuft| tuft.scale <= 1.1 * TUNDRA_GRASS_HEIGHT && tuft.dryness == 0.5));
+  }
+
+  /// A lake down the middle column band of a flat map, and the wet-bank
+  /// field for it.
+  fn lakeside(size: u32) -> (HeightMap, WetBanks) {
+    let map = flat_map(size, 20.0);
+    let water: Vec<bool> = (0..size * size).map(|i| (i % size) < 8).collect();
+    let wet = WetBanks::build(&map, &water, &water);
+    (map, wet)
+  }
+
+  #[test]
+  fn the_wet_bank_field_measures_from_the_water_edge() {
+    let (_, wet) = lakeside(64);
+    let metres = 4.0;
+
+    assert_eq!(wet.at(3, 10), (0.0, 0.0));
+    // Three samples from the last water sample: 2.5 samples from the edge.
+    let (water, still) = wet.at(10, 10);
+    assert!((water - 2.5 * metres).abs() < 0.2, "{water}");
+    assert_eq!(water, still);
+    assert_eq!(wet.at(60, 10).0, 40.0);
+  }
+
+  #[test]
+  fn grass_is_denser_near_water_and_reeds_grow_by_warm_still_water() {
+    let (map, wet) = lakeside(96);
+    let surface = |celsius: f32| {
+      vec![
+        SurfaceSample {
+          materials: [120, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          celsius_hundredths: (celsius * 100.0) as i16,
+          ..SurfaceSample::default()
+        };
+        (96 * 96) as usize
+      ]
+    };
+    let options = GrassOptions {
+      density: 0.6,
+      ..grass_options()
+    };
+    let warm = surface(12.0);
+    let with_water = build_grass_instances_by_water(&map, Some(&warm), Some(&wet), &options, 1.0);
+    let without = build_grass_instances(&map, Some(&warm), &options, 1.0);
+    // Instances are centred on the map; back to sample columns.
+    let column = |i: &FloraInstance| (i.position[0] + 95.0 * 2.0) / 4.0;
+    let near = |instances: &[FloraInstance]| {
+      instances
+        .iter()
+        .filter(|i| i.style == GRASS_STYLE_TUFT && column(i) > 8.5 && column(i) < 13.0)
+        .count()
+    };
+    let reeds: Vec<&FloraInstance> = with_water
+      .iter()
+      .filter(|i| i.style == GRASS_STYLE_REED)
+      .collect();
+
+    assert!(near(&with_water) > near(&without));
+    assert!(!reeds.is_empty());
+    assert!(reeds
+      .iter()
+      .all(|reed| reed.scale >= 1.4 && reed.scale <= 2.2 && column(reed) <= 9.0));
+
+    let cold = surface(1.0);
+    let cold_grass = build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &options, 1.0);
+    assert!(cold_grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));
   }
 
   #[test]

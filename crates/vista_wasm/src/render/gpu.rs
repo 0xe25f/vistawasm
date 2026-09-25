@@ -572,6 +572,8 @@ pub struct GpuContext {
   impostor_view: wgpu::TextureView,
   height_view: wgpu::TextureView,
   surface_view: wgpu::TextureView,
+  /// Distance to water (see `create_surface_b_texture`).
+  surface_b_view: wgpu::TextureView,
   height_size: (u32, u32),
   height_version: u64,
   terrain_shadow: TerrainShadow,
@@ -701,6 +703,7 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
         texture_entry(10, Dim::D2, filterable, both),
         sampler_entry(11, wgpu::SamplerBindingType::Filtering),
         texture_entry(12, Dim::D2, filterable, both),
+        texture_entry(13, Dim::D2, filterable, both),
       ],
     ),
     shadow: layout(
@@ -785,6 +788,7 @@ fn create_world_bind_group(
   height: &wgpu::TextureView,
   terrain_shadow: &wgpu::TextureView,
   surface: &wgpu::TextureView,
+  surface_b: &wgpu::TextureView,
   world_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
   device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -807,6 +811,7 @@ fn create_world_bind_group(
       view_entry(10, terrain_shadow),
       sampler_binding(11, clamp_sampler),
       view_entry(12, surface),
+      view_entry(13, surface_b),
     ],
   })
 }
@@ -919,6 +924,19 @@ fn create_surface_texture(
   );
   write_layer(queue, &texture, 0, data, width * 4, width, height);
   default_view(&texture)
+}
+
+/// The second per-terrain surface texture, at the same resolution as the
+/// first: r distance to water / 40 m; g, b and a are reserved (0).
+fn create_surface_b_texture(
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+  width: u32,
+  height: u32,
+  distance: &[u8],
+) -> wgpu::TextureView {
+  let data: Vec<u8> = distance.iter().flat_map(|d| [*d, 0, 0, 0]).collect();
+  create_surface_texture(device, queue, width, height, &data)
 }
 
 /// Surface texel for one terrain sample.
@@ -1216,11 +1234,12 @@ const GRASS_BASE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_arra
   1 => Float32x2,
 ];
 
-const GRASS_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+const GRASS_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
   2 => Float32x3,
   3 => Float32,
   4 => Float32,
   5 => Float32,
+  6 => Float32,
 ];
 
 const WATER_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
@@ -1729,6 +1748,7 @@ impl GpuContext {
         ..SurfaceSample::default()
       }),
     );
+    let surface_b_view = create_surface_b_texture(&device, &queue, 1, 1, &[255]);
     let terrain_shadow = create_terrain_shadow(&device, &queue, 1, 1);
     let tree_shadow_map = create_tree_shadow_map(&device, tree_shadow_resolution);
     let shadow_bind_group =
@@ -1752,6 +1772,7 @@ impl GpuContext {
       &height_view,
       &terrain_shadow.view,
       &surface_view,
+      &surface_b_view,
       &world_buffer,
     );
     let grass_base_vertex_buffer = buffer_with_data(
@@ -1798,6 +1819,7 @@ impl GpuContext {
       impostor_view,
       height_view,
       surface_view,
+      surface_b_view,
       height_size: (1, 1),
       height_version: 0,
       terrain_shadow,
@@ -1851,6 +1873,7 @@ impl GpuContext {
       &self.height_view,
       &self.terrain_shadow.view,
       &self.surface_view,
+      &self.surface_b_view,
       &self.world_buffer,
     );
   }
@@ -1884,6 +1907,7 @@ impl GpuContext {
       &self.height_view,
       &self.terrain_shadow.view,
       &self.surface_view,
+      &self.surface_b_view,
       &self.world_buffer,
     );
     let depth_view = default_view(&create_texture_2d(
@@ -2219,6 +2243,22 @@ impl GpuContext {
       texture_height,
       &data,
     );
+    self.rebuild_world_bind_group();
+  }
+
+  /// Upload the distance-to-water field, or clear it with an empty one.
+  pub fn upload_wet_banks(&mut self, wet: &crate::render::water::WetBanks) {
+    self.surface_b_view = if wet.distance.is_empty() {
+      create_surface_b_texture(&self.device, &self.queue, 1, 1, &[255])
+    } else {
+      create_surface_b_texture(
+        &self.device,
+        &self.queue,
+        wet.width,
+        wet.height,
+        &wet.distance,
+      )
+    };
     self.rebuild_world_bind_group();
   }
 

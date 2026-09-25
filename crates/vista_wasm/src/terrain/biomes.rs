@@ -742,13 +742,6 @@ fn classify_into(
       rock *= 0.6;
     }
 
-    // A stream bed is wet silt with a little gravel; on the coarse grid it
-    // also stands for the wet banks beside a narrow stream.
-    if is_river {
-      sand = sand.max(0.2);
-      mud = mud.max(0.55);
-    }
-
     let volcanic = volcano_factor.max(caldera_factor);
     let forest_floor = smoothstep((moisture - 0.45) / 0.22) * (1.0 - mountain * 0.6);
     let dryness =
@@ -942,30 +935,12 @@ fn apply_cold_materials(weights: &mut [f32; MATERIAL_COUNT], cold: ColdMaterials
   }
 }
 
-/// Fast ice: on sea colder than -10 °C, within 200 m of land, the sea ice
-/// is frozen to the shore and snow-covered. Marked with permanent snow on
-/// the ocean samples so the water shader can draw it.
-fn mark_fast_ice(map: &HeightMap, samples: &mut [SurfaceSample]) {
-  let width = map.metadata.width as usize;
-  let height = map.metadata.height as usize;
-  let ocean = BiomeKind::Ocean as u8;
-
-  if width == 0
-    || samples.len() != width * height
-    || !samples
-      .iter()
-      .any(|sample| sample.biome == ocean && sample.celsius() < -10.0)
-  {
-    return;
-  }
-
-  // Two-pass chamfer distance to land, in metres.
-  let metres = map.metadata.metres_per_sample.max(0.001);
-  let diagonal = metres * std::f32::consts::SQRT_2;
-  let mut distance: Vec<f32> = samples
-    .iter()
-    .map(|sample| if sample.biome == ocean { f32::MAX } else { 0.0 })
-    .collect();
+/// Two-pass chamfer distance transform. `distance` holds 0 at the seeds
+/// and `f32::MAX` elsewhere on entry, and the distance in metres to the
+/// nearest seed on return; `step` is the spacing between samples.
+pub fn chamfer_distance(width: usize, height: usize, step: f32, distance: &mut [f32]) {
+  let metres = step;
+  let diagonal = step * std::f32::consts::SQRT_2;
 
   for y in 0..height {
     for x in 0..width {
@@ -1016,6 +991,36 @@ fn mark_fast_ice(map: &HeightMap, samples: &mut [SurfaceSample]) {
       distance[index] = best;
     }
   }
+}
+
+/// Fast ice: on sea colder than -10 °C, within 200 m of land, the sea ice
+/// is frozen to the shore and snow-covered. Marked with permanent snow on
+/// the ocean samples so the water shader can draw it.
+fn mark_fast_ice(map: &HeightMap, samples: &mut [SurfaceSample]) {
+  let width = map.metadata.width as usize;
+  let height = map.metadata.height as usize;
+  let ocean = BiomeKind::Ocean as u8;
+
+  if width == 0
+    || samples.len() != width * height
+    || !samples
+      .iter()
+      .any(|sample| sample.biome == ocean && sample.celsius() < -10.0)
+  {
+    return;
+  }
+
+  // Distance to land, in metres.
+  let mut distance: Vec<f32> = samples
+    .iter()
+    .map(|sample| if sample.biome == ocean { f32::MAX } else { 0.0 })
+    .collect();
+  chamfer_distance(
+    width,
+    height,
+    map.metadata.metres_per_sample.max(0.001),
+    &mut distance,
+  );
 
   for (sample, distance) in samples.iter_mut().zip(distance) {
     if sample.biome == ocean && sample.celsius() < -10.0 && distance <= 200.0 {

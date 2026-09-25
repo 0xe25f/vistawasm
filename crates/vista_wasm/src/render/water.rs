@@ -212,6 +212,105 @@ pub struct RiverNetwork {
   pub lakes: Vec<LakeSummary>,
   /// Whether any lake, river or waterfall is below 0 °C.
   pub freezing: bool,
+  /// Distance to water, for wet banks and reeds.
+  pub wet: WetBanks,
+}
+
+/// Distance to the nearest water, for wet banks, bankside grass and reeds,
+/// at the resolution of the height texture.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WetBanks {
+  /// Field width in texels.
+  pub width: u32,
+  /// Field height in texels.
+  pub height: u32,
+  /// Heightmap samples per texel along each axis.
+  pub stride: u32,
+  /// Distance to the nearest river, lake or waterfall edge, 0 to
+  /// [`WET_BANK_RANGE_METRES`] as 0 to 255.
+  pub distance: Vec<u8>,
+  /// The same, to still or slow water only: lakes, oxbows and rivers
+  /// slower than [`REED_SPEED`].
+  pub still: Vec<u8>,
+}
+
+/// The distance the wet-bank field reaches, in metres.
+pub const WET_BANK_RANGE_METRES: f32 = 40.0;
+
+/// Reeds grow by rivers slower than this, in metres per second.
+pub const REED_SPEED: f32 = 0.6;
+
+/// Largest wet-bank field, in texels per side: the height texture's size.
+const WET_BANK_MAX: u32 = 2048;
+
+impl WetBanks {
+  /// Build the field from full-resolution masks of water and of still
+  /// water. The water's edge lies half a sample beyond its last sample.
+  pub fn build(map: &HeightMap, water: &[bool], still: &[bool]) -> Self {
+    let map_width = map.metadata.width;
+    let map_height = map.metadata.height;
+
+    if map_width < 2 || map_height < 2 || !water.iter().any(|w| *w) {
+      return Self::default();
+    }
+
+    let stride = (map_width.max(map_height).saturating_sub(1) / (WET_BANK_MAX - 1)).max(1);
+    let width = (map_width - 1) / stride + 1;
+    let height = (map_height - 1) / stride + 1;
+    let step = map.metadata.metres_per_sample.max(0.001) * stride as f32;
+    let field = |seeds: &[bool]| {
+      let mut distance: Vec<f32> = (0..width * height)
+        .map(|texel| {
+          let x = (texel % width) * stride;
+          let y = (texel / width) * stride;
+          if seeds[(y * map_width + x) as usize] {
+            0.0
+          } else {
+            f32::MAX
+          }
+        })
+        .collect();
+      crate::terrain::biomes::chamfer_distance(
+        width as usize,
+        height as usize,
+        step,
+        &mut distance,
+      );
+      distance
+        .iter()
+        .map(|d| {
+          let edge = if *d > 0.0 {
+            (d - step * 0.5).max(0.0)
+          } else {
+            0.0
+          };
+          (edge / WET_BANK_RANGE_METRES * 255.0).round().min(255.0) as u8
+        })
+        .collect()
+    };
+
+    Self {
+      width,
+      height,
+      stride,
+      distance: field(water),
+      still: field(still),
+    }
+  }
+
+  /// Distances in metres to any water and to still water at a heightmap
+  /// sample, or the full range where there is no field.
+  pub fn at(&self, x: u32, y: u32) -> (f32, f32) {
+    if self.distance.is_empty() {
+      return (WET_BANK_RANGE_METRES, WET_BANK_RANGE_METRES);
+    }
+
+    let tx = (x / self.stride).min(self.width - 1);
+    let ty = (y / self.stride).min(self.height - 1);
+    let index = (ty * self.width + tx) as usize;
+    let metres = |value: u8| value as f32 / 255.0 * WET_BANK_RANGE_METRES;
+    (metres(self.distance[index]), metres(self.still[index]))
+  }
 }
 
 /// What the rest of the engine needs to know about a lake.
@@ -324,9 +423,26 @@ pub fn build_river_network(
     add_fall(&mut network, map, fall, metres, half, seed);
   }
 
+  // Still water, for reeds: lakes and oxbows, and slow rivers.
+  let mut still = network.mask.clone();
+
+  for oxbow in &channels.oxbows {
+    for point in &oxbow.points {
+      mark_sample(&mut still, map, *point);
+    }
+  }
+
+  for reach in &channels.reaches {
+    for point in reach.points.iter().filter(|point| point.speed < REED_SPEED) {
+      mark_sample(&mut still, map, [point.x, point.y]);
+    }
+  }
+
   for (slot, value) in network.mask.iter_mut().zip(&channels.mask) {
     *slot |= *value;
   }
+
+  network.wet = WetBanks::build(map, &network.mask, &still);
 
   network.freezing = network
     .lakes
@@ -354,6 +470,12 @@ pub fn restore_carving(map: &mut HeightMap, carved: &[(usize, f32)]) {
   }
 
   crate::terrain::heightmap::update_stats(&map.heights, &map.no_data, &mut map.metadata);
+}
+
+fn mark_sample(mask: &mut [bool], map: &HeightMap, point: [f32; 2]) {
+  let x = (point[0].round().max(0.0) as u32).min(map.metadata.width - 1);
+  let y = (point[1].round().max(0.0) as u32).min(map.metadata.height - 1);
+  mask[(y * map.metadata.width + x) as usize] = true;
 }
 
 fn to_world(point: [f32; 2], metres: f32, half: [f32; 2]) -> [f32; 2] {
@@ -402,7 +524,8 @@ fn push_strip(
 
 /// A river ribbon, 1.3 w wide, so its edge lies on the bank, where the
 /// shader fades it out by depth. Steep reaches are subdivided so no
-/// segment is longer than half the width (or a quarter of a sample).
+/// segment is longer than half the width (or half a sample: the ground
+/// has no finer detail to follow).
 fn add_ribbon(
   network: &mut RiverNetwork,
   points: &[ChannelPoint],
@@ -420,7 +543,7 @@ fn add_ribbon(
     let (a, b) = (pair[0], pair[1]);
     let length = length2(b.x - a.x, b.y - a.y) * metres;
     let limit = if a.slope.max(b.slope) > 0.02 {
-      (0.5 * a.width.min(b.width)).max(0.25 * metres)
+      (0.5 * a.width.min(b.width)).max(0.5 * metres)
     } else {
       metres
     };

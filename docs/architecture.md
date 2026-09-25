@@ -142,6 +142,20 @@ fixed:
 Shaders sample it with `textureSampleLevel` and the clamp sampler
 (`common.wgsl::surface_at`), which is safe in non-uniform control flow.
 
+`@group(1) @binding(13) surface_texture_b` is a second `rgba8unorm`
+texture at the same resolution, uploaded by
+`GpuContext::upload_wet_banks` after the river build. Every pipeline that
+uses group 1 binds it:
+
+| Channel | Contents |
+| --- | --- |
+| r | Distance to the nearest river, lake or waterfall edge / 40 m: 0 at the water, 1 at 40 m or more (and everywhere when there is no water). |
+| g, b, a | Reserved, always 0, for later plans. |
+
+It is built on the CPU with a two-pass chamfer distance transform
+(`render/water.rs::WetBanks`) and sampled with `textureSampleLevel`
+(`common.wgsl::water_distance_at`).
+
 ### Terrain vertices
 
 Each terrain vertex is 36 bytes:

@@ -874,10 +874,10 @@ impl EngineCore {
       self.glaciers = shape_glaciers(terrain, &self.biomes);
       self.rivers = match &wanted {
         Some(options) => {
-          progress("rivers", 0.0);
           // Rain, snow and temperature for the hydrology, from the ground
-          // before any channel is cut. The same classification is patched
-          // afterwards where the rivers changed the ground.
+          // before any channel is cut. This is the terrain's own surface
+          // bake, done here instead of afterwards: it is patched where the
+          // rivers change the ground, so it is not part of the river build.
           let (_, surface) =
             crate::render::terrain_mesh::bake_terrain_shading(terrain, &self.biomes, None);
           // With biomes switched off the ground is not shaded by climate,
@@ -892,6 +892,7 @@ impl EngineCore {
           });
           let record = CarveRecord::new(terrain.heights.len());
           let relief = SurfaceRelief::of(terrain, &self.biomes);
+          progress("rivers", 0.0);
           let network = build_river_network(
             terrain,
             options,
@@ -934,6 +935,7 @@ impl EngineCore {
       self
         .gpu
         .upload_falls(&self.rivers.fall_vertices, &self.rivers.fall_indices);
+      self.gpu.upload_wet_banks(&self.rivers.wet);
     }
 
     self.rebake_surface(before_rivers);
@@ -1050,9 +1052,13 @@ impl EngineCore {
       Some(self.surface.as_slice())
     };
     let instances = match &self.terrain {
-      Some(terrain) => {
-        crate::render::grass::build_grass_instances(terrain, surface, &self.grass, density_scale)
-      }
+      Some(terrain) => crate::render::grass::build_grass_instances_by_water(
+        terrain,
+        surface,
+        Some(&self.rivers.wet),
+        &self.grass,
+        density_scale,
+      ),
       None => Vec::new(),
     };
     self.stats.grass_instances = instances.len() as u32;
@@ -1291,7 +1297,7 @@ impl EngineCore {
         )),
         freezing: self.rivers.freezing,
         falls: !self.rivers.falls.is_empty(),
-        wet_banks: false,
+        wet_banks: !self.rivers.wet.distance.is_empty(),
       },
       height_range: self.height_range,
       render_scale: self.stats.render_scale,
