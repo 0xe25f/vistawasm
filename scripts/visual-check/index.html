@@ -47,11 +47,24 @@
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
 
+      // Load time: `engine ms` is how long createVistaEngine took, and
+      // `first frame ms` runs from its start until the GPU has finished the
+      // first rendered frame.
+      const created = performance.now();
+      let firstFrameLogged = false;
+      window.logFirstFrame = () => {
+        if (!firstFrameLogged) {
+          firstFrameLogged = true;
+          window.log.push(`first frame ms ${Math.round(performance.now() - created)}`);
+        }
+      };
+
       try {
         const engine = await createVistaEngine(
           canvas,
           Object.assign({ render: { width, height, devicePixelRatio: 1 } }, config.engine || {})
         );
+        window.log.push(`engine ms ${Math.round(performance.now() - created)}`);
         window.engine = engine;
         // Log how long each generation phase took, from its first progress
         // event to the next phase's.
@@ -148,6 +161,7 @@
         for (let frame = 0; frame < frames - 1; frame += 1) {
           stats = window.engine.renderOnce();
           await device.queue.onSubmittedWorkDone();
+          window.logFirstFrame();
         }
 
         await device.queue.onSubmittedWorkDone();
@@ -181,6 +195,7 @@
         }
 
         buffer.unmap();
+        window.logFirstFrame();
         const image = document.createElement("canvas");
         image.width = w;
         image.height = h;
@@ -197,6 +212,7 @@
         for (let frame = 0; frame < warm + frames; frame += 1) {
           const result = window.engine.renderOnce();
           await device.queue.onSubmittedWorkDone();
+          window.logFirstFrame();
 
           if (frame >= warm) {
             stats.push(result);
