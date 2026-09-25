@@ -397,14 +397,14 @@ impl ErosionCompute {
 }
 
 /// Wait until the GPU has finished everything submitted so far.
-async fn work_done(queue: &wgpu::Queue) -> VistaResult<()> {
+pub(crate) async fn work_done(queue: &wgpu::Queue) -> VistaResult<()> {
   let (sender, receiver) = futures_channel::oneshot::channel();
   queue.on_submitted_work_done(move || {
     let _ = sender.send(());
   });
-  receiver.await.map_err(|_| {
-    VistaError::internal("The GPU erosion work was dropped before it finished.".to_string())
-  })
+  receiver
+    .await
+    .map_err(|_| VistaError::internal("The GPU work was dropped before it finished.".to_string()))
 }
 
 /// Copy the field's terrain back to the CPU.

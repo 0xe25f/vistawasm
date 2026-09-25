@@ -7,10 +7,10 @@
 // eight-bit channels.
 //
 // Entry points:
-// - `gen_terrain`: ten ground materials, albedo + height and
-//   normal + occlusion + roughness.
+// - `gen_terrain` then `gen_terrain_normals`: ten ground materials,
+//   albedo + height, then normal + occlusion + roughness from the heights.
 // - `gen_flora`: bark, leaf clusters, conifer needles, palm fronds, fine
-//   leaflets, and hanging moss, with alpha.
+//   leaflets, and hanging moss, with alpha; only the layers asked for.
 // - `gen_water`: ripple normals, foam, and height.
 // - `gen_noise`: general-purpose tiling 2D noise (weather, macro detail).
 // - `gen_cloud`: 3D Perlin-Worley and Worley noise for volumetric clouds
@@ -22,6 +22,13 @@
 @group(0) @binding(3) var water_out: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var noise_out: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var cloud_out: texture_storage_3d<rgba8unorm, write>;
+// Full-precision material heights, written by `gen_terrain` and read by
+// `gen_terrain_normals`: each material is evaluated once per texel, not
+// again for each neighbour.
+@group(0) @binding(6) var<storage, read_write> terrain_heights: array<f32>;
+// The terrain (x) and flora (y) layers to bake, one bit per layer: only
+// the materials the ground uses and the tree species a scene has.
+@group(0) @binding(7) var<uniform> bake_layers: vec4<u32>;
 
 const TAU: f32 = 6.2831853;
 
@@ -438,29 +445,48 @@ fn material_bump(layer: i32) -> f32 {
   }
 }
 
+fn terrain_texel(x: u32, y: u32, layer: u32, size: vec2<u32>) -> u32 {
+  return (layer * size.y + y) * size.x + x;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn gen_terrain(@builtin(global_invocation_id) id: vec3<u32>) {
   let size = textureDimensions(terrain_albedo_out);
 
-  if (id.x >= size.x || id.y >= size.y) {
+  if (id.x >= size.x || id.y >= size.y || (bake_layers.x & (1u << id.z)) == 0u) {
+    return;
+  }
+
+  let texel = 1.0 / f32(size.x);
+  let uv = (vec2<f32>(id.xy) + 0.5) * texel;
+  let centre = material(i32(id.z), uv);
+  textureStore(terrain_albedo_out, vec2<i32>(id.xy), i32(id.z), vec4<f32>(saturate(centre.rgb), centre.a));
+  terrain_heights[terrain_texel(id.x, id.y, id.z, size)] = centre.a;
+}
+
+// The size is a power of two, so a neighbour's `uv + texel` is exactly
+// its own texel centre, and its stored height is the material's height
+// there.
+@compute @workgroup_size(8, 8, 1)
+fn gen_terrain_normals(@builtin(global_invocation_id) id: vec3<u32>) {
+  let size = textureDimensions(terrain_normal_out);
+
+  if (id.x >= size.x || id.y >= size.y || (bake_layers.x & (1u << id.z)) == 0u) {
     return;
   }
 
   let layer = i32(id.z);
-  let texel = 1.0 / f32(size.x);
-  let uv = (vec2<f32>(id.xy) + 0.5) * texel;
-  let centre = material(layer, uv);
-  let right = material(layer, fract(uv + vec2<f32>(texel, 0.0))).a;
-  let up = material(layer, fract(uv + vec2<f32>(0.0, texel))).a;
+  let height = terrain_heights[terrain_texel(id.x, id.y, id.z, size)];
+  let right = terrain_heights[terrain_texel((id.x + 1u) % size.x, id.y, id.z, size)];
+  let up = terrain_heights[terrain_texel(id.x, (id.y + 1u) % size.y, id.z, size)];
   let bump = material_bump(layer);
-  let normal = normalize(vec3<f32>((centre.a - right) * bump, 1.0, (centre.a - up) * bump));
-  let occlusion = saturate(0.55 + centre.a * 0.6);
-  textureStore(terrain_albedo_out, vec2<i32>(id.xy), layer, vec4<f32>(saturate(centre.rgb), centre.a));
+  let normal = normalize(vec3<f32>((height - right) * bump, 1.0, (height - up) * bump));
+  let occlusion = saturate(0.55 + height * 0.6);
   textureStore(
     terrain_normal_out,
     vec2<i32>(id.xy),
     layer,
-    vec4<f32>(normal.x * 0.5 + 0.5, normal.z * 0.5 + 0.5, occlusion, material_roughness(layer, centre.a))
+    vec4<f32>(normal.x * 0.5 + 0.5, normal.z * 0.5 + 0.5, occlusion, material_roughness(layer, height))
   );
 }
 
@@ -515,9 +541,11 @@ fn bark_smooth(uv: vec2<f32>) -> vec4<f32> {
   return vec4<f32>(colour, saturate(0.7 + mottle * 0.3 - lenticels * 0.4));
 }
 
-// A rounded cluster of ovate leaves radiating from the centre of the card.
-fn leaf_cluster(uv: vec2<f32>, count: i32, leaf_length: f32, leaf_width: f32, base: vec3<f32>, tip: vec3<f32>, seed: u32, veined: bool) -> vec4<f32> {
-  var result = vec4<f32>(0.0);
+// A rounded cluster of ovate leaves radiating from the centre of the card,
+// at the four supersample points of one texel. Each leaf's placement does
+// not depend on the point, so it is worked out once for all four.
+fn leaf_cluster(uvs: array<vec2<f32>, 4>, count: i32, leaf_length: f32, leaf_width: f32, base: vec3<f32>, tip: vec3<f32>, seed: u32, veined: bool) -> array<vec4<f32>, 4> {
+  var result = array<vec4<f32>, 4>();
   let centre = vec2<f32>(0.5, 0.5);
 
   for (var i = 0; i < count; i = i + 1) {
@@ -527,31 +555,35 @@ fn leaf_cluster(uv: vec2<f32>, count: i32, leaf_length: f32, leaf_width: f32, ba
     let size = leaf_length * (0.75 + unit(pcg(h + 3u)) * 0.5);
     let direction = vec2<f32>(cos(angle + (unit(pcg(h + 5u)) - 0.5) * 0.9), sin(angle + (unit(pcg(h + 5u)) - 0.5) * 0.9));
     let leaf_base = centre + vec2<f32>(cos(angle), sin(angle)) * reach;
-    let local = uv - leaf_base;
-    let along = dot(local, direction) / size;
-    let across = dot(local, vec2<f32>(-direction.y, direction.x)) / (size * leaf_width);
+    let leaf_colour = mix(base, tip, unit(pcg(h + 9u)));
 
-    if (along < 0.0 || along > 1.0) {
-      continue;
-    }
+    for (var s = 0; s < 4; s = s + 1) {
+      let local = uvs[s] - leaf_base;
+      let along = dot(local, direction) / size;
+      let across = dot(local, vec2<f32>(-direction.y, direction.x)) / (size * leaf_width);
 
-    // Ovate outline: widest a third of the way along, pointed tip.
-    let half_width = sin(pow(along, 0.75) * 3.14159) * 0.5;
-
-    if (abs(across) < half_width) {
-      let shade = 0.75 + 0.25 * (1.0 - abs(across) / max(half_width, 0.001));
-      var colour = mix(base, tip, unit(pcg(h + 9u))) * shade;
-      let midrib = 1.0 - smoothstep(0.0, 0.05, abs(across));
-      colour = mix(colour, colour * 1.35, midrib * 0.6);
-
-      if (veined) {
-        let veins = smoothstep(0.75, 1.0, sin((along * 9.0 - abs(across) * 3.0) * TAU * 0.5));
-        colour = colour * (1.0 - veins * 0.12);
+      if (along < 0.0 || along > 1.0) {
+        continue;
       }
 
-      // Leaves closer to the twig are a little darker (self-shading).
-      colour = colour * (0.75 + 0.25 * saturate(reach / 0.3 + along * 0.5));
-      result = vec4<f32>(colour, 1.0);
+      // Ovate outline: widest a third of the way along, pointed tip.
+      let half_width = sin(pow(along, 0.75) * 3.14159) * 0.5;
+
+      if (abs(across) < half_width) {
+        let shade = 0.75 + 0.25 * (1.0 - abs(across) / max(half_width, 0.001));
+        var colour = leaf_colour * shade;
+        let midrib = 1.0 - smoothstep(0.0, 0.05, abs(across));
+        colour = mix(colour, colour * 1.35, midrib * 0.6);
+
+        if (veined) {
+          let veins = smoothstep(0.75, 1.0, sin((along * 9.0 - abs(across) * 3.0) * TAU * 0.5));
+          colour = colour * (1.0 - veins * 0.12);
+        }
+
+        // Leaves closer to the twig are a little darker (self-shading).
+        colour = colour * (0.75 + 0.25 * saturate(reach / 0.3 + along * 0.5));
+        result[s] = vec4<f32>(colour, 1.0);
+      }
     }
   }
 
@@ -741,8 +773,6 @@ fn flora(layer: i32, uv: vec2<f32>) -> vec4<f32> {
     case 1: { return bark_pine(uv); }
     case 2: { return bark_palm(uv); }
     case 3: { return bark_smooth(uv); }
-    case 4: { return leaf_cluster(uv, 42, 0.17, 0.5, vec3<f32>(0.1, 0.2, 0.04), vec3<f32>(0.24, 0.36, 0.08), 181u, false); }
-    case 5: { return leaf_cluster(uv, 11, 0.38, 0.32, vec3<f32>(0.05, 0.16, 0.035), vec3<f32>(0.14, 0.3, 0.06), 191u, true); }
     case 6: { return needles(uv); }
     case 7: { return palm_frond(uv); }
     case 8: { return fine_leaves(uv); }
@@ -754,22 +784,38 @@ fn flora(layer: i32, uv: vec2<f32>) -> vec4<f32> {
 fn gen_flora(@builtin(global_invocation_id) id: vec3<u32>) {
   let size = textureDimensions(flora_out);
 
-  if (id.x >= size.x || id.y >= size.y) {
+  if (id.x >= size.x || id.y >= size.y || (bake_layers.y & (1u << id.z)) == 0u) {
     return;
   }
 
   let layer = i32(id.z);
   // Supersample 2x2 so thin needles and leaflets are anti-aliased.
+  var uvs = array<vec2<f32>, 4>();
+
+  for (var s = 0; s < 4; s = s + 1) {
+    let offset = vec2<f32>(0.25 + f32(s % 2) * 0.5, 0.25 + f32(s / 2) * 0.5);
+    uvs[s] = (vec2<f32>(id.xy) + offset) / vec2<f32>(size);
+  }
+
+  var samples = array<vec4<f32>, 4>();
+
+  if (layer == 4) {
+    samples = leaf_cluster(uvs, 42, 0.17, 0.5, vec3<f32>(0.1, 0.2, 0.04), vec3<f32>(0.24, 0.36, 0.08), 181u, false);
+  } else if (layer == 5) {
+    samples = leaf_cluster(uvs, 11, 0.38, 0.32, vec3<f32>(0.05, 0.16, 0.035), vec3<f32>(0.14, 0.3, 0.06), 191u, true);
+  } else {
+    for (var s = 0; s < 4; s = s + 1) {
+      samples[s] = flora(layer, uvs[s]);
+    }
+  }
+
   var sum = vec4<f32>(0.0);
   var colour_sum = vec3<f32>(0.0);
 
-  for (var sy = 0; sy < 2; sy = sy + 1) {
-    for (var sx = 0; sx < 2; sx = sx + 1) {
-      let uv = (vec2<f32>(id.xy) + vec2<f32>(0.25 + f32(sx) * 0.5, 0.25 + f32(sy) * 0.5)) / vec2<f32>(size);
-      let sample = flora(layer, uv);
-      colour_sum = colour_sum + sample.rgb * select(sample.a, 1.0, layer < 4);
-      sum = sum + sample;
-    }
+  for (var s = 0; s < 4; s = s + 1) {
+    let sample = samples[s];
+    colour_sum = colour_sum + sample.rgb * select(sample.a, 1.0, layer < 4);
+    sum = sum + sample;
   }
 
   var alpha = sum.a / 4.0;

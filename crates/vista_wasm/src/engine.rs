@@ -14,11 +14,13 @@ use crate::maths::smoothstep;
 #[cfg(target_arch = "wasm32")]
 use crate::maths::{cross, normalise, sub};
 use crate::render::flora::TreeInstance;
+use crate::render::pipelines::Needs;
 use crate::render::tree_models::{layers, mesh_from_arrays, TreeMesh};
 use crate::render::water::{build_river_network, restore_carving, RiverNetwork, RiverSources};
-use crate::terrain::biomes::SurfaceSample;
 #[cfg(target_arch = "wasm32")]
-use crate::terrain::biomes::{celsius_to_unit, sea_level_celsius};
+use crate::terrain::biomes::celsius_to_unit;
+use crate::terrain::biomes::sea_level_celsius;
+use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::channels::CarveRecord;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::terrain::clipmap::build_clipmap_levels;
@@ -93,6 +95,8 @@ pub struct EngineCore {
   sounds: crate::water_sounds::SoundMap,
   /// Whether any sea on the terrain is cold enough to freeze.
   sea_ice_possible: bool,
+  /// Terrain materials the ground uses, one bit per material.
+  terrain_materials: u32,
   /// Cached per-sample normals for the active terrain, computed once when
   /// the terrain is installed and reused by every LOD mesh rebuild so the
   /// camera can recentre the mesh without repeating a full-heightmap pass.
@@ -211,6 +215,7 @@ impl EngineCore {
       water_mask: None,
       sounds: Default::default(),
       sea_ice_possible: false,
+      terrain_materials: 0,
     })
   }
 
@@ -269,6 +274,7 @@ impl EngineCore {
       water_mask: None,
       sounds: Default::default(),
       sea_ice_possible: false,
+      terrain_materials: 0,
       terrain_normals: Vec::new(),
       mesh_centre_sample: None,
       mesh_stream: None,
@@ -310,6 +316,7 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = self.generate_fractal_map(&options, progress).await?;
+    self.finish_gpu_work().await?;
     let handle = self.install_terrain(map, progress);
     progress("finishing", 1.0);
     self.state = EngineState::Ready;
@@ -367,6 +374,7 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = decode_geotiff(bytes, &options)?;
+    self.finish_gpu_work().await?;
     let handle = self.install_terrain(map, &mut |_, _| {});
     self.state = EngineState::Ready;
     Ok(handle)
@@ -381,9 +389,20 @@ impl EngineCore {
     self.ensure_live()?;
     self.state = EngineState::LoadingTerrain;
     let map = decode_raw_heightmap(bytes, &options)?;
+    self.finish_gpu_work().await?;
     let handle = self.install_terrain(map, &mut |_, _| {});
     self.state = EngineState::Ready;
     Ok(handle)
+  }
+
+  /// Wait for the GPU to finish the work submitted so far (engine
+  /// start-up, erosion), so the terrain upload that follows does not
+  /// freeze the page while it waits. Native builds have no GPU.
+  async fn finish_gpu_work(&self) -> VistaResult<()> {
+    #[cfg(target_arch = "wasm32")]
+    self.gpu.finish_submitted_work().await?;
+
+    Ok(())
   }
 
   /// Replace the active camera.
@@ -1072,6 +1091,7 @@ impl EngineCore {
           .surface
           .iter()
           .any(|sample| sample.biome == ocean && sample.celsius() < SEA_ICE_CELSIUS);
+        self.terrain_materials = terrain_materials(&self.surface);
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -1101,6 +1121,7 @@ impl EngineCore {
       None => {
         self.surface = Vec::new();
         self.sea_ice_possible = false;
+        self.terrain_materials = 0;
       }
     }
 
@@ -1290,6 +1311,58 @@ impl EngineCore {
     out
   }
 
+  /// What the scene draws now, and what it is likely to draw soon: the
+  /// renderer creates the pipelines for the first before each frame, and
+  /// warms up those for the second one per frame after the first frame.
+  pub fn pipeline_needs(&self) -> (Needs, Needs) {
+    let Weathered {
+      water,
+      mist,
+      clouds,
+      flora,
+      weather,
+      ..
+    } = self.weathered_options();
+    let open_sea = sea_level_celsius(&self.biomes);
+    let clouds_on = clouds.style != vista_types::CloudStyle::Off && clouds.coverage > 0.001;
+    let needs = Needs {
+      terrain_materials: self.terrain_materials,
+      terrain_shadows: self.terrain.is_some() && self.shadows.terrain.enabled,
+      trees: self.stats.flora_instances > 0,
+      tree_meshes: flora.tree_quality == vista_types::TreeQuality::Mesh,
+      tree_shadows: self.shadows.trees.enabled,
+      grass: self.stats.grass_instances > 0,
+      clouds: clouds_on,
+      cloud_noise: clouds_on || mist.style == vista_types::MistStyle::Volumetric,
+      cloud_reuse: clouds.temporal && clouds.style == vista_types::CloudStyle::Volumetric,
+      water: water.enabled && self.terrain.is_some(),
+      sea_ice: self.sea_ice_possible || open_sea < SEA_ICE_CELSIUS,
+      sea_near_freezing: false,
+      inland_water: !self.rivers.vertices.is_empty(),
+      falls: !self.rivers.fall_vertices.is_empty(),
+      present: !self.lens_drops.is_empty() || self.stats.render_scale < 0.999,
+    };
+    let options = self.weather.options();
+    // Weather that can reach rain brings lens drops and clouds.
+    let rain_possible = options.enabled
+      && (options.auto_cycle
+        || matches!(
+          options.state,
+          vista_types::WeatherKind::Rain | vista_types::WeatherKind::Storm
+        ));
+    let (_, min_scale) = self.quality.render_scale_range();
+    let likely = Needs {
+      clouds: needs.clouds || (options.enabled && options.effects.clouds),
+      cloud_noise: needs.cloud_noise || (options.enabled && options.effects.clouds),
+      sea_near_freezing: open_sea < SEA_ICE_CELSIUS + 6.0 || weather.snow_cover > 0.0,
+      present: needs.present
+        || min_scale < 0.999
+        || (rain_possible && options.lens_drops && options.effects.precipitation),
+      ..needs
+    };
+    (needs, likely)
+  }
+
   /// Collect every per-frame shading parameter for the GPU.
   #[cfg(target_arch = "wasm32")]
   fn frame_params(&self) -> crate::render::gpu::FrameParams {
@@ -1304,6 +1377,7 @@ impl EngineCore {
     let camera_right = normalise(cross(camera_forward, [0.0, 1.0, 0.0]));
     let camera_up = cross(camera_right, camera_forward);
     let aspect_ratio = self.render_width as f32 / self.render_height.max(1) as f32;
+    let (needs, likely) = self.pipeline_needs();
     let Weathered {
       atmosphere,
       water,
@@ -1400,6 +1474,8 @@ impl EngineCore {
       render_scale: self.stats.render_scale,
       frame_seconds: self.frame_seconds,
       distances: self.quality.distances(),
+      needs,
+      likely,
     }
   }
 
@@ -1638,6 +1714,23 @@ fn touched_samples(map: &HeightMap, rivers: &RiverNetwork) -> Vec<usize> {
 /// A seed that follows the terrain: a hash of its heights, so every
 /// terrain places its springs, meanders and deltas its own way, and the
 /// same terrain always places them the same way.
+/// The terrain materials a surface uses, one bit per material, plus rock
+/// and sand, which the skirt beyond the map adds.
+fn terrain_materials(surface: &[SurfaceSample]) -> u32 {
+  use crate::terrain::biomes::{MAT_ROCK, MAT_SAND};
+  let mut mask = (1 << MAT_ROCK) | (1 << MAT_SAND);
+
+  for sample in surface {
+    for (material, weight) in sample.materials.iter().enumerate() {
+      if *weight > 0 {
+        mask |= 1 << material;
+      }
+    }
+  }
+
+  mask
+}
+
 fn terrain_seed(map: &HeightMap) -> u64 {
   let step = (map.heights.len() / 65_536).max(1);
 
@@ -1684,6 +1777,7 @@ fn debug_view_index(view: DebugView) -> u32 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::render::pipelines::{PipelineKind, PipelineSlots};
   use vista_types::{FractalTerrainOptions, NoiseKind, NoiseOptions, VistaEngineOptions};
 
   #[test]
@@ -2254,5 +2348,92 @@ mod tests {
       .unwrap();
 
     assert_ne!(before, engine.surface);
+  }
+
+  /// How many times each pipeline kind is created as the scene's needs
+  /// are met, over several frames.
+  fn created(engine: &EngineCore, slots: &mut PipelineSlots<()>) -> Vec<PipelineKind> {
+    let (needs, _) = engine.pipeline_needs();
+    let mut kinds = Vec::new();
+    slots.ensure(&needs, |kind| kinds.push(kind));
+    kinds
+  }
+
+  #[test]
+  fn a_plain_scene_creates_no_pipelines_for_what_it_lacks() {
+    let mut engine = basin_engine();
+    let mut water = WaterOptions::default();
+    water.rivers.enabled = false;
+    engine.set_water(water).unwrap();
+    engine
+      .set_grass(GrassOptions {
+        enabled: false,
+        ..GrassOptions::default()
+      })
+      .unwrap();
+    let kinds = created(&engine, &mut PipelineSlots::default());
+
+    for kind in [
+      PipelineKind::InlandWater,
+      PipelineKind::Falls,
+      PipelineKind::Clouds,
+      PipelineKind::QuarterClouds,
+      PipelineKind::Grass,
+      PipelineKind::Present,
+      PipelineKind::SeaIceOcean,
+    ] {
+      assert!(!kinds.contains(&kind), "{kind:?} was created");
+    }
+
+    assert!(kinds.contains(&PipelineKind::Terrain));
+    assert!(kinds.contains(&PipelineKind::OpenOcean));
+  }
+
+  #[test]
+  fn a_full_scene_creates_each_pipeline_once_and_grass_when_it_appears() {
+    let mut engine = basin_engine();
+    engine
+      .set_grass(GrassOptions {
+        enabled: false,
+        ..GrassOptions::default()
+      })
+      .unwrap();
+    engine
+      .set_clouds(CloudsOptions {
+        style: vista_types::CloudStyle::Volumetric,
+        coverage: 0.5,
+        ..CloudsOptions::default()
+      })
+      .unwrap();
+    engine
+      .set_render_quality(RenderQualityOptions {
+        render_scale: Some(0.75),
+        ..RenderQualityOptions::default()
+      })
+      .unwrap();
+    engine.render_once().unwrap();
+    let mut slots = PipelineSlots::default();
+    let mut kinds = created(&engine, &mut slots);
+    kinds.extend(created(&engine, &mut slots));
+
+    for kind in [
+      PipelineKind::InlandWater,
+      PipelineKind::Falls,
+      PipelineKind::Clouds,
+      PipelineKind::Present,
+      PipelineKind::Terrain,
+    ] {
+      assert_eq!(kinds.iter().filter(|k| **k == kind).count(), 1, "{kind:?}");
+    }
+
+    assert!(!kinds.contains(&PipelineKind::Grass));
+    engine
+      .set_grass(GrassOptions {
+        enabled: true,
+        ..GrassOptions::default()
+      })
+      .unwrap();
+    assert!(engine.stats.grass_instances > 0);
+    assert_eq!(created(&engine, &mut slots), [PipelineKind::Grass]);
   }
 }

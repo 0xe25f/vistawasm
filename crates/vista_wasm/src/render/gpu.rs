@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,6 +12,7 @@ use crate::errors::{VistaError, VistaResult};
 use crate::render::erosion_compute::ErosionCompute;
 use crate::render::flora::{FloraInstance, TreeInstance};
 use crate::render::grass::GRASS_BASE_TUFT;
+use crate::render::pipelines::{Needs, PipelineKind, PipelineSlots};
 use crate::render::shaders;
 use crate::render::shadow_math::tree_shadow_frame;
 use crate::render::terrain_mesh::{TerrainMeshData, TerrainVertex};
@@ -236,6 +238,10 @@ pub struct FrameParams {
   pub render_scale: f32,
   /// Smoothed time step to animate by, in seconds.
   pub frame_seconds: f32,
+  /// What the scene draws this frame.
+  pub needs: Needs,
+  /// What it is likely to draw soon.
+  pub likely: Needs,
 }
 
 // The engine validates replacement textures against these sizes without
@@ -503,19 +509,21 @@ const SPECIES_TINTS: [[f32; 4]; 8] = [
   [0.95, 1.05, 0.9, 0.0],
 ];
 
-/// Shader modules, each compiled once and shared by every pipeline that
-/// uses it.
+/// Shader modules, each compiled the first time a pipeline needs it and
+/// shared by every pipeline that uses it.
+#[derive(Default)]
 struct Modules {
-  terrain: wgpu::ShaderModule,
-  trees: wgpu::ShaderModule,
-  grass: wgpu::ShaderModule,
-  atmosphere: wgpu::ShaderModule,
-  water: wgpu::ShaderModule,
-  shadow: wgpu::ShaderModule,
+  terrain: OnceCell<wgpu::ShaderModule>,
+  trees: OnceCell<wgpu::ShaderModule>,
+  grass: OnceCell<wgpu::ShaderModule>,
+  atmosphere: OnceCell<wgpu::ShaderModule>,
+  water: OnceCell<wgpu::ShaderModule>,
+  shadow: OnceCell<wgpu::ShaderModule>,
 }
 
 /// Bind group layouts.
 struct Layouts {
+  frame: wgpu::BindGroupLayout,
   world: wgpu::BindGroupLayout,
   shadow: wgpu::BindGroupLayout,
   composite: wgpu::BindGroupLayout,
@@ -525,26 +533,46 @@ struct Layouts {
   lens: wgpu::BindGroupLayout,
 }
 
-/// Render and compute pipelines.
+/// Pipeline layouts, made once so each pipeline created later shares them.
+struct PipelineLayouts {
+  /// Frame, world and shadow-receiver groups.
+  receivers: wgpu::PipelineLayout,
+  /// Frame and world groups: the tree shadow pass cannot bind the shadow
+  /// map it renders into, and the impostor bake needs no shadows.
+  basic: wgpu::PipelineLayout,
+  composite: wgpu::PipelineLayout,
+  lens: wgpu::PipelineLayout,
+  cloud: wgpu::PipelineLayout,
+  cloud_quarter: wgpu::PipelineLayout,
+  terrain_shadow: wgpu::PipelineLayout,
+}
+
+/// A render or compute pipeline in a [`PipelineSlots`] slot.
+enum GpuPipeline {
+  Render(wgpu::RenderPipeline),
+  Compute(wgpu::ComputePipeline),
+}
+
+/// Pipelines created when the scene needs them.
+#[derive(Default)]
 struct Pipelines {
-  terrain: wgpu::RenderPipeline,
-  tree_mesh: wgpu::RenderPipeline,
-  tree_impostor: wgpu::RenderPipeline,
-  tree_bake: wgpu::RenderPipeline,
-  tree_shadow: wgpu::RenderPipeline,
-  grass: wgpu::RenderPipeline,
-  clouds: wgpu::RenderPipeline,
-  clouds_quarter: wgpu::RenderPipeline,
-  composite: wgpu::RenderPipeline,
-  water: wgpu::RenderPipeline,
-  open_water: wgpu::RenderPipeline,
-  /// Rivers, lakes and plunge pools.
-  inland_water: wgpu::RenderPipeline,
-  /// Waterfall sheets and mist.
-  falls: wgpu::RenderPipeline,
-  lens: wgpu::RenderPipeline,
-  cull: wgpu::ComputePipeline,
-  terrain_shadow: wgpu::ComputePipeline,
+  slots: PipelineSlots<GpuPipeline>,
+}
+
+impl Pipelines {
+  fn render(&self, kind: PipelineKind) -> Option<&wgpu::RenderPipeline> {
+    match self.slots.get(kind)? {
+      GpuPipeline::Render(pipeline) => Some(pipeline),
+      GpuPipeline::Compute(_) => None,
+    }
+  }
+
+  fn compute(&self, kind: PipelineKind) -> Option<&wgpu::ComputePipeline> {
+    match self.slots.get(kind)? {
+      GpuPipeline::Compute(pipeline) => Some(pipeline),
+      GpuPipeline::Render(_) => None,
+    }
+  }
 }
 
 /// WebGPU context owned by one VistaWASM engine.
@@ -558,7 +586,16 @@ pub struct GpuContext {
   frame_bind_group: wgpu::BindGroup,
   uniform_buffer: wgpu::Buffer,
   layouts: Layouts,
+  pipeline_layouts: PipelineLayouts,
+  modules: Modules,
   pipelines: Pipelines,
+  /// Species whose impostors have been rendered, one bit per species.
+  /// They are rendered, with the flora layers they sample, when a species
+  /// first appears.
+  impostors_baked: u32,
+  /// Pipelines the scene is likely to need soon are created one per frame,
+  /// only after the first frame.
+  first_frame_presented: bool,
   world_buffer: wgpu::Buffer,
   world_info: WorldInfo,
   world_bind_group: wgpu::BindGroup,
@@ -617,7 +654,8 @@ pub struct GpuContext {
   /// Set when the browser reports the device lost. Work submitted to a lost
   /// device silently does nothing, so rendering stops and reports it.
   device_lost: Arc<AtomicBool>,
-  erosion: ErosionCompute,
+  /// Erosion compute pipelines, created when erosion is first requested.
+  erosion: Option<ErosionCompute>,
   terrain: Option<TerrainGpu>,
   trees: Option<TreesGpu>,
   grass: Option<GrassGpu>,
@@ -687,6 +725,10 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
   };
 
   Layouts {
+    frame: layout(
+      "VistaWASM frame bind group layout",
+      &[uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT)],
+    ),
     world: layout(
       "VistaWASM world layout",
       &[
@@ -1313,13 +1355,7 @@ fn flag(on: bool) -> f32 {
   }
 }
 
-fn create_pipelines(
-  device: &wgpu::Device,
-  frame_layout: &wgpu::BindGroupLayout,
-  layouts: &Layouts,
-  modules: &Modules,
-  surface_format: wgpu::TextureFormat,
-) -> Pipelines {
+fn create_pipeline_layouts(device: &wgpu::Device, layouts: &Layouts) -> PipelineLayouts {
   let pipeline_layout = |label: &str, groups: &[&wgpu::BindGroupLayout]| {
     let groups: Vec<Option<&wgpu::BindGroupLayout>> =
       groups.iter().map(|group| Some(*group)).collect();
@@ -1329,54 +1365,146 @@ fn create_pipelines(
       immediate_size: 0,
     })
   };
-  let receivers = pipeline_layout(
-    "VistaWASM shadow receiver pipeline layout",
-    &[frame_layout, &layouts.world, &layouts.shadow],
-  );
-  // The shadow pass cannot bind the shadow map it renders into, and the
-  // impostor bake needs no shadows, so both use the basic layout.
-  let basic = pipeline_layout(
-    "VistaWASM basic pipeline layout",
-    &[frame_layout, &layouts.world],
-  );
-  let composite = pipeline_layout(
-    "VistaWASM composite pipeline layout",
-    &[
-      frame_layout,
-      &layouts.world,
-      &layouts.shadow,
-      &layouts.composite,
-    ],
-  );
-  let lens = pipeline_layout(
-    "VistaWASM lens pipeline layout",
-    &[frame_layout, &layouts.world, &layouts.shadow, &layouts.lens],
-  );
-  let cloud = pipeline_layout(
-    "VistaWASM cloud pipeline layout",
-    &[
-      frame_layout,
-      &layouts.world,
-      &layouts.shadow,
-      &layouts.cloud,
-    ],
-  );
-  let cloud_quarter = pipeline_layout(
-    "VistaWASM quarter cloud pipeline layout",
-    &[
-      frame_layout,
-      &layouts.world,
-      &layouts.shadow,
-      &layouts.cloud_quarter,
-    ],
-  );
-  let terrain_shadow_layout = pipeline_layout(
-    "VistaWASM terrain shadow pipeline layout",
-    &[&layouts.terrain_shadow],
-  );
+  let frame = &layouts.frame;
+
+  PipelineLayouts {
+    receivers: pipeline_layout(
+      "VistaWASM shadow receiver pipeline layout",
+      &[frame, &layouts.world, &layouts.shadow],
+    ),
+    basic: pipeline_layout("VistaWASM basic pipeline layout", &[frame, &layouts.world]),
+    composite: pipeline_layout(
+      "VistaWASM composite pipeline layout",
+      &[frame, &layouts.world, &layouts.shadow, &layouts.composite],
+    ),
+    lens: pipeline_layout(
+      "VistaWASM lens pipeline layout",
+      &[frame, &layouts.world, &layouts.shadow, &layouts.lens],
+    ),
+    cloud: pipeline_layout(
+      "VistaWASM cloud pipeline layout",
+      &[frame, &layouts.world, &layouts.shadow, &layouts.cloud],
+    ),
+    cloud_quarter: pipeline_layout(
+      "VistaWASM quarter cloud pipeline layout",
+      &[
+        frame,
+        &layouts.world,
+        &layouts.shadow,
+        &layouts.cloud_quarter,
+      ],
+    ),
+    terrain_shadow: pipeline_layout(
+      "VistaWASM terrain shadow pipeline layout",
+      &[&layouts.terrain_shadow],
+    ),
+  }
+}
+
+fn water_buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
+  [Some(wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<WaterVertex>() as u64,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &WATER_ATTRIBUTES,
+  })]
+}
+
+/// The impostor bake pipeline. It is made for each bake and dropped after
+/// it.
+fn create_bake_pipeline(
+  device: &wgpu::Device,
+  layouts: &PipelineLayouts,
+  modules: &Modules,
+) -> wgpu::RenderPipeline {
+  let bake_buffers = [Some(tree_vertex_layout())];
+
+  create_pipeline(
+    device,
+    &layouts.basic,
+    PipelineSpec {
+      format: Some(wgpu::TextureFormat::Rgba8Unorm),
+      ..PipelineSpec::opaque(
+        "VistaWASM impostor bake",
+        modules.trees(device),
+        ("vertex_bake", "fragment_bake"),
+        &bake_buffers,
+      )
+    },
+  )
+}
+
+impl Modules {
+  fn get<'a>(
+    cell: &'a OnceCell<wgpu::ShaderModule>,
+    device: &wgpu::Device,
+    label: &str,
+    body: &str,
+  ) -> &'a wgpu::ShaderModule {
+    cell.get_or_init(|| render_module(device, label, body))
+  }
+
+  fn terrain(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(
+      &self.terrain,
+      device,
+      "VistaWASM terrain shader",
+      shaders::TERRAIN,
+    )
+  }
+
+  fn trees(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(&self.trees, device, "VistaWASM tree shader", shaders::TREES)
+  }
+
+  fn grass(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(
+      &self.grass,
+      device,
+      "VistaWASM grass shader",
+      shaders::GRASS,
+    )
+  }
+
+  fn atmosphere(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(
+      &self.atmosphere,
+      device,
+      "VistaWASM atmosphere shader",
+      shaders::ATMOSPHERE,
+    )
+  }
+
+  fn water(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(
+      &self.water,
+      device,
+      "VistaWASM water shader",
+      shaders::WATER,
+    )
+  }
+
+  fn shadow(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    Self::get(
+      &self.shadow,
+      device,
+      "VistaWASM shadow shader",
+      shaders::SHADOW,
+    )
+  }
+}
+
+/// Create one pipeline. The ocean, inland water and waterfall pipelines
+/// share the water module and differ only in override constants, and the
+/// atmosphere module serves the cloud, composite and present passes.
+fn create_pipeline_of(
+  kind: PipelineKind,
+  device: &wgpu::Device,
+  layouts: &PipelineLayouts,
+  modules: &Modules,
+  surface_format: wgpu::TextureFormat,
+) -> GpuPipeline {
   let tree_buffers = [Some(tree_vertex_layout()), Some(tree_instance_layout())];
   let instance_buffers = [Some(tree_instance_layout())];
-  let bake_buffers = [Some(tree_vertex_layout())];
   let terrain_buffers = [Some(wgpu::VertexBufferLayout {
     array_stride: std::mem::size_of::<crate::render::terrain_mesh::TerrainVertex>() as u64,
     step_mode: wgpu::VertexStepMode::Vertex,
@@ -1394,63 +1522,42 @@ fn create_pipelines(
       attributes: &GRASS_INSTANCE_ATTRIBUTES,
     }),
   ];
-  let water_buffers = [Some(wgpu::VertexBufferLayout {
-    array_stride: std::mem::size_of::<WaterVertex>() as u64,
-    step_mode: wgpu::VertexStepMode::Vertex,
-    attributes: &WATER_ATTRIBUTES,
-  })];
+  let water_buffers = water_buffers();
   let main = ("vertex_main", "fragment_main");
+  // Water draws over the finished frame, blended and depth-tested.
+  let water = |label, constants, entries| {
+    create_pipeline(
+      device,
+      &layouts.receivers,
+      PipelineSpec {
+        format: Some(surface_format),
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        depth: Some((false, wgpu::CompareFunction::Less)),
+        constants,
+        ..PipelineSpec::opaque(label, modules.water(device), entries, &water_buffers)
+      },
+    )
+  };
+  let render = |pipeline| GpuPipeline::Render(pipeline);
 
-  Pipelines {
-    terrain: create_pipeline(
+  match kind {
+    PipelineKind::TerrainShadow => GpuPipeline::Compute(compute_pipeline(
       device,
-      &receivers,
-      PipelineSpec {
-        cull_mode: Some(wgpu::Face::Back),
-        ..PipelineSpec::opaque(
-          "VistaWASM terrain",
-          &modules.terrain,
-          main,
-          &terrain_buffers,
-        )
-      },
-    ),
-    tree_mesh: create_pipeline(
+      "VistaWASM terrain shadow bake",
+      shaders::TERRAIN_SHADOW,
+      "bake",
+      Some(&layouts.terrain_shadow),
+    )),
+    PipelineKind::TreeCull => GpuPipeline::Compute(compute_pipeline(
       device,
-      &receivers,
-      PipelineSpec::opaque(
-        "VistaWASM tree meshes",
-        &modules.trees,
-        ("vertex_mesh", "fragment_mesh"),
-        &tree_buffers,
-      ),
-    ),
-    tree_impostor: create_pipeline(
+      "VistaWASM tree cull",
+      shaders::TREE_CULL,
+      "cull_main",
+      None,
+    )),
+    PipelineKind::TreeShadow => render(create_pipeline(
       device,
-      &receivers,
-      PipelineSpec::opaque(
-        "VistaWASM tree impostors",
-        &modules.trees,
-        ("vertex_impostor", "fragment_impostor"),
-        &instance_buffers,
-      ),
-    ),
-    tree_bake: create_pipeline(
-      device,
-      &basic,
-      PipelineSpec {
-        format: Some(wgpu::TextureFormat::Rgba8Unorm),
-        ..PipelineSpec::opaque(
-          "VistaWASM impostor bake",
-          &modules.trees,
-          ("vertex_bake", "fragment_bake"),
-          &bake_buffers,
-        )
-      },
-    ),
-    tree_shadow: create_pipeline(
-      device,
-      &basic,
+      &layouts.basic,
       PipelineSpec {
         format: None,
         depth_bias: wgpu::DepthBiasState {
@@ -1460,144 +1567,128 @@ fn create_pipelines(
         },
         ..PipelineSpec::opaque(
           "VistaWASM tree shadows",
-          &modules.shadow,
+          modules.shadow(device),
           main,
           &instance_buffers,
         )
       },
-    ),
-    grass: create_pipeline(
+    )),
+    PipelineKind::Terrain => render(create_pipeline(
       device,
-      &receivers,
-      PipelineSpec::opaque("VistaWASM grass", &modules.grass, main, &grass_buffers),
-    ),
-    clouds: create_pipeline(
-      device,
-      &cloud,
+      &layouts.receivers,
       PipelineSpec {
-        depth: None,
+        cull_mode: Some(wgpu::Face::Back),
         ..PipelineSpec::opaque(
-          "VistaWASM clouds",
-          &modules.atmosphere,
-          ("vertex_main", "cloud_main"),
-          &[],
+          "VistaWASM terrain",
+          modules.terrain(device),
+          main,
+          &terrain_buffers,
         )
       },
-    ),
-    clouds_quarter: create_pipeline(
+    )),
+    PipelineKind::TreeMesh => render(create_pipeline(
       device,
-      &cloud_quarter,
+      &layouts.receivers,
+      PipelineSpec::opaque(
+        "VistaWASM tree meshes",
+        modules.trees(device),
+        ("vertex_mesh", "fragment_mesh"),
+        &tree_buffers,
+      ),
+    )),
+    PipelineKind::TreeImpostor => render(create_pipeline(
+      device,
+      &layouts.receivers,
+      PipelineSpec::opaque(
+        "VistaWASM tree impostors",
+        modules.trees(device),
+        ("vertex_impostor", "fragment_impostor"),
+        &instance_buffers,
+      ),
+    )),
+    PipelineKind::Grass => render(create_pipeline(
+      device,
+      &layouts.receivers,
+      PipelineSpec::opaque(
+        "VistaWASM grass",
+        modules.grass(device),
+        main,
+        &grass_buffers,
+      ),
+    )),
+    PipelineKind::QuarterClouds => render(create_pipeline(
+      device,
+      &layouts.cloud_quarter,
       PipelineSpec {
         depth: None,
         ..PipelineSpec::opaque(
           "VistaWASM quarter clouds",
-          &modules.atmosphere,
+          modules.atmosphere(device),
           ("vertex_main", "cloud_quarter_main"),
           &[],
         )
       },
-    ),
-    composite: create_pipeline(
+    )),
+    PipelineKind::Clouds => render(create_pipeline(
       device,
-      &composite,
+      &layouts.cloud,
+      PipelineSpec {
+        depth: None,
+        ..PipelineSpec::opaque(
+          "VistaWASM clouds",
+          modules.atmosphere(device),
+          ("vertex_main", "cloud_main"),
+          &[],
+        )
+      },
+    )),
+    PipelineKind::Composite => render(create_pipeline(
+      device,
+      &layouts.composite,
       PipelineSpec {
         format: Some(surface_format),
         depth: None,
-        ..PipelineSpec::opaque("VistaWASM composite", &modules.atmosphere, main, &[])
+        ..PipelineSpec::opaque("VistaWASM composite", modules.atmosphere(device), main, &[])
       },
-    ),
-    lens: create_pipeline(
+    )),
+    PipelineKind::SeaIceOcean => render(water("VistaWASM water", &[], main)),
+    // The same water without sea ice, drawn whenever no sea can freeze, so
+    // mild maps pay nothing for it.
+    PipelineKind::OpenOcean => render(water("VistaWASM open water", &[("SEA_ICE", 0.0)], main)),
+    // Rivers and lakes without the ocean's waves and sea ice, and the
+    // ocean without them.
+    PipelineKind::InlandWater => render(water(
+      "VistaWASM inland water",
+      &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
+      main,
+    )),
+    PipelineKind::Falls => render(water(
+      "VistaWASM waterfalls",
+      &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
+      ("vertex_main", "fragment_fall"),
+    )),
+    PipelineKind::Present => render(create_pipeline(
       device,
-      &lens,
+      &layouts.lens,
       PipelineSpec {
         format: Some(surface_format),
         depth: None,
         ..PipelineSpec::opaque(
           "VistaWASM present",
-          &modules.atmosphere,
+          modules.atmosphere(device),
           ("vertex_main", "present_main"),
           &[],
         )
       },
-    ),
-    water: create_pipeline(
-      device,
-      &receivers,
-      PipelineSpec {
-        format: Some(surface_format),
-        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-        depth: Some((false, wgpu::CompareFunction::Less)),
-        ..PipelineSpec::opaque("VistaWASM water", &modules.water, main, &water_buffers)
-      },
-    ),
-    // The same water without sea ice, drawn whenever no sea can freeze, so
-    // mild maps pay nothing for it.
-    open_water: create_pipeline(
-      device,
-      &receivers,
-      PipelineSpec {
-        format: Some(surface_format),
-        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-        depth: Some((false, wgpu::CompareFunction::Less)),
-        constants: &[("SEA_ICE", 0.0)],
-        ..PipelineSpec::opaque("VistaWASM open water", &modules.water, main, &water_buffers)
-      },
-    ),
-    // Rivers and lakes without the ocean's waves and sea ice, and the
-    // ocean without them.
-    inland_water: create_pipeline(
-      device,
-      &receivers,
-      PipelineSpec {
-        format: Some(surface_format),
-        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-        depth: Some((false, wgpu::CompareFunction::Less)),
-        constants: &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
-        ..PipelineSpec::opaque(
-          "VistaWASM inland water",
-          &modules.water,
-          main,
-          &water_buffers,
-        )
-      },
-    ),
-    falls: create_pipeline(
-      device,
-      &receivers,
-      PipelineSpec {
-        format: Some(surface_format),
-        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-        depth: Some((false, wgpu::CompareFunction::Less)),
-        constants: &[("SEA_ICE", 0.0), ("INLAND", 1.0)],
-        ..PipelineSpec::opaque(
-          "VistaWASM waterfalls",
-          &modules.water,
-          ("vertex_main", "fragment_fall"),
-          &water_buffers,
-        )
-      },
-    ),
-    cull: compute_pipeline(
-      device,
-      "VistaWASM tree cull",
-      shaders::TREE_CULL,
-      "cull_main",
-      None,
-    ),
-    terrain_shadow: compute_pipeline(
-      device,
-      "VistaWASM terrain shadow bake",
-      shaders::TERRAIN_SHADOW,
-      "bake",
-      Some(&terrain_shadow_layout),
-    ),
+    )),
   }
 }
 
 impl GpuContext {
   /// Create and configure WebGPU resources for a browser canvas, bake the
-  /// procedural textures, model the tree species, and render their
-  /// impostors.
+  /// procedural textures and model the tree species. Pipelines, the tree
+  /// impostors and the 3D cloud noise are made when a scene first needs
+  /// them (see [`Self::ensure_pipelines`]).
   pub async fn new(
     canvas: web_sys::HtmlCanvasElement,
     width: u32,
@@ -1655,19 +1746,16 @@ impl GpuContext {
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
-    let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-      label: Some("VistaWASM frame bind group layout"),
-      entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT)],
-    });
+    let layouts = create_layouts(&device);
     let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("VistaWASM frame bind group"),
-      layout: &frame_layout,
+      layout: &layouts.frame,
       entries: &[wgpu::BindGroupEntry {
         binding: 0,
         resource: uniform_buffer.as_entire_binding(),
       }],
     });
-    let layouts = create_layouts(&device);
+    let pipeline_layouts = create_pipeline_layouts(&device, &layouts);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
       label: Some("VistaWASM linear repeat sampler"),
       address_mode_u: wgpu::AddressMode::Repeat,
@@ -1693,18 +1781,6 @@ impl GpuContext {
       ..Default::default()
     });
 
-    // Each module is compiled once; the tree module serves the bake, mesh,
-    // and impostor pipelines, and the atmosphere module serves both the
-    // cloud and composite passes.
-    let modules = Modules {
-      terrain: render_module(&device, "VistaWASM terrain shader", shaders::TERRAIN),
-      trees: render_module(&device, "VistaWASM tree shader", shaders::TREES),
-      grass: render_module(&device, "VistaWASM grass shader", shaders::GRASS),
-      atmosphere: render_module(&device, "VistaWASM atmosphere shader", shaders::ATMOSPHERE),
-      water: render_module(&device, "VistaWASM water shader", shaders::WATER),
-      shadow: render_module(&device, "VistaWASM shadow shader", shaders::SHADOW),
-    };
-    let pipelines = create_pipelines(&device, &frame_layout, &layouts, &modules, config.format);
     let mips = MipGenerator::new(&device);
     let world_textures = textures::bake_world_textures(&device, &queue, &mips);
     let tree_meshes: Vec<TreeMesh> = TreeSpecies::ALL
@@ -1791,11 +1867,10 @@ impl GpuContext {
       bytemuck::cast_slice(&ocean_vertices),
       &ocean_indices,
     );
-    let erosion = ErosionCompute::new(&device);
     let mut uniforms = FrameUniforms::zeroed();
     uniforms.camera_up[3] = flag(!config.format.is_srgb());
 
-    let mut context = Self {
+    let context = Self {
       surface,
       device,
       queue,
@@ -1805,7 +1880,11 @@ impl GpuContext {
       frame_bind_group,
       uniform_buffer,
       layouts,
-      pipelines,
+      pipeline_layouts,
+      modules: Modules::default(),
+      pipelines: Pipelines::default(),
+      impostors_baked: 0,
+      first_frame_presented: false,
       world_buffer,
       world_info,
       world_bind_group,
@@ -1848,7 +1927,7 @@ impl GpuContext {
       timer,
       device_lost,
       cloud_evolution: 0.0,
-      erosion,
+      erosion: None,
       terrain: None,
       trees: None,
       grass: None,
@@ -1858,8 +1937,74 @@ impl GpuContext {
       canvas_height: pixel_height,
       render_scale: 1.0,
     };
-    context.bake_impostors();
     Ok(context)
+  }
+
+  /// Create every pipeline the scene needs that does not exist yet, in the
+  /// order the frame draws, and bake the terrain materials, tree species
+  /// (flora layers and impostors) and cloud noise the first time they are
+  /// needed. Cheap when nothing is missing.
+  pub fn ensure_pipelines(&mut self, needs: &Needs) {
+    let Self {
+      device,
+      pipeline_layouts,
+      modules,
+      pipelines,
+      config,
+      ..
+    } = self;
+    pipelines.slots.ensure(needs, |kind| {
+      create_pipeline_of(kind, device, pipeline_layouts, modules, config.format)
+    });
+
+    self.world_textures.bake_terrain(
+      &self.device,
+      &self.queue,
+      &self.mips,
+      needs.terrain_materials,
+    );
+
+    // The cloud noise replaces its placeholder, so the bind group changes.
+    if needs.cloud_noise && !self.world_textures.cloud_baked {
+      self
+        .world_textures
+        .bake_cloud_noise(&self.device, &self.queue);
+      self.rebuild_world_bind_group();
+    }
+
+    if needs.trees {
+      let present = self.trees.as_ref().map_or(0, |trees| {
+        (0..SPECIES_COUNT)
+          .filter(|slot| trees.counts[*slot] > 0)
+          .fold(0, |mask, slot| mask | 1 << slot)
+      });
+      let missing = present & !self.impostors_baked;
+
+      if missing != 0 {
+        self.bake_impostors(missing);
+      }
+    }
+  }
+
+  /// Create at most one pipeline the scene is likely to need soon, once
+  /// the first frame has been presented.
+  fn warm_up(&mut self, likely: &Needs) {
+    if !self.first_frame_presented {
+      self.first_frame_presented = true;
+      return;
+    }
+
+    let Self {
+      device,
+      pipeline_layouts,
+      modules,
+      pipelines,
+      config,
+      ..
+    } = self;
+    pipelines.slots.warm_one(likely, |kind| {
+      create_pipeline_of(kind, device, pipeline_layouts, modules, config.format)
+    });
   }
 
   fn rebuild_world_bind_group(&mut self) {
@@ -1884,8 +2029,22 @@ impl GpuContext {
       .write_buffer(&self.world_buffer, 0, bytemuck::bytes_of(&self.world_info));
   }
 
-  /// Render every species into the impostor texture array, then mipmap it.
-  fn bake_impostors(&mut self) {
+  /// Render the species in `species` (one bit each) into the impostor
+  /// texture array, baking the flora layers they sample first, then
+  /// mipmap it.
+  fn bake_impostors(&mut self, species: u32) {
+    let layers = self
+      .tree_meshes
+      .iter()
+      .enumerate()
+      .filter(|(slot, _)| species & 1 << slot != 0)
+      .fold(0, |mask, (_, mesh)| mask | mesh.flora_layers());
+    self
+      .world_textures
+      .bake_flora(&self.device, &self.queue, &self.mips, layers);
+
+    self.impostors_baked |= species;
+    let pipeline = create_bake_pipeline(&self.device, &self.pipeline_layouts, &self.modules);
     // The impostor texture is the render target here, so the bake binds a
     // placeholder in its slot.
     let placeholder = textures::create_array_texture(
@@ -1925,6 +2084,10 @@ impl GpuContext {
       });
 
     for (slot, (first_index, index_count, base_vertex)) in self.tree_ranges.iter().enumerate() {
+      if species & 1 << slot == 0 {
+        continue;
+      }
+
       let layer_view = self
         .impostor_texture
         .create_view(&wgpu::TextureViewDescriptor {
@@ -1957,7 +2120,7 @@ impl GpuContext {
         }),
         ..Default::default()
       });
-      pass.set_pipeline(&self.pipelines.tree_bake);
+      pass.set_pipeline(&pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &bake_bind_group, &[]);
       pass.set_vertex_buffer(0, self.tree_mesh.vertex_buffer.slice(..));
@@ -1984,16 +2147,27 @@ impl GpuContext {
   /// Erode `map` on the GPU and return the eroded heights. See
   /// [`ErosionCompute::run`] for details.
   pub async fn run_erosion(
-    &self,
+    &mut self,
     map: &crate::terrain::HeightMap,
     options: &ErosionOptions,
     landform: &crate::terrain::landforms::Landform,
     progress: crate::terrain::fractal::Progress<'_>,
   ) -> VistaResult<Vec<f32>> {
-    self
+    let device = &self.device;
+    let erosion = self
       .erosion
-      .run(&self.device, &self.queue, map, options, landform, progress)
+      .get_or_insert_with(|| ErosionCompute::new(device));
+    erosion
+      .run(device, &self.queue, map, options, landform, progress)
       .await
+  }
+
+  /// Wait until the GPU has finished the work submitted so far. Called
+  /// before the first large upload of a new terrain, so the page keeps
+  /// running (and receiving progress events) while the browser compiles
+  /// start-up work, instead of freezing inside the upload.
+  pub async fn finish_submitted_work(&self) -> VistaResult<()> {
+    crate::render::erosion_compute::work_done(&self.queue).await
   }
 
   /// Replace one species' model (`None` restores the procedural model),
@@ -2022,7 +2196,10 @@ impl GpuContext {
     }
 
     self.write_world_info();
-    self.bake_impostors();
+
+    if self.impostors_baked != 0 {
+      self.bake_impostors(self.impostors_baked);
+    }
   }
 
   /// Replace one layer of a baked texture array with host-supplied RGBA8
@@ -2030,6 +2207,15 @@ impl GpuContext {
   /// rebuild its mips. Flora changes also re-bake the impostors.
   pub fn replace_texture_layer(&mut self, target: TextureTarget, layer: u32, rgba: &[u8]) {
     let size = crate::engine::TEXTURE_LAYER_SIZE;
+
+    // Both terrain arrays are baked together, so a layer is baked before
+    // either is replaced, and never baked over later.
+    if target != TextureTarget::Flora {
+      self
+        .world_textures
+        .bake_terrain(&self.device, &self.queue, &self.mips, 1 << layer);
+    }
+
     let (texture, mode) = match target {
       TextureTarget::TerrainAlbedo => {
         (&self.world_textures.terrain_albedo_texture, MipMode::Colour)
@@ -2050,17 +2236,38 @@ impl GpuContext {
       .generate(&self.device, &mut encoder, texture, mode);
     self.queue.submit(Some(encoder.finish()));
 
+    // A replaced flora layer is never baked over later.
     if target == TextureTarget::Flora {
-      self.bake_impostors();
+      self.world_textures.flora_baked |= 1 << layer;
+
+      if self.impostors_baked != 0 {
+        self.bake_impostors(self.impostors_baked);
+      }
     }
   }
 
   /// Regenerate every procedural texture, discarding replaced layers, and
-  /// re-bake the impostors.
+  /// re-bake the impostors if they have been baked.
   pub fn reset_textures(&mut self) {
+    let terrain = self.world_textures.terrain_baked;
+    let cloud = self.world_textures.cloud_baked;
     self.world_textures = textures::bake_world_textures(&self.device, &self.queue, &self.mips);
+    self
+      .world_textures
+      .bake_terrain(&self.device, &self.queue, &self.mips, terrain);
+
+    if cloud {
+      self
+        .world_textures
+        .bake_cloud_noise(&self.device, &self.queue);
+    }
+
     self.rebuild_world_bind_group();
-    self.bake_impostors();
+
+    // Re-baking the impostors bakes their flora layers again too.
+    if self.impostors_baked != 0 {
+      self.bake_impostors(self.impostors_baked);
+    }
   }
 
   /// Upload a CPU-baked terrain mesh, replacing any previous terrain buffers.
@@ -2334,9 +2541,18 @@ impl GpuContext {
         resource: buffer.as_entire_binding(),
       })
       .collect();
+    // The cull pipeline's layout is implicit, so the pipeline comes first.
+    self.ensure_pipelines(&Needs {
+      trees: true,
+      ..Needs::default()
+    });
+    let Some(cull) = self.pipelines.compute(PipelineKind::TreeCull) else {
+      self.trees = None;
+      return;
+    };
     let cull_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("VistaWASM tree cull bind group"),
-      layout: &self.pipelines.cull.get_bind_group_layout(0),
+      layout: &cull.get_bind_group_layout(0),
       entries: &entries,
     });
 
@@ -2702,6 +2918,10 @@ impl GpuContext {
       return;
     }
 
+    let Some(pipeline) = self.pipelines.compute(PipelineKind::TerrainShadow) else {
+      return;
+    };
+
     let sun = params.sun_direction;
     let softness = params.shadows.terrain.softness.clamp(0.0, 1.0);
 
@@ -2747,7 +2967,7 @@ impl GpuContext {
       label: Some("VistaWASM terrain shadow pass"),
       timestamp_writes: None,
     });
-    pass.set_pipeline(&self.pipelines.terrain_shadow);
+    pass.set_pipeline(pipeline);
     pass.set_bind_group(0, &bind_group, &[]);
     pass.dispatch_workgroups(out_width.div_ceil(8), out_height.div_ceil(8), 1);
     self.terrain_shadow.baked_for = Some((sun, softness, self.height_version));
@@ -2916,6 +3136,7 @@ impl GpuContext {
     }
 
     self.set_render_scale(params.render_scale);
+    self.ensure_pipelines(&params.needs);
     self.ensure_cloud_target(params.clouds.resolution_scale);
     // When the scene is rendered below the canvas resolution, or lens drops
     // refract it, the frame is drawn off-screen first and a final pass
@@ -3079,13 +3300,14 @@ impl GpuContext {
       .filter(|timer| !timer.busy.load(Ordering::Acquire));
     let mut ran = 0u32;
 
-    if let Some(trees) = &self.trees {
+    if let (Some(trees), Some(cull)) = (&self.trees, self.pipelines.compute(PipelineKind::TreeCull))
+    {
       let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("VistaWASM tree cull pass"),
         timestamp_writes: timing.map(|timer| timer.compute_writes(PASS_TREE_CULL)),
       });
       ran |= 1 << PASS_TREE_CULL;
-      pass.set_pipeline(&self.pipelines.cull);
+      pass.set_pipeline(cull);
       pass.set_bind_group(0, &trees.cull_bind_group, &[]);
       pass.dispatch_workgroups(trees.instance_count.div_ceil(64), 1, 1);
     }
@@ -3093,7 +3315,11 @@ impl GpuContext {
     let stride = std::mem::size_of::<TreeInstance>() as u64;
 
     // Tree shadow map: one sun-facing impostor quad per caster.
-    if let (Some(trees), true) = (&self.trees, tree_shadows) {
+    if let (Some(trees), true, Some(pipeline)) = (
+      &self.trees,
+      tree_shadows,
+      self.pipelines.render(PipelineKind::TreeShadow),
+    ) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM tree shadow pass"),
         timestamp_writes: timing.map(|timer| timer.render_writes(PASS_TREE_SHADOW)),
@@ -3109,7 +3335,7 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_TREE_SHADOW;
-      pass.set_pipeline(&self.pipelines.tree_shadow);
+      pass.set_pipeline(pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
 
@@ -3143,8 +3369,10 @@ impl GpuContext {
       );
       ran |= 1 << PASS_TERRAIN;
 
-      if let Some(terrain) = &self.terrain {
-        pass.set_pipeline(&self.pipelines.terrain);
+      if let (Some(terrain), Some(pipeline)) =
+        (&self.terrain, self.pipelines.render(PipelineKind::Terrain))
+      {
+        pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, terrain.vertex_buffers[terrain.front].slice(..));
         pass.set_index_buffer(terrain.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..terrain.index_count, 0, 0..1);
@@ -3160,8 +3388,11 @@ impl GpuContext {
       );
       ran |= 1 << PASS_TREES;
 
-      if params.tree_style == 2 {
-        pass.set_pipeline(&self.pipelines.tree_mesh);
+      if let (2, Some(pipeline)) = (
+        params.tree_style,
+        self.pipelines.render(PipelineKind::TreeMesh),
+      ) {
+        pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, self.tree_mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(
           self.tree_mesh.index_buffer.slice(..),
@@ -3181,7 +3412,9 @@ impl GpuContext {
         }
       }
 
-      pass.set_pipeline(&self.pipelines.tree_impostor);
+      if let Some(pipeline) = self.pipelines.render(PipelineKind::TreeImpostor) {
+        pass.set_pipeline(pipeline);
+      }
 
       for slot in 0..SPECIES_COUNT {
         if trees.counts[slot] == 0 {
@@ -3201,7 +3434,8 @@ impl GpuContext {
       }
     }
 
-    if let Some(grass) = &self.grass {
+    if let (Some(grass), Some(pipeline)) = (&self.grass, self.pipelines.render(PipelineKind::Grass))
+    {
       let mut pass = self.begin_opaque_pass(
         &mut encoder,
         "VistaWASM grass pass",
@@ -3209,7 +3443,7 @@ impl GpuContext {
         false,
       );
       ran |= 1 << PASS_GRASS;
-      pass.set_pipeline(&self.pipelines.grass);
+      pass.set_pipeline(pipeline);
       pass.set_vertex_buffer(0, self.grass_base_vertex_buffer.slice(..));
       pass.set_vertex_buffer(1, grass.instance_buffer.slice(..));
       pass.draw(0..18, 0..grass.instance_count);
@@ -3221,7 +3455,10 @@ impl GpuContext {
 
     // Clouds at reduced resolution; the composite upsamples them. Skipped
     // entirely when there are no clouds.
-    if params.cloud_coverage > 0.001 && self.uniforms.temporal[0] > 0.5 {
+    if let (true, Some(pipeline)) = (
+      params.cloud_coverage > 0.001 && self.uniforms.temporal[0] > 0.5,
+      self.pipelines.render(PipelineKind::QuarterClouds),
+    ) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM quarter cloud pass"),
         timestamp_writes: timing.map(|timer| timer.render_writes(PASS_QUARTER_CLOUDS)),
@@ -3238,7 +3475,7 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_QUARTER_CLOUDS;
-      pass.set_pipeline(&self.pipelines.clouds_quarter);
+      pass.set_pipeline(pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
@@ -3246,7 +3483,10 @@ impl GpuContext {
       pass.draw(0..3, 0..1);
     }
 
-    if params.cloud_coverage > 0.001 {
+    if let (true, Some(pipeline)) = (
+      params.cloud_coverage > 0.001,
+      self.pipelines.render(PipelineKind::Clouds),
+    ) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM cloud pass"),
         timestamp_writes: timing.map(|timer| timer.render_writes(PASS_CLOUDS)),
@@ -3263,7 +3503,7 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_CLOUDS;
-      pass.set_pipeline(&self.pipelines.clouds);
+      pass.set_pipeline(pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
@@ -3276,7 +3516,7 @@ impl GpuContext {
     }
 
     // Sky, clouds, fog, precipitation, and tone mapping onto the canvas.
-    {
+    if let Some(pipeline) = self.pipelines.render(PipelineKind::Composite) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM composite pass"),
         timestamp_writes: timing.map(|timer| timer.render_writes(PASS_COMPOSITE)),
@@ -3293,7 +3533,7 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_COMPOSITE;
-      pass.set_pipeline(&self.pipelines.composite);
+      pass.set_pipeline(pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
@@ -3330,37 +3570,37 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_WATER;
-      pass.set_pipeline(if self.uniforms.sea_ice[0] > 0.5 {
-        &self.pipelines.water
-      } else {
-        &self.pipelines.open_water
-      });
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
-
+      let ocean = if self.uniforms.sea_ice[0] > 0.5 {
+        PipelineKind::SeaIceOcean
+      } else {
+        PipelineKind::OpenOcean
+      };
       let meshes = [
-        (None, Some(&self.ocean)),
-        (Some(&self.pipelines.inland_water), self.rivers.as_ref()),
-        (Some(&self.pipelines.falls), self.falls.as_ref()),
+        (ocean, Some(&self.ocean)),
+        (PipelineKind::InlandWater, self.rivers.as_ref()),
+        (PipelineKind::Falls, self.falls.as_ref()),
       ];
 
-      for (pipeline, mesh) in meshes {
-        let Some(mesh) = mesh else {
+      for (kind, mesh) in meshes {
+        let (Some(mesh), Some(pipeline)) = (mesh, self.pipelines.render(kind)) else {
           continue;
         };
 
-        if let Some(pipeline) = pipeline {
-          pass.set_pipeline(pipeline);
-        }
-
+        pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..mesh.index_count, 0, 0..1);
       }
     }
 
-    if let (Some(target), true) = (&self.lens_target, present) {
+    if let (Some(target), true, Some(pipeline)) = (
+      &self.lens_target,
+      present,
+      self.pipelines.render(PipelineKind::Present),
+    ) {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("VistaWASM present pass"),
         timestamp_writes: timing.map(|timer| timer.render_writes(PASS_PRESENT)),
@@ -3377,7 +3617,7 @@ impl GpuContext {
         ..Default::default()
       });
       ran |= 1 << PASS_PRESENT;
-      pass.set_pipeline(&self.pipelines.lens);
+      pass.set_pipeline(pipeline);
       pass.set_bind_group(0, &self.frame_bind_group, &[]);
       pass.set_bind_group(1, &self.world_bind_group, &[]);
       pass.set_bind_group(2, &self.shadow_bind_group, &[]);
@@ -3401,6 +3641,7 @@ impl GpuContext {
       frames_in_flight.fetch_sub(1, Ordering::AcqRel);
     });
     self.queue.present(surface_texture);
+    self.warm_up(&params.likely);
     Ok(())
   }
 

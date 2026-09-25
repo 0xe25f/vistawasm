@@ -110,6 +110,18 @@ pub struct TreeMesh {
   pub radius: f32,
 }
 
+impl TreeMesh {
+  /// The flora texture layers this mesh samples, one bit per layer.
+  pub fn flora_layers(&self) -> u32 {
+    self.vertices.iter().fold(0, |mask, vertex| {
+      let layer = vertex.params[0]
+        .round()
+        .clamp(0.0, (layers::COUNT - 1) as f32);
+      mask | 1 << layer as u32
+    })
+  }
+}
+
 type V3 = [f32; 3];
 
 fn add(a: V3, b: V3) -> V3 {
