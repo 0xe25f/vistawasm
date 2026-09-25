@@ -542,24 +542,51 @@ impl InflowGrid<'_> {
     None
   }
 
-  /// Valley mouths on an open edge: border cells at least 5 % of the
-  /// land's relief above sea level, lower than every border cell within
+  /// Steps (4-connected) from each cell to the nearest sea cell, by a
+  /// two-pass chamfer; `u32::MAX` on a map without sea.
+  fn sea_distance(&self) -> Vec<u32> {
+    let (w, h) = (self.width as usize, self.height as usize);
+    let mut distance: Vec<u32> = (0..w * h)
+      .map(|cell| if self.land(cell as u32) { u32::MAX } else { 0 })
+      .collect();
+
+    for backwards in [false, true] {
+      for step in 0..w * h {
+        let cell = if backwards { w * h - 1 - step } else { step };
+        let (x, y) = (cell % w, cell / w);
+        let (across, down) = if backwards {
+          ((x + 1 < w).then(|| cell + 1), (y + 1 < h).then(|| cell + w))
+        } else {
+          ((x > 0).then(|| cell - 1), (y > 0).then(|| cell - w))
+        };
+
+        for from in [across, down].into_iter().flatten() {
+          distance[cell] = distance[cell].min(distance[from].saturating_add(1));
+        }
+      }
+    }
+
+    distance
+  }
+
+  /// Valley mouths on an open edge: land border cells at least a quarter
+  /// of the map from the sea, lower than every border cell within
   /// [`MOUTH_REACH`] either side, whose steepest descent leads inwards.
   /// The lowest one.
   fn lowest_mouth(&self) -> Option<u32> {
     let border = self.border();
     let n = border.len() as i32;
     let height = |cell: u32| self.ground[cell as usize];
-    // A mouth low on the coast would pour a river straight into the sea,
-    // so it must stand 5 % of the land's relief above sea level.
-    let top = self.ground.iter().copied().fold(self.sea, f64::max);
-    let floor = self.sea + 0.05 * (top - self.sea);
+    // A mouth near the coast would pour a river straight into the sea,
+    // so it must lie a quarter of the map from it.
+    let coast = self.sea_distance();
+    let inland = self.width.min(self.height) / 4;
 
     (0..n)
       .filter_map(|i| {
         let cell = border[i as usize];
 
-        if height(cell) <= floor {
+        if !self.land(cell) || coast[cell as usize] < inland {
           return None;
         }
 
@@ -1436,13 +1463,13 @@ mod tests {
       .inflows
       .is_empty());
 
-    // A valley mouth barely above the sea is coast, not a valley: the
-    // inflow goes to the higher one.
+    // A valley mouth a few samples from the sea is coast: the inflow goes
+    // to the one a quarter of the map inland.
     let coastal = map_from(96, 30.0, |x, y| {
       let west = (x as f32 - 40.0).abs() * 0.8;
       let east = (x as f32 - 80.0).abs() * 0.8 + 5.0;
       let ground = y as f32 * 0.5 - 3.0 + west.min(east);
-      if y > 90 && x < 60 {
+      if x < 50 {
         ground.min(0.5 - (95 - y) as f32 * 0.1 + west * 0.05)
       } else {
         ground
