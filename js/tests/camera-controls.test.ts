@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeForwardVector, computeRightVector } from "../src/camera-controls";
+import {
+  computeForwardVector,
+  computeRightVector,
+  computeYawPitchTowards
+} from "../src/camera-controls";
 
 describe("computeForwardVector", () => {
   it("looks along positive Z at zero yaw and pitch", () => {
@@ -23,6 +27,20 @@ describe("computeForwardVector", () => {
     const length = Math.hypot(x, y, z);
 
     expect(length).toBeCloseTo(1);
+  });
+});
+
+describe("computeYawPitchTowards", () => {
+  it("turns the forward vector towards the target", () => {
+    const from: [number, number, number] = [10, 50, -20];
+    const to: [number, number, number] = [-30, 20, 60];
+    const [yaw, pitch] = computeYawPitchTowards(from, to);
+    const forward = computeForwardVector(yaw, pitch);
+    const length = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+
+    expect(forward[0]).toBeCloseTo((to[0] - from[0]) / length);
+    expect(forward[1]).toBeCloseTo((to[1] - from[1]) / length);
+    expect(forward[2]).toBeCloseTo((to[2] - from[2]) / length);
   });
 });
 

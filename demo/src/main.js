@@ -62,6 +62,10 @@ const inputs = {
   riverCatchment: input("riverCatchment"),
   riverWidth: input("riverWidth"),
   riverCurrent: input("riverCurrent"),
+  riverSnowmelt: input("riverSnowmelt"),
+  riverMeanders: input("riverMeanders"),
+  riverSprings: input("riverSprings"),
+  riverWaterfalls: input("riverWaterfalls"),
   biomesEnabled: input("biomesEnabled"),
   biomeTemperature: input("biomeTemperature"),
   biomeMoisture: input("biomeMoisture"),
@@ -166,7 +170,8 @@ const buttons = {
   downloadHeightmap: button("downloadHeightmap"),
   resetTextures: button("resetTextures"),
   customModel: button("customModel"),
-  plantGrove: button("plantGrove")
+  plantGrove: button("plantGrove"),
+  jumpToWaterfall: button("jumpToWaterfall")
 };
 
 let customModelActive = false;
@@ -250,6 +255,59 @@ function gpuProfile(stats) {
     .sort((a, b) => b[1] - a[1])
     .map(([name, ms]) => `  ${name} ${ms.toFixed(2)} ms`);
   return [`GPU ${(stats.gpuFrameTimeMs ?? 0).toFixed(2)} ms per frame`, ...rows];
+}
+
+const WATER_SOUND_NAMES = {
+  river: "river",
+  waterfall: "waterfall",
+  lakeShore: "lake shore",
+  surf: "surf"
+};
+
+// The nearest water the camera can hear, and how loud it is.
+function describeWaterSounds(sounds) {
+  let nearest = null;
+
+  for (const [kind, sound] of Object.entries(sounds)) {
+    if (sound && (!nearest || sound.distanceMetres < nearest.sound.distanceMetres)) {
+      nearest = { kind, sound };
+    }
+  }
+
+  if (!nearest) {
+    return "none within earshot";
+  }
+
+  const { kind, sound } = nearest;
+  return `${WATER_SOUND_NAMES[kind]} ${Math.round(sound.distanceMetres)} m away, loudness ${sound.loudness.toFixed(2)}`;
+}
+
+// Fly to the waterfall nearest the camera and look at it from three times
+// its height away.
+function jumpToWaterfall(controls) {
+  const falls = engine?.getWaterfalls() ?? [];
+
+  if (falls.length === 0) {
+    setStatus("This terrain has no waterfalls. Try a steeper landform, or turn waterfalls on.");
+    return;
+  }
+
+  const from = controls.getCamera().position;
+  const distance = (fall) => Math.hypot(fall.position[0] - from[0], fall.position[2] - from[2]);
+  const nearest = falls.reduce((best, fall) => (distance(fall) < distance(best) ? fall : best));
+  const [x, y, z] = nearest.position;
+  const height = nearest.heightMetres;
+  const away = Math.max(distance(nearest), 0.001);
+  const back = Math.max(height * 3, 15);
+  const cameraX = x + ((from[0] - x) / away) * back;
+  const cameraZ = z + ((from[2] - z) / away) * back;
+  const ground = terrainHeightAt(cameraX, cameraZ) ?? y;
+  controls.setPosition([cameraX, Math.max(y + height * 0.5, ground + 3), cameraZ]);
+  controls.lookAt([x, y + height * 0.4, z]);
+  setStatus(
+    `Waterfall ${height.toFixed(0)} m high and ${nearest.widthMetres.toFixed(1)} m wide, ` +
+      `carrying ${nearest.dischargeCubicMetresPerSecond.toFixed(2)} m³/s.`
+  );
 }
 
 function setStatus(message) {
@@ -346,7 +404,11 @@ function applyWater() {
       enabled: inputs.riversEnabled.checked,
       minCatchmentKm2: readNumber(inputs.riverCatchment, 0.15),
       widthScale: readNumber(inputs.riverWidth, 1),
-      currentSpeed: readNumber(inputs.riverCurrent, 1)
+      currentSpeed: readNumber(inputs.riverCurrent, 1),
+      snowmelt: readNumber(inputs.riverSnowmelt, 1),
+      springs: inputs.riverSprings.checked,
+      meanders: readNumber(inputs.riverMeanders, 0.6),
+      waterfalls: inputs.riverWaterfalls.checked
     },
     currentSpeed: readNumber(inputs.currentSpeed, 0.35),
     currentDirectionDegrees: readNumber(inputs.currentDirection, 60),
@@ -942,7 +1004,16 @@ function wireLiveControls() {
 
   // River changes re-carve the terrain, so apply them once the slider is
   // released rather than on every intermediate value.
-  for (const element of [inputs.riversEnabled, inputs.riverCatchment, inputs.riverWidth, inputs.riverCurrent]) {
+  for (const element of [
+    inputs.riversEnabled,
+    inputs.riverCatchment,
+    inputs.riverWidth,
+    inputs.riverCurrent,
+    inputs.riverSnowmelt,
+    inputs.riverMeanders,
+    inputs.riverSprings,
+    inputs.riverWaterfalls
+  ]) {
     element.addEventListener("change", applyWater);
   }
 
@@ -1222,6 +1293,8 @@ async function run() {
     }
   });
 
+  buttons.jumpToWaterfall.addEventListener("click", () => jumpToWaterfall(controls));
+
   const observer = new ResizeObserver(() => {
     if (!engine) {
       return;
@@ -1265,6 +1338,7 @@ async function run() {
       `Grass instances ${stats.grassInstances.toLocaleString()}`,
       `Clipmap levels ${stats.clipmapLevels}`,
       `Weather ${stats.weather ? WEATHER_NAMES[stats.weather] : "off"}`,
+      `Water sounds: ${lastCamera ? describeWaterSounds(engine.getWaterSounds(...lastCamera.position)) : "–"}`,
       ...gpuProfile(stats)
     ].join("\n");
   });

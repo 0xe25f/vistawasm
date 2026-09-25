@@ -103,6 +103,11 @@ export interface FlyCameraControls {
   setPosition(position: [number, number, number]): void;
 
   /**
+   * Turn the camera to look at a world position, keeping its position.
+   */
+  lookAt(target: [number, number, number]): void;
+
+  /**
    * Remove every event listener and stop the internal animation loop.
    */
   dispose(): void;
@@ -415,6 +420,12 @@ export function attachFlyCameraControls(
       position[2] = next[2];
       apply();
     },
+    lookAt(target: [number, number, number]): void {
+      const [yaw, pitch] = computeYawPitchTowards(position, target);
+      yawDegrees = (yaw * 180) / Math.PI;
+      pitchDegrees = (pitch * 180) / Math.PI;
+      apply();
+    },
     dispose(): void {
       if (disposed) {
         return;
@@ -461,6 +472,20 @@ export function computeForwardVector(
     Math.sin(pitchRadians),
     Math.cos(pitchRadians) * Math.cos(yawRadians)
   ];
+}
+
+/**
+ * Return the yaw and pitch, in radians, that look from `from` towards
+ * `to`: the inverse of {@link computeForwardVector}.
+ */
+export function computeYawPitchTowards(
+  from: [number, number, number],
+  to: [number, number, number]
+): [number, number] {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  return [Math.atan2(dx, dz), Math.atan2(dy, Math.hypot(dx, dz))];
 }
 
 /**
