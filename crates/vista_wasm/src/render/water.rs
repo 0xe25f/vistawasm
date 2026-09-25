@@ -446,8 +446,41 @@ pub fn build_river_network(
   ];
   let current = options.current_speed.max(0.0);
 
+  // Where reaches meet, and lake shores: ribbon points there are never
+  // dropped, so joins stay connected.
+  let mut ends = vec![false; map.heights.len()];
+
+  for point in channels
+    .reaches
+    .iter()
+    .flat_map(|reach| [reach.points.first(), reach.points.last()])
+    .flatten()
+  {
+    mark_sample(&mut ends, map, [point.x, point.y]);
+  }
+
+  let anchored = |point: &ChannelPoint| {
+    let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+    let end = |x: i32, y: i32| {
+      x >= 0
+        && y >= 0
+        && x < map_width as i32
+        && y < map_height as i32
+        && ends[(y as u32 * map_width + x as u32) as usize]
+    };
+    (-1..=1).any(|dy| (-1..=1).any(|dx| end(x + dx, y + dy)))
+      || hydrology.lake[cell_at(&hydrology, [point.x, point.y]) as usize] != NO_LAKE
+  };
+
   for reach in &channels.reaches {
-    add_ribbon(&mut network, &reach.points, metres, half, current);
+    add_ribbon(
+      &mut network,
+      &reach.points,
+      metres,
+      half,
+      current,
+      &anchored,
+    );
   }
 
   for oxbow in &channels.oxbows {
@@ -664,19 +697,23 @@ fn push_strip(
 /// A river ribbon, 1.3 w wide, so its edge lies on the bank, where the
 /// shader fades it out by depth. Steep reaches are subdivided so no
 /// segment is longer than half the width (or half a sample: the ground
-/// has no finer detail to follow).
+/// has no finer detail to follow), then straight, uniform runs are
+/// thinned out (see [`simplify_ribbon`]).
 fn add_ribbon(
   network: &mut RiverNetwork,
   points: &[ChannelPoint],
   metres: f32,
   half: [f32; 2],
   current: f32,
+  anchored: &dyn Fn(&ChannelPoint) -> bool,
 ) {
   if points.len() < 2 {
     return;
   }
 
   let mut dense: Vec<ChannelPoint> = vec![points[0]];
+  // Which dense points are the channel's own, not subdivisions.
+  let mut original = vec![true];
 
   for pair in points.windows(2) {
     let (a, b) = (pair[0], pair[1]);
@@ -706,9 +743,11 @@ fn add_ribbon(
         a.falling && b.falling
       };
       dense.push(p);
+      original.push(k == pieces);
     }
   }
 
+  let dense = simplify_ribbon(&dense, &original, metres, anchored);
   let n = dense.len();
   let world: Vec<[f32; 2]> = dense
     .iter()
@@ -744,6 +783,86 @@ fn add_ribbon(
     &rows,
     &skip,
   );
+}
+
+/// Most points one simplified ribbon segment may span.
+const MAX_RUN: usize = 64;
+
+/// Drop the dense points of a ribbon that lie on a straight, uniform run:
+/// where the centreline strays less than 0.05 w and 0.1 m from the chord
+/// between the points kept either side, and width, depth, speed, slope and
+/// level differ from their interpolation along the chord by less than
+/// 2 %. The ends, and of the channel's own points (`original`; the rest
+/// subdivide steep segments) those at falls, sharp bends (|curvature|
+/// over 0.2) and those `anchored` names (joins and lake shores), are
+/// always kept.
+fn simplify_ribbon(
+  points: &[ChannelPoint],
+  original: &[bool],
+  metres: f32,
+  anchored: &dyn Fn(&ChannelPoint) -> bool,
+) -> Vec<ChannelPoint> {
+  let n = points.len();
+
+  if n <= 2 {
+    return points.to_vec();
+  }
+
+  let keep: Vec<bool> = (0..n)
+    .map(|i| {
+      let p = &points[i];
+      i == 0
+        || i == n - 1
+        || (original[i]
+          && (p.falling
+            || points[i - 1].falling
+            || points[i + 1].falling
+            || p.curvature.abs() > 0.2
+            || anchored(p)))
+    })
+    .collect();
+  let close = |value: f32, expected: f32, scale: f32| (value - expected).abs() <= 0.02 * scale;
+  // Whether every point between `a` and `c` is where the chord from `a` to
+  // `c` would put it.
+  let fits = |a: usize, c: usize| {
+    let (pa, pc) = (&points[a], &points[c]);
+    let chord = [(pc.x - pa.x) * metres, (pc.y - pa.y) * metres];
+    let length = length2(chord[0], chord[1]).max(1e-4);
+
+    (a + 1..c).all(|k| {
+      let p = &points[k];
+      let offset = [(p.x - pa.x) * metres, (p.y - pa.y) * metres];
+      let along =
+        ((offset[0] * chord[0] + offset[1] * chord[1]) / (length * length)).clamp(0.0, 1.0);
+      let off_chord = (offset[0] * chord[1] - offset[1] * chord[0]).abs() / length;
+      let lerp = |u: f32, v: f32| u + (v - u) * along;
+
+      off_chord < 0.05 * p.width
+        && off_chord < 0.1
+        && close(p.width, lerp(pa.width, pc.width), p.width)
+        && close(p.depth, lerp(pa.depth, pc.depth), p.depth)
+        && close(p.speed, lerp(pa.speed, pc.speed), p.speed)
+        && close(p.slope, lerp(pa.slope, pc.slope), p.slope.max(0.005))
+        && close(p.level, lerp(pa.level, pc.level), p.depth)
+        && (p.curvature - lerp(pa.curvature, pc.curvature)).abs() <= 0.02
+        && (p.celsius - lerp(pa.celsius, pc.celsius)).abs() <= 0.1
+    })
+  };
+  let mut kept = vec![points[0]];
+  let mut a = 0;
+
+  while a < n - 1 {
+    let mut j = a + 1;
+
+    while j + 1 < n && !keep[j] && j + 1 - a <= MAX_RUN && fits(a, j + 1) {
+      j += 1;
+    }
+
+    kept.push(points[j]);
+    a = j;
+  }
+
+  kept
 }
 
 /// Still water in a cut-off meander loop.
@@ -1125,6 +1244,66 @@ mod tests {
     assert!(height_at(&map, 0.4, 0.4) > 1.0);
     assert!((mesh_height_at(&map, 0.9, 0.9) - 6.4).abs() < 1e-4);
     assert_eq!(mesh_height_at(&map, 1.0, 1.0), 8.0);
+  }
+
+  /// A straight reach along x with a steady fall, `n` points half a
+  /// sample apart.
+  fn straight_reach(n: usize) -> Vec<ChannelPoint> {
+    (0..n)
+      .map(|i| ChannelPoint {
+        x: 4.0 + i as f32 * 0.5,
+        y: 20.0,
+        level: 50.0 - i as f32 * 0.01,
+        bed: 49.0 - i as f32 * 0.01,
+        width: 3.0,
+        depth: 1.0,
+        discharge: 1.0,
+        slope: 0.002,
+        speed: 0.8,
+        curvature: 0.0,
+        celsius: 12.0,
+        rapids: 0.0,
+        falling: false,
+      })
+      .collect()
+  }
+
+  #[test]
+  fn simplifying_a_straight_reach_drops_most_of_its_points() {
+    let points = straight_reach(400);
+    let kept = simplify_ribbon(&points, &[true; 400], 12.0, &|_| false);
+
+    assert!(
+      kept.len() as f32 <= points.len() as f32 * 0.6,
+      "kept {} of {}",
+      kept.len(),
+      points.len()
+    );
+    assert_eq!(kept.first(), points.first());
+    assert_eq!(kept.last(), points.last());
+  }
+
+  #[test]
+  fn simplifying_keeps_joins_falls_ends_and_bends() {
+    let mut points = straight_reach(200);
+    points[120].falling = true;
+    points[121].falling = true;
+    points[60].curvature = 0.5;
+    let join = [points[90].x, points[90].y];
+    let kept = simplify_ribbon(&points, &[true; 200], 12.0, &|point| {
+      point.x == join[0] && point.y == join[1]
+    });
+    let has = |i: usize| kept.iter().any(|point| *point == points[i]);
+
+    for i in [0, 60, 90, 119, 120, 121, 122, 199] {
+      assert!(has(i), "point {i} was dropped");
+    }
+
+    // A sideways kink is never smoothed away.
+    let mut kinked = straight_reach(200);
+    kinked[100].y += 0.2;
+    let kept = simplify_ribbon(&kinked, &[true; 200], 12.0, &|_| false);
+    assert!(kept.iter().any(|point| *point == kinked[100]));
   }
 
   #[test]

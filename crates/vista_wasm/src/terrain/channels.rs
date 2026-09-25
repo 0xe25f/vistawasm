@@ -312,6 +312,14 @@ fn surface_at<'a>(
   surface.get((sy * width + sx) as usize)
 }
 
+/// How reaches are cut: once per sample, or (in tests) with the reference
+/// carve it replaced.
+enum Carver {
+  Once(CarveScratch),
+  #[cfg(test)]
+  Reference,
+}
+
 /// Shape every stream's bed and banks into `map`, recording every change
 /// in `record`. Streams must be ordered main stems first, so tributaries
 /// meet them at their level.
@@ -321,6 +329,25 @@ pub fn condition_channels(
   streams: Vec<RawStream>,
   context: &ChannelContext<'_>,
   record: &mut CarveRecord,
+) -> Channels {
+  let scratch = CarveScratch::new(map);
+  condition_with(
+    map,
+    hydrology,
+    streams,
+    context,
+    record,
+    Carver::Once(scratch),
+  )
+}
+
+fn condition_with(
+  map: &mut HeightMap,
+  hydrology: &Hydrology,
+  streams: Vec<RawStream>,
+  context: &ChannelContext<'_>,
+  record: &mut CarveRecord,
+  mut carver: Carver,
 ) -> Channels {
   let mut channels = Channels {
     mask: vec![false; map.heights.len()],
@@ -360,6 +387,12 @@ pub fn condition_channels(
     for (sample, target) in fan {
       if target > map.heights[sample] {
         record.set(map, sample, target);
+
+        match &mut carver {
+          Carver::Once(scratch) => scratch.raised(sample, map_width as usize, target),
+          #[cfg(test)]
+          Carver::Reference => {}
+        }
       }
     }
 
@@ -379,15 +412,28 @@ pub fn condition_channels(
     }
 
     for reach in &reaches {
-      carve_reach(
-        map,
-        hydrology,
-        context.surface,
-        reach,
-        metres,
-        record,
-        &mut channels.mask,
-      );
+      match &mut carver {
+        Carver::Once(scratch) => carve_reach(
+          map,
+          hydrology,
+          context.surface,
+          reach,
+          metres,
+          record,
+          &mut channels.mask,
+          scratch,
+        ),
+        #[cfg(test)]
+        Carver::Reference => carve_reach_reference(
+          map,
+          hydrology,
+          context.surface,
+          reach,
+          metres,
+          record,
+          &mut channels.mask,
+        ),
+      }
     }
 
     for oxbow in &oxbows {
@@ -1059,8 +1105,322 @@ fn delta(points: &[ChannelPoint], map: &HeightMap, metres: f32, seed: u64) -> Op
   })
 }
 
-/// Cut one reach into the map.
+/// Samples one reach touches, and the height each is cut to, gathered
+/// before any is lowered. Reused for every reach, so it is never
+/// reallocated per reach.
+#[derive(Clone, Debug, Default)]
+pub struct CarveScratch {
+  /// Height per sample after the segments so far, or infinity where
+  /// untouched.
+  height: Vec<f32>,
+  /// Whether a sample lies inside the channel mask.
+  inside: Vec<bool>,
+  /// Samples with a height, in the order first touched.
+  touched: Vec<usize>,
+  /// The highest ground in each block of [`BLOCK`] x [`BLOCK`] samples,
+  /// which bounds how far a V wall can reach.
+  block_max: Vec<f32>,
+  blocks_x: usize,
+}
+
+/// Edge of a [`CarveScratch::block_max`] block, in samples.
+const BLOCK: usize = 4;
+
+impl CarveScratch {
+  /// Scratch for `map`, with its block maxima.
+  pub fn new(map: &HeightMap) -> Self {
+    let width = map.metadata.width as usize;
+    let height = map.metadata.height as usize;
+    let blocks_x = width.div_ceil(BLOCK);
+    let mut block_max = vec![f32::NEG_INFINITY; blocks_x * height.div_ceil(BLOCK)];
+
+    for (index, ground) in map.heights.iter().enumerate() {
+      let block = (index / width / BLOCK) * blocks_x + index % width / BLOCK;
+      block_max[block] = block_max[block].max(*ground);
+    }
+
+    Self {
+      height: vec![f32::INFINITY; map.heights.len()],
+      inside: vec![false; map.heights.len()],
+      touched: Vec::new(),
+      block_max,
+      blocks_x,
+    }
+  }
+
+  /// Note a sample raised above the ground it had (a delta fan).
+  fn raised(&mut self, index: usize, width: usize, height: f32) {
+    let block = (index / width / BLOCK) * self.blocks_x + index % width / BLOCK;
+    self.block_max[block] = self.block_max[block].max(height);
+  }
+
+  /// The highest ground over samples `x0..=x1`, `y0..=y1`.
+  fn highest(&self, x0: i32, x1: i32, y0: i32, y1: i32) -> f32 {
+    let mut highest = f32::NEG_INFINITY;
+
+    for by in y0 as usize / BLOCK..=y1 as usize / BLOCK {
+      for bx in x0 as usize / BLOCK..=x1 as usize / BLOCK {
+        highest = highest.max(self.block_max[by * self.blocks_x + bx]);
+      }
+    }
+
+    highest
+  }
+}
+
+/// The lake at a heightmap sample, from the flow grid.
+fn lake_at(hydrology: &Hydrology, x: i32, y: i32) -> u32 {
+  let stride = hydrology.stride.max(1) as i32;
+  let gx = ((x + stride / 2) / stride).min(hydrology.width as i32 - 1);
+  let gy = ((y + stride / 2) / stride).min(hydrology.height as i32 - 1);
+  hydrology
+    .lake
+    .get((gy * hydrology.width as i32 + gx) as usize)
+    .copied()
+    .unwrap_or(NO_LAKE)
+}
+
+/// Cut one reach into the map in two passes. The first walks each
+/// segment's box, reading each sample's ground once and cutting a scratch
+/// copy of it segment by segment; the second checks the glacier, lake and
+/// no-data rules and lowers each sample in the map once.
+/// Consecutive segments are about a sample apart and their boxes overlap,
+/// so the first pass does only the arithmetic that must be repeated.
+#[allow(clippy::too_many_arguments)]
 fn carve_reach(
+  map: &mut HeightMap,
+  hydrology: &Hydrology,
+  surface: &[SurfaceSample],
+  reach: &Reach,
+  metres: f32,
+  record: &mut CarveRecord,
+  mask: &mut [bool],
+  scratch: &mut CarveScratch,
+) {
+  let width = map.metadata.width as i32;
+  let height = map.metadata.height as i32;
+  let sea = map.metadata.sea_level_metres;
+  let steepness = |slope: f32| smoothstep((slope - FLAT_SLOPE) / (V_SLOPE - FLAT_SLOPE));
+
+  for pair in reach.points.windows(2) {
+    let (a, b) = (pair[0], pair[1]);
+    let w = a.width.max(b.width);
+    // At least three quarters of a sample, so a diagonal reach also cuts
+    // the two samples beside it and the water never breaks up between
+    // samples.
+    let r = (0.5 * w).max(0.75 * metres);
+    let steep = steepness(a.slope.max(b.slope));
+    // V walls may climb several samples up a steep valley side; on gentle
+    // ground the floodplain meets the ground 4 w beyond the bank, and
+    // nothing further out is cut.
+    let reach_metres = if steep > 0.0 {
+      r + (4.0 * w * (1.0 - steep)).max(3.0 * metres)
+    } else {
+      r + 4.0 * w
+    };
+    let mask_metres = (0.65 * w).max(0.5 * metres);
+    let low_level = a.level.min(b.level);
+    // A V wall reaches only as far as the ground rises above the water,
+    // so the highest ground near the segment bounds the cut.
+    let reach_metres = if steep > 0.0 {
+      let box_samples = (reach_metres / metres).ceil() as i32 + 1;
+      let highest = scratch.highest(
+        (a.x.min(b.x).floor() as i32 - box_samples).max(0),
+        (a.x.max(b.x).ceil() as i32 + box_samples).min(width - 1),
+        (a.y.min(b.y).floor() as i32 - box_samples).max(0),
+        (a.y.max(b.y).ceil() as i32 + box_samples).min(height - 1),
+      );
+      reach_metres.min(r + (4.0 * w).max(highest - low_level))
+    } else {
+      reach_metres
+    };
+    let reach_samples = (reach_metres / metres).ceil() as i32 + 1;
+    let min_x = (a.x.min(b.x).floor() as i32 - reach_samples).max(0);
+    let max_x = (a.x.max(b.x).ceil() as i32 + reach_samples).min(width - 1);
+    let min_y = (a.y.min(b.y).floor() as i32 - reach_samples).max(0);
+    let max_y = (a.y.max(b.y).ceil() as i32 + reach_samples).min(height - 1);
+    let segment = [b.x - a.x, b.y - a.y];
+    let inv_length_sq = 1.0 / (segment[0] * segment[0] + segment[1] * segment[1]).max(1e-8);
+    let radius = reach_metres / metres;
+    let reach_sq = radius * radius;
+    let mask_sq = (mask_metres / metres) * (mask_metres / metres);
+    let shape = ChannelShape::new(r, w, steep);
+    let r_samples = r / metres;
+    let plain_sq = ((r + 4.0 * w) / metres).powi(2);
+
+    for y in min_y..=max_y {
+      let py = y as f32 - a.y;
+      let Some((from, to)) = capsule_row(segment, radius, py) else {
+        continue;
+      };
+      let first = ((a.x + from).ceil() as i32).max(min_x);
+      let last = ((a.x + to).floor() as i32).min(max_x);
+      let row = (y * width) as usize;
+
+      for x in first..=last {
+        let px = x as f32 - a.x;
+        let t = ((px * segment[0] + py * segment[1]) * inv_length_sq).clamp(0.0, 1.0);
+        let (dx, dy) = (px - segment[0] * t, py - segment[1] * t);
+        let distance_sq = dx * dx + dy * dy;
+
+        if distance_sq > reach_sq {
+          continue;
+        }
+
+        let index = row + x as usize;
+
+        // Beyond the floodplain the bed's profile is the ground itself, so
+        // only a V wall cuts, and only into ground more than `d - r` above
+        // the water. Carving only lowers, so the original ground bounds it.
+        if distance_sq >= plain_sq {
+          let rise = map.heights[index] - low_level;
+
+          if steep <= 0.0 || rise <= 0.0 || distance_sq >= (r_samples + rise / metres).powi(2) {
+            continue;
+          }
+        }
+
+        if scratch.height[index] == f32::INFINITY {
+          scratch.height[index] = map.heights[index];
+          scratch.touched.push(index);
+        }
+
+        // The ground as the segments before this one left it. Once it is
+        // cut to the sea it is left there, as a coast.
+        let ground = scratch.height[index];
+
+        if ground <= sea {
+          continue;
+        }
+
+        scratch.inside[index] |= distance_sq <= mask_sq;
+        let level = a.level + (b.level - a.level) * t;
+        let depth = a.depth + (b.depth - a.depth) * t;
+        let target = shape.target(ground, level, depth, distance_sq.sqrt() * metres);
+        scratch.height[index] = ground.min(target);
+      }
+    }
+  }
+
+  for index in scratch.touched.drain(..) {
+    let target = std::mem::replace(&mut scratch.height[index], f32::INFINITY);
+    let inside = std::mem::take(&mut scratch.inside[index]);
+    let (x, y) = (
+      (index % width as usize) as i32,
+      (index / width as usize) as i32,
+    );
+
+    if map.no_data[index]
+      || map.heights[index] <= sea
+      || surface.get(index).is_some_and(|s| s.is_glacier())
+      || lake_at(hydrology, x, y) != NO_LAKE
+    {
+      continue;
+    }
+
+    record.lower(map, index, target);
+
+    if inside {
+      mask[index] = true;
+    }
+  }
+}
+
+/// The span of x offsets, from a segment's start, where a row `py` below
+/// it comes within `radius` of the segment `(0, 0)` to `segment`: the row
+/// through a capsule, which is convex, so one interval. `None` where the
+/// row misses it.
+fn capsule_row(segment: [f32; 2], radius: f32, py: f32) -> Option<(f32, f32)> {
+  let mut span: Option<(f32, f32)> = None;
+  let mut include = |from: f32, to: f32| {
+    if from <= to {
+      span = Some(span.map_or((from, to), |(a, b)| (a.min(from), b.max(to))));
+    }
+  };
+
+  // The discs at either end.
+  for (cx, cy) in [(0.0, 0.0), (segment[0], segment[1])] {
+    let rise = py - cy;
+
+    if rise.abs() <= radius {
+      let half = (radius * radius - rise * rise).sqrt();
+      include(cx - half, cx + half);
+    }
+  }
+
+  // The band beside the segment: its projection on the segment within
+  // the segment, and within `radius` of the line. Both are linear in x.
+  let (sx, sy) = (segment[0], segment[1]);
+  let length = length2(sx, sy);
+
+  if length > 1e-6 {
+    // Solve `lo <= k x + c <= hi` for x, as an interval.
+    let solve = |k: f32, c: f32, lo: f32, hi: f32| -> Option<(f32, f32)> {
+      if k.abs() < 1e-9 {
+        return (lo <= c && c <= hi).then_some((f32::NEG_INFINITY, f32::INFINITY));
+      }
+
+      let (p, q) = ((lo - c) / k, (hi - c) / k);
+      Some((p.min(q), p.max(q)))
+    };
+    let along = solve(sx, sy * py, 0.0, length * length);
+    let across = solve(-sy, sx * py, -radius * length, radius * length);
+
+    if let (Some(along), Some(across)) = (along, across) {
+      include(along.0.max(across.0), along.1.min(across.1));
+    }
+  }
+
+  span
+}
+
+/// The cross-section of a channel segment: a flat bed with a floodplain
+/// bank on gentle ground, blended by `steep` into a V in steep ground,
+/// with its divisions done once per segment.
+struct ChannelShape {
+  /// Half-width of the cut, in metres.
+  r: f32,
+  inv_r: f32,
+  /// Where the flat bed ends.
+  inner: f32,
+  inv_band: f32,
+  /// One over the floodplain's reach, 4 w.
+  inv_plain: f32,
+  steep: f32,
+}
+
+impl ChannelShape {
+  fn new(r: f32, w: f32, steep: f32) -> Self {
+    Self {
+      r,
+      inv_r: 1.0 / r,
+      inner: 0.7 * r,
+      inv_band: 1.0 / (0.3 * r),
+      inv_plain: 1.0 / (4.0 * w),
+      steep,
+    }
+  }
+
+  /// Target ground height at `distance` metres from the centreline.
+  /// Written without branches: inside the bank the floodplain term is
+  /// exactly `bank`, outside it the bank term is, and the two pieces of
+  /// the V meet at `level`, so each piece is simply clamped.
+  fn target(&self, ground: f32, level: f32, depth: f32, distance: f32) -> f32 {
+    let r = self.r;
+    let bed = level - depth;
+    let bank = level + 0.25 * depth;
+    let rise = ((distance - self.inner) * self.inv_band).clamp(0.0, 1.0);
+    let plain = smoothstep((distance - r) * self.inv_plain);
+    let trapezoid = bed + (bank - bed) * rise + (ground - bank) * plain;
+    let v_shape = bed + depth * distance.min(r) * self.inv_r + (distance - r).max(0.0);
+    trapezoid + (v_shape - trapezoid) * self.steep
+  }
+}
+
+/// The carve before [`carve_reach`] visited each sample once: kept as a
+/// reference for its tests.
+#[cfg(test)]
+fn carve_reach_reference(
   map: &mut HeightMap,
   hydrology: &Hydrology,
   surface: &[SurfaceSample],
@@ -1522,6 +1882,60 @@ mod tests {
         .to_degrees();
       assert!(angle.abs() <= 26.0, "arm at {angle} degrees");
       assert_eq!(end.level, 0.0);
+    }
+  }
+
+  /// A wide, gentle valley draining north to the sea, where rivers
+  /// meander over a floodplain.
+  fn gentle_valley() -> HeightMap {
+    map_from(160, 30.0, |x, y| y * 0.12 - 1.0 + (x - 80.0).abs() * 0.4)
+  }
+
+  #[test]
+  fn carving_each_sample_once_matches_the_reference_carve() {
+    let fixtures = [
+      (branching_valleys(), 0.3),
+      (cliff_valley(), 0.005),
+      (gentle_valley(), 0.2),
+    ];
+
+    for (index, (original, catchment)) in fixtures.into_iter().enumerate() {
+      let options = RiverOptions {
+        min_catchment_km2: catchment,
+        meanders: 1.0,
+        ..RiverOptions::default()
+      };
+      let carve = |carver: Carver| {
+        let mut map = original.clone();
+        let hydrology = build_hydrology(&map, &[], &options, 9);
+        let streams = raw_streams(&hydrology);
+        let mut record = CarveRecord::new(map.heights.len());
+        let context = ChannelContext {
+          surface: &[],
+          options: &options,
+          seed: 9,
+        };
+        condition_with(&mut map, &hydrology, streams, &context, &mut record, carver);
+        map
+      };
+      let once = carve(Carver::Once(CarveScratch::new(&original)));
+      let reference = carve(Carver::Reference);
+      let mut changed = 0;
+
+      for (sample, before) in original.heights.iter().enumerate() {
+        let (a, b) = (once.heights[sample], reference.heights[sample]);
+        assert!(
+          a <= *before && b <= *before,
+          "fixture {index} raised sample {sample}"
+        );
+        assert!(
+          (a - b).abs() <= 0.05,
+          "fixture {index} sample {sample}: {a} against the reference {b}"
+        );
+        changed += usize::from(a < *before);
+      }
+
+      assert!(changed > 50, "fixture {index} carved {changed} samples");
     }
   }
 
