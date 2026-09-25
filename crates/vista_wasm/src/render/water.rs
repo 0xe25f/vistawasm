@@ -1164,6 +1164,7 @@ fn sub_sample_centreline(
   *budget -= count;
 
   let mut out = vec![points[0]];
+  let start = phase;
   let mut phase = phase;
   let mut along = 0.0;
   // Distances along the carved path to the points the loops must pass
@@ -1210,7 +1211,12 @@ fn sub_sample_centreline(
       };
       let step = length / pieces as f32;
       along += step;
-      phase += step / (11.0 * p.width).max(0.01);
+      // Real loops vary: the wavelength drifts by up to 30 % and the
+      // amplitude between 60 and 100 %, over periods no multiple of it,
+      // so a straight carved path does not show a regular wave.
+      let drift = (along / (47.0 * p.width).max(0.01) + start * 3.7).sin();
+      let swell = 0.8 + 0.2 * (along / (71.0 * p.width).max(0.01) + start * 5.3).cos();
+      phase += step / (11.0 * p.width * (1.0 + 0.3 * drift)).max(0.01);
 
       while pin_index + 2 < pins.len() && pins[pin_index + 1] <= along {
         pin_index += 1;
@@ -1221,7 +1227,7 @@ fn sub_sample_centreline(
       let pin = smoothstep((along - pins[pin_index]) / reach)
         * smoothstep((pins[pin_index + 1] - along) / reach);
       let offset =
-        amplitude(&p).min(amplitude(&a)).min(amplitude(&b)) * pin * kinoshita(table, phase);
+        amplitude(&p).min(amplitude(&a)).min(amplitude(&b)) * pin * swell * kinoshita(table, phase);
       p.x += normal[0] * offset / metres;
       p.y += normal[1] * offset / metres;
       out.push(p);
@@ -2148,6 +2154,40 @@ mod tests {
     let kept = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|_| false, &mut short);
     assert_eq!(kept, carved);
     assert_eq!(short, used - 1);
+  }
+
+  #[test]
+  fn narrow_stream_loops_vary_in_length() {
+    let table = kinoshita_table();
+    let carved = flat_brook(2.0);
+    let centre = sub_sample_centreline(
+      &carved,
+      30.0,
+      1.0,
+      0.3,
+      &table,
+      &|_| false,
+      &mut unlimited(),
+    );
+    // Where the loop crosses the carved path going one way: one per
+    // wavelength, about 22 m for a 2 m stream.
+    let crossings: Vec<f32> = centre
+      .windows(2)
+      .filter(|pair| pair[0].y < 20.0 && pair[1].y >= 20.0)
+      .map(|pair| {
+        let t = (20.0 - pair[0].y) / (pair[1].y - pair[0].y);
+        (pair[0].x + (pair[1].x - pair[0].x) * t) * 30.0
+      })
+      .collect();
+    let lengths: Vec<f32> = crossings.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let shortest = lengths.iter().copied().fold(f32::MAX, f32::min);
+    let longest = lengths.iter().copied().fold(0.0, f32::max);
+    assert!(lengths.len() > 100, "{} loops", lengths.len());
+    assert!(
+      shortest > 12.0 && longest < 40.0,
+      "{shortest} to {longest} m"
+    );
+    assert!(longest > shortest * 1.4, "{shortest} to {longest} m");
   }
 
   #[test]

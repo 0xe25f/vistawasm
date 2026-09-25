@@ -45,5 +45,5 @@ GPU:
 - From plan 3 onwards, each plan's size figure is a soft target, and
     double it is the hard limit. Plan 2b added 8,560 bytes (within its
     8,900), reaching 285,511. Plan 3 reached 323,501. Plan 3b added
-    25,506 bytes (a 14 KB soft target and a 28 KB hard limit), reaching
-    349,007.
+    25,553 bytes (a 14 KB soft target and a 28 KB hard limit), reaching
+    349,054.

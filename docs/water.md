@@ -214,8 +214,10 @@ returns the shaped terrain while rivers are on.
 Streams narrower than a heightmap sample carry detail the grid cannot:
 
 - **Loops.** On slopes under 1 %, the ribbon meanders at the stream's
-    own wavelength (about 11 widths), inside a corridor of ±0.45 samples
-    around the carved path so the water stays in its trench. The loops
+    own wavelength (about 11 widths, drifting by up to 30 %, with the
+    amplitude between 60 and 100 %, so no two loops match), inside a
+    corridor of ±0.45 samples around the carved path so the water stays
+    in its trench. The loops
     pass through the stream's ends and every join with another stream.
     The hydrology, carving and sounds keep the carved path.
 - **Bank strips.** A strip beside each bank, from half the width out to
