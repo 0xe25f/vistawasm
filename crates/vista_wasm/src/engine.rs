@@ -1124,13 +1124,20 @@ impl EngineCore {
               terrain,
               &normals,
               mask,
+              &self.rivers.riparian,
               &self.biomes,
               &mut samples,
               &touched,
             );
             samples
           }
-          _ => crate::terrain::biomes::classify_surface(terrain, &normals, mask, &self.biomes),
+          _ => crate::terrain::biomes::classify_surface(
+            terrain,
+            &normals,
+            mask,
+            &self.rivers.riparian,
+            &self.biomes,
+          ),
         };
         crate::terrain::biomes::apply_bed_materials(&mut surface, &self.rivers.bed);
         self.surface = surface;
@@ -1229,6 +1236,7 @@ impl EngineCore {
         surface,
         Some(&self.rivers.wet),
         &self.rivers.brooks,
+        &self.rivers.riparian,
         &self.grass,
         density_scale,
       ),
@@ -1748,6 +1756,20 @@ fn touched_samples(map: &HeightMap, rivers: &RiverNetwork) -> Vec<usize> {
     .filter(|(_, masked)| **masked)
     .map(|(index, _)| index);
 
+  // Greening reaches far beyond the channels, and classification reads
+  // only the sample itself, so those samples are listed as they are.
+  for (index, _) in rivers
+    .riparian
+    .iter()
+    .enumerate()
+    .filter(|(_, value)| **value > 0)
+  {
+    if !touched[index] {
+      touched[index] = true;
+      list.push(index);
+    }
+  }
+
   for index in rivers.carved.iter().map(|(index, _)| *index).chain(masked) {
     let x = (index as i32) % width;
     let y = (index as i32) / width;
@@ -2241,15 +2263,41 @@ mod tests {
       engine.set_water(WaterOptions::default()).unwrap();
       let terrain = engine.terrain.as_ref().unwrap();
       let normals = crate::terrain::normals::generate_normals(terrain);
-      let full = crate::terrain::biomes::classify_surface(
+      let mut full = crate::terrain::biomes::classify_surface(
         terrain,
         &normals,
         Some(&engine.rivers.mask),
+        &engine.rivers.riparian,
         &engine.biomes,
       );
+      crate::terrain::biomes::apply_bed_materials(&mut full, &engine.rivers.bed);
 
       assert!(!engine.rivers.carved.is_empty());
+      assert!(engine.rivers.riparian.iter().any(|value| *value > 0));
       assert!(engine.surface == full);
+    }
+  }
+
+  #[test]
+  fn trees_never_stand_inside_the_channel_mask() {
+    let mut engine = generated_engine();
+    engine.set_water(WaterOptions::default()).unwrap();
+    let terrain = engine.terrain.as_ref().unwrap();
+    let options = vista_types::FloraOptions {
+      enabled: true,
+      density: 1.0,
+      ..vista_types::FloraOptions::default()
+    };
+    let trees = crate::render::flora::build_tree_instances(terrain, &engine.surface, &options, 1.0);
+    let metres = terrain.metadata.metres_per_sample;
+    let half = (terrain.metadata.width as f32 - 1.0) * 0.5;
+    let sample = |world: f32| (world / metres + half).round() as usize;
+
+    assert!(!trees.is_empty());
+    for tree in &trees {
+      let index =
+        sample(tree.position[2]) * terrain.metadata.width as usize + sample(tree.position[0]);
+      assert!(!engine.rivers.mask[index], "a tree at {:?}", tree.position);
     }
   }
 

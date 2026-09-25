@@ -536,6 +536,7 @@ fn classify_into(
   map: &HeightMap,
   normals: &[Vec3],
   river_mask: Option<&[bool]>,
+  riparian: &[u8],
   options: &BiomeOptions,
   only: Option<&[usize]>,
   samples: &mut Vec<SurfaceSample>,
@@ -590,8 +591,18 @@ fn classify_into(
     let jitter = hash_noise(detail_seed, x as i32 / 3, y as i32 / 3) * 0.035
       + value_noise(detail_seed, x as f32 * 0.09, y as f32 * 0.09) * 0.05;
     let is_river = river_mask.is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
-    let moisture =
-      (base_moisture + lowland * 0.12 + jitter + if is_river { 0.1 } else { 0.0 }).clamp(0.0, 1.0);
+    // Ground by water is moister above the bank, but not glacier ice.
+    let bankside = if is_river || cold == ColdGround::Glacier {
+      0.0
+    } else {
+      f32::from(riparian.get(index).copied().unwrap_or(0)) / 255.0
+    };
+    let moisture = (base_moisture
+      + lowland * 0.12
+      + jitter
+      + if is_river { 0.1 } else { 0.0 }
+      + 0.45 * bankside)
+      .clamp(0.0, 1.0);
 
     // Cavity occlusion from the four-neighbour Laplacian.
     let neighbour = |dx: i32, dy: i32| {
@@ -661,10 +672,17 @@ fn classify_into(
       BiomeKind::MountainProper
     } else if rel > 0.4 {
       BiomeKind::MountainFoothills
-    } else if moisture > 0.68 && steep < 0.07 && rel < 0.16 && temperature > 0.3 {
+    } else if moisture - 0.45 * bankside > 0.68 && steep < 0.07 && rel < 0.16 && temperature > 0.3 {
       BiomeKind::SwampWetlands
     } else if temperature > 0.64 {
-      if moisture > 0.74 {
+      // Dry country by water turns to meadow and thicket, not jungle.
+      if bankside > 0.1 && moisture - 0.45 * bankside <= 0.58 {
+        if moisture > 0.5 {
+          BiomeKind::OuterThicket
+        } else {
+          BiomeKind::GrassyMeadows
+        }
+      } else if moisture > 0.74 {
         BiomeKind::InnerJungle
       } else if moisture > 0.58 {
         BiomeKind::OuterJungle
@@ -792,7 +810,15 @@ fn classify_into(
     let forest = if glacier {
       0.0
     } else {
-      forest_density(biome, moisture) * (1.0 - rock.min(1.0)) * (1.0 - snow.min(1.0))
+      // Trees gather along rivers through dry, open country.
+      let gallery = if matches!(biome, BiomeKind::GrassyMeadows | BiomeKind::SavannahExpanse) {
+        1.0 + 1.5 * bankside
+      } else {
+        1.0
+      };
+      (forest_density(biome, moisture) * gallery).min(1.0)
+        * (1.0 - rock.min(1.0))
+        * (1.0 - snow.min(1.0))
     };
     let permanent_snow = if glacier {
       1.0
@@ -856,10 +882,19 @@ pub fn classify_surface(
   map: &HeightMap,
   normals: &[Vec3],
   river_mask: Option<&[bool]>,
+  riparian: &[u8],
   options: &BiomeOptions,
 ) -> Vec<SurfaceSample> {
   let mut samples = Vec::new();
-  classify_into(map, normals, river_mask, options, None, &mut samples);
+  classify_into(
+    map,
+    normals,
+    river_mask,
+    riparian,
+    options,
+    None,
+    &mut samples,
+  );
   samples
 }
 
@@ -871,16 +906,27 @@ pub fn reclassify_surface(
   map: &HeightMap,
   normals: &[Vec3],
   river_mask: Option<&[bool]>,
+  riparian: &[u8],
   options: &BiomeOptions,
   samples: &mut Vec<SurfaceSample>,
   indices: &[usize],
 ) {
-  classify_into(map, normals, river_mask, options, Some(indices), samples);
+  classify_into(
+    map,
+    normals,
+    river_mask,
+    riparian,
+    options,
+    Some(indices),
+    samples,
+  );
 }
 
 /// Blend river bed materials (gravel, sand, mud and rock weights for listed
 /// samples, from `render::water::bed_materials`) into classified
 /// samples, scaling the ground already there by the share they take.
+/// Samples mostly bed (bars and banks below the bank top) are flagged as
+/// river ground, where no trees grow.
 pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 4])]) {
   for (index, weights) in bed {
     let Some(sample) = samples.get_mut(*index as usize) else {
@@ -891,6 +937,10 @@ pub fn apply_bed_materials(samples: &mut [SurfaceSample], bed: &[(u32, [u8; 4])]
 
     for slot in sample.materials.iter_mut() {
       *slot = ((u32::from(*slot) * keep + 127) / 255) as u8;
+    }
+
+    if u32::from(weights[0]) + u32::from(weights[1]) + u32::from(weights[2]) > 127 {
+      sample.river = sample.river.max(128);
     }
 
     for (material, weight) in [MAT_GRAVEL, MAT_SAND, MAT_MUD, MAT_ROCK]
@@ -1140,6 +1190,9 @@ mod tests {
     assert_eq!(samples[0].materials[MAT_LUSH_GRASS], 255);
     assert_eq!(samples[1].materials[MAT_LUSH_GRASS], 153);
     assert_eq!(samples[1].materials[MAT_GRAVEL], 102);
+    assert_eq!(samples[1].river, 0);
+    apply_bed_materials(&mut samples, &[(0, [0, 200, 0, 0])]);
+    assert_eq!(samples[0].river, 128);
   }
 
   #[test]
@@ -1172,7 +1225,7 @@ mod tests {
 
   fn classify(map: &HeightMap, options: &BiomeOptions) -> Vec<SurfaceSample> {
     let normals = generate_normals(map);
-    classify_surface(map, &normals, None, options)
+    classify_surface(map, &normals, None, &[], options)
   }
 
   #[test]
@@ -1372,6 +1425,49 @@ mod tests {
       mean_temperature_celsius: celsius,
       volcanism: 0.0,
       ..BiomeOptions::default()
+    }
+  }
+
+  #[test]
+  fn savannah_by_a_river_classifies_greener() {
+    // Lowland: one peak in a corner gives the map its relief.
+    let mut map = flat_land(64, 100.0);
+    map.heights[0] = 1500.0;
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    let options = BiomeOptions {
+      moisture_bias: -0.4,
+      ..climate(Some(30.0))
+    };
+    let normals = generate_normals(&map);
+    let dry = classify_surface(&map, &normals, None, &[], &options);
+    // A river along row 32: full greening at the water, a little 30 m out.
+    let riparian: Vec<u8> = (0..64 * 64)
+      .map(|index: usize| {
+        let d = (index / 64).abs_diff(32) as f32 * 20.0;
+        ((1.0 - d / 60.0).max(0.0).powi(2) * 255.0) as u8
+      })
+      .collect();
+    let green = classify_surface(&map, &normals, None, &riparian, &options);
+    let savannah = dry
+      .iter()
+      .filter(|sample| sample.biome_kind() == BiomeKind::SavannahExpanse)
+      .count();
+    assert!(
+      savannah > 64 * 32,
+      "{savannah} savannah samples, {:?}",
+      dry[64 * 40].biome_kind()
+    );
+
+    for x in 0..64 {
+      let near = 33 * 64 + x;
+      assert!(green[near].moisture > dry[near].moisture);
+      assert!(green[near].forest >= dry[near].forest);
+      assert!(matches!(
+        green[near].biome_kind(),
+        BiomeKind::GrassyMeadows | BiomeKind::OuterThicket
+      ));
+      let far = 60 * 64 + x;
+      assert_eq!(green[far], dry[far]);
     }
   }
 

@@ -592,6 +592,10 @@ pub struct RiverOptions {
   /// from a basin ten times the map's land area; [`InflowMode::None`]
   /// adds nothing; or up to 8 explicit inflows.
   pub inflow: RiverInflows,
+  /// Bankside greening and trees, from 0 (off) to 2: moister ground,
+  /// greener biomes and more trees within 25 to 400 m of rivers (by
+  /// discharge) and 40 m of lakes.
+  pub riparian: f32,
 }
 
 /// Water arriving from beyond the map (`RiverOptions::inflow`).
@@ -694,6 +698,7 @@ impl Default for RiverOptions {
       meanders: 0.6,
       waterfalls: true,
       inflow: RiverInflows::default(),
+      riparian: 1.0,
     }
   }
 }

@@ -18,6 +18,15 @@ describe("water types", () => {
     expectTypeOf<RiverOptions["waterfalls"]>().toEqualTypeOf<boolean | undefined>();
   });
 
+  it("types riparian greening", () => {
+    expectTypeOf<RiverOptions["riparian"]>().toEqualTypeOf<number | undefined>();
+    const rivers: RiverOptions = { riparian: 0 };
+    expectTypeOf(rivers).toBeObject();
+    // @ts-expect-error riparian is a number.
+    const wrong: RiverOptions = { riparian: "on" };
+    expectTypeOf(wrong).toBeObject();
+  });
+
   it("types inflows", () => {
     expectTypeOf<RiverOptions["inflow"]>().toEqualTypeOf<"auto" | "none" | RiverInflow[] | undefined>();
     expectTypeOf<RiverInflow["position"]>().toEqualTypeOf<[number, number]>();

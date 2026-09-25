@@ -396,6 +396,12 @@ export interface RiverOptions {
    * the map's land area; `"none"` adds nothing; or up to 8 explicit inflows.
    */
   inflow?: "auto" | "none" | RiverInflow[];
+  /**
+   * Bankside greening and trees, 0 (off) to 2. Default 1. Ground within
+   * 25 to 400 m of rivers (wider by discharge) and 40 m of lakes grows
+   * moister, greener and more wooded.
+   */
+  riparian?: number;
 }
 
 /**

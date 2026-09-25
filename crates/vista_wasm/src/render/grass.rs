@@ -113,7 +113,7 @@ pub fn build_grass_instances(
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
-  build_grass_instances_by_water(map, materials, None, &[], options, density_scale)
+  build_grass_instances_by_water(map, materials, None, &[], &[], options, density_scale)
 }
 
 /// Reeds grow within this distance of still or slow water, in metres, or
@@ -132,12 +132,16 @@ const REED_SPACING: f32 = 1.5;
 /// denser and greener, and reeds grow by still or slow water in
 /// temperate and warm climates. `brooks` are slow streams narrower than a
 /// heightmap sample (see `RiverNetwork::brooks`): their reeds are placed
-/// along their true banks, whatever the sample spacing.
+/// along their true banks, whatever the sample spacing. `riparian` (see
+/// `render::water::riparian_field`, empty for none) spreads the denser
+/// grass further along bigger rivers.
+#[allow(clippy::too_many_arguments)]
 pub fn build_grass_instances_by_water(
   map: &HeightMap,
   materials: Option<&[SurfaceSample]>,
   wet: Option<&WetBanks>,
   brooks: &[Vec<[f32; 3]>],
+  riparian: &[u8],
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
@@ -174,6 +178,7 @@ pub fn build_grass_instances_by_water(
         map,
         materials,
         wet,
+        f32::from(riparian.get((y * width + x) as usize).copied().unwrap_or(0)) / 255.0,
         x,
         y,
         width,
@@ -294,6 +299,7 @@ fn candidate_at(
   map: &HeightMap,
   materials: Option<&[SurfaceSample]>,
   wet: Option<&WetBanks>,
+  riparian: f32,
   x: u32,
   y: u32,
   width: u32,
@@ -351,8 +357,9 @@ fn candidate_at(
     && still_metres < WET_BANK_RANGE_METRES
     && still_metres <= REED_METRES.max(shore)
     && sample.is_some_and(|sample| !sample.is_glacier() && sample.celsius() > REED_CELSIUS);
-  // Within 12 m of water grass grows denser and greener.
-  let near_water = 1.0 - smoothstep(water_metres / 12.0);
+  // Within 12 m of water grass grows denser and greener, and further
+  // along bigger rivers with the bankside greening.
+  let near_water = (1.0 - smoothstep(water_metres / 12.0)).max(riparian);
   let acceptance_weight = if reeds {
     acceptance_weight.max(0.9)
   } else {
@@ -460,7 +467,7 @@ mod tests {
       ..vista_types::BiomeOptions::default()
     };
     let normals = crate::terrain::normals::generate_normals(map);
-    crate::terrain::biomes::classify_surface(map, &normals, None, &options)
+    crate::terrain::biomes::classify_surface(map, &normals, None, &[], &options)
   }
 
   #[test]
@@ -523,7 +530,7 @@ mod tests {
     };
     let warm = surface(12.0);
     let with_water =
-      build_grass_instances_by_water(&map, Some(&warm), Some(&wet), &[], &options, 1.0);
+      build_grass_instances_by_water(&map, Some(&warm), Some(&wet), &[], &[], &options, 1.0);
     let without = build_grass_instances(&map, Some(&warm), &options, 1.0);
     // Instances are centred on the map; back to sample columns.
     let column = |i: &FloraInstance| (i.position[0] + 95.0 * 2.0) / 4.0;
@@ -546,7 +553,7 @@ mod tests {
 
     let cold = surface(1.0);
     let cold_grass =
-      build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &[], &options, 1.0);
+      build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &[], &[], &options, 1.0);
     assert!(cold_grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));
   }
 
@@ -578,7 +585,7 @@ mod tests {
       ..grass_options()
     };
     let grass =
-      build_grass_instances_by_water(&map, Some(&surface), Some(&wet), &[], &options, 1.0);
+      build_grass_instances_by_water(&map, Some(&surface), Some(&wet), &[], &[], &options, 1.0);
 
     assert!(!grass.is_empty());
     assert!(grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));

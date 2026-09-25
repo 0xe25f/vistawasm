@@ -299,6 +299,7 @@ pub fn validate_water(water: &WaterOptions) -> VistaResult<()> {
   validate_non_negative("water.rivers.currentSpeed", water.rivers.current_speed)?;
   validate_unit_range("water.rivers.snowmelt", water.rivers.snowmelt, 0.0, 2.0)?;
   validate_unit_range("water.rivers.meanders", water.rivers.meanders, 0.0, 1.0)?;
+  validate_unit_range("water.rivers.riparian", water.rivers.riparian, 0.0, 2.0)?;
   validate_inflows(&water.rivers.inflow)
 }
 
@@ -1066,6 +1067,16 @@ mod tests {
     assert!(validate_water(&water).is_err());
 
     water.rivers.inflow = vista_types::RiverInflows::List(vec![inflow(5.0); 8]);
+    assert!(validate_water(&water).is_ok());
+
+    for riparian in [f32::NAN, -0.1, 2.1] {
+      let mut water = WaterOptions::default();
+      water.rivers.riparian = riparian;
+      let error = validate_water(&water).unwrap_err().to_string();
+      assert!(error.contains("riparian"), "{error}");
+    }
+
+    water.rivers.riparian = 2.0;
     assert!(validate_water(&water).is_ok());
 
     assert!(validate_water(&WaterOptions::default()).is_ok());

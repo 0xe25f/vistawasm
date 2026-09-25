@@ -213,6 +213,16 @@ pub fn build_tree_instances(
           .clamp(0.0, (height - 1) as f32)
           .round() as u32;
 
+        // Beside water a tree stands at its sample's centre, at least
+        // half a sample clear of the channel mask (over 1 m on grids of
+        // 2 m and more).
+        let river = |dx: i32, dy: i32| {
+          let nx = (sample_x as i32 + dx).clamp(0, width as i32 - 1) as u32;
+          let ny = (sample_y as i32 + dy).clamp(0, height as i32 - 1) as u32;
+          surface[(ny * width + nx) as usize].river > 0
+        };
+        let beside = river(-1, 0) || river(1, 0) || river(0, -1) || river(0, 1);
+
         if let Some(instance) = candidate_at(
           map,
           surface,
@@ -225,12 +235,19 @@ pub fn build_tree_instances(
           variation,
           slot_seed,
         ) {
-          candidates.push(TreeInstance {
-            position: [
+          let position = if beside {
+            [
+              sample_x as f32 * metres_per_sample - half_width,
+              sample_y as f32 * metres_per_sample - half_height,
+            ]
+          } else {
+            [
               x as f32 * metres_per_sample + jitter_x * cell_span - half_width,
-              instance.position[1],
               y as f32 * metres_per_sample + jitter_z * cell_span - half_height,
-            ],
+            ]
+          };
+          candidates.push(TreeInstance {
+            position: [position[0], instance.position[1], position[1]],
             ..instance
           });
         }
@@ -381,7 +398,7 @@ mod tests {
       volcanism: 0.0,
       ..BiomeOptions::default()
     };
-    classify_surface(map, &generate_normals(map), None, &options)
+    classify_surface(map, &generate_normals(map), None, &[], &options)
   }
 
   fn flora_options() -> FloraOptions {
@@ -472,7 +489,7 @@ mod tests {
       volcanism: 0.0,
       ..BiomeOptions::default()
     };
-    classify_surface(map, &generate_normals(map), None, &options)
+    classify_surface(map, &generate_normals(map), None, &[], &options)
   }
 
   #[test]

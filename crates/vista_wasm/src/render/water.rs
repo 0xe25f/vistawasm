@@ -245,6 +245,9 @@ pub struct RiverNetwork {
   /// to 255, summing to the share they take) for samples the channel stage
   /// changed, one entry per sample. See [`bed_materials`].
   pub bed: Vec<(u32, [u8; 4])>,
+  /// Bankside greening per heightmap sample, 0 to 255 for 0 to 1, or
+  /// empty when there is none. See [`riparian_field`].
+  pub riparian: Vec<u8>,
 }
 
 /// One bank strip vertex (36 bytes).
@@ -574,6 +577,9 @@ pub fn build_river_network(
     }
   }
 
+  // Before the channels join the mask, it holds only still water.
+  network.riparian = riparian_field(map, &channels.reaches, &network.mask, options.riparian);
+
   for (slot, value) in network.mask.iter_mut().zip(&channels.mask) {
     *slot |= *value;
   }
@@ -731,6 +737,106 @@ fn stamp_bed(
       }
     }
   }
+}
+
+/// Bankside greening: `(1 - d / R)^2 x strength` (at most 1) at a
+/// distance `d` from water, where `R = clamp(25 + 12 sqrt(Q), 25, 400)`
+/// metres for rivers and 40 m for lakes, oxbows and pools (`still`). A
+/// two-pass chamfer carries the largest remaining reach `R - d` outwards
+/// with its source's `R`. Empty when `strength` is 0 or there is no water.
+pub fn riparian_field(
+  map: &HeightMap,
+  reaches: &[Reach],
+  still: &[bool],
+  strength: f32,
+) -> Vec<u8> {
+  let (width, height) = (map.metadata.width as usize, map.metadata.height as usize);
+  let metres = map.metadata.metres_per_sample;
+
+  if strength <= 0.0 || (reaches.is_empty() && !still.contains(&true)) {
+    return Vec::new();
+  }
+
+  let mut left: Vec<f32> = still
+    .iter()
+    .map(|wet| if *wet { 40.0 } else { 0.0 })
+    .collect();
+  let mut radius: Vec<u16> = left.iter().map(|reach| *reach as u16).collect();
+
+  for point in reaches.iter().flat_map(|reach| &reach.points) {
+    let (x, y) = (point.x.round() as usize, point.y.round() as usize);
+
+    if x < width && y < height {
+      let reach = (25.0 + 12.0 * point.discharge.max(0.0).sqrt()).min(400.0);
+      let index = y * width + x;
+
+      if reach > left[index] {
+        left[index] = reach;
+        radius[index] = reach as u16;
+      }
+    }
+  }
+
+  let diagonal = metres * std::f32::consts::SQRT_2;
+  let mut reach_from = |to: usize, from: usize, cost: f32| {
+    if left[from] - cost > left[to] {
+      left[to] = left[from] - cost;
+      radius[to] = radius[from];
+    }
+  };
+
+  for y in 0..height {
+    for x in 0..width {
+      let index = y * width + x;
+
+      if x > 0 {
+        reach_from(index, index - 1, metres);
+      }
+
+      if y > 0 {
+        reach_from(index, index - width, metres);
+
+        if x > 0 {
+          reach_from(index, index - width - 1, diagonal);
+        }
+
+        if x + 1 < width {
+          reach_from(index, index - width + 1, diagonal);
+        }
+      }
+    }
+  }
+
+  for y in (0..height).rev() {
+    for x in (0..width).rev() {
+      let index = y * width + x;
+
+      if x + 1 < width {
+        reach_from(index, index + 1, metres);
+      }
+
+      if y + 1 < height {
+        reach_from(index, index + width, metres);
+
+        if x + 1 < width {
+          reach_from(index, index + width + 1, diagonal);
+        }
+
+        if x > 0 {
+          reach_from(index, index + width - 1, diagonal);
+        }
+      }
+    }
+  }
+
+  left
+    .iter()
+    .zip(&radius)
+    .map(|(left, radius)| {
+      let near = (left / f32::from((*radius).max(1))).max(0.0);
+      ((near * near * strength).min(1.0) * 255.0).round() as u8
+    })
+    .collect()
 }
 
 /// The flow cell nearest a heightmap sample position.
@@ -1049,7 +1155,7 @@ fn sub_sample_centreline(
     ];
     let wavelength = 11.0 * a.width.min(b.width);
     let pieces = if amplitude(&a).max(amplitude(&b)) > 0.0 {
-      (length / (wavelength / 8.0)).ceil().clamp(1.0, 256.0) as usize
+      (length / (wavelength / 6.0)).ceil().clamp(1.0, 256.0) as usize
     } else {
       1
     };
@@ -1128,17 +1234,19 @@ fn add_bank_strips(
       let outward = [-tangent[1] / length * side, tangent[0] / length * side];
       let strip = (0.4 * p.width).max(0.5);
       let first = network.bank_vertices.len() as u32;
+      // One height for both edges: the strip is at most a few metres
+      // wide, far less than a sample.
+      let middle = (0.5 * p.width + 0.5 * strip) / metres;
+      let ground = (mesh_height_at(map, p.x + outward[0] * middle, p.y + outward[1] * middle)
+        + 0.02)
+        .max(p.level);
 
       for (t, offset) in [(0.0, 0.5 * p.width), (1.0, 0.5 * p.width + strip)] {
         let x = p.x + outward[0] * offset / metres;
         let y = p.y + outward[1] * offset / metres;
         let world = to_world([x, y], metres, half);
         network.bank_vertices.push(BankVertex {
-          position: [
-            world[0],
-            (mesh_height_at(map, x, y) + 0.02).max(p.level),
-            world[1],
-          ],
+          position: [world[0], ground, world[1]],
           outward,
           params: [t, strip, p.speed, 0.0],
         });
@@ -1244,14 +1352,34 @@ fn simplify_ribbon(
   let mut a = 0;
 
   while a < n - 1 {
-    let mut j = a + 1;
+    // The furthest a run may reach: the next kept point, the end, or
+    // MAX_RUN points on.
+    let mut limit = a + 1;
 
-    while j + 1 < n && !keep[j] && j + 1 - a <= MAX_RUN && fits(a, j + 1) {
-      j += 1;
+    while limit + 1 < n && !keep[limit] && limit + 1 - a <= MAX_RUN {
+      limit += 1;
     }
 
-    kept.push(points[j]);
-    a = j;
+    // The longest run that fits, by bisection: checking every length
+    // would cost the square of the run.
+    let (mut good, mut bad) = (a + 1, limit + 1);
+
+    if fits(a, limit) {
+      good = limit;
+    } else {
+      while bad - good > 1 {
+        let mid = (good + bad) / 2;
+
+        if fits(a, mid) {
+          good = mid;
+        } else {
+          bad = mid;
+        }
+      }
+    }
+
+    kept.push(points[good]);
+    a = good;
   }
 
   kept
@@ -1838,6 +1966,51 @@ mod tests {
   }
 
   #[test]
+  fn riparian_greening_is_full_at_the_water_and_ends_at_its_reach() {
+    let map = HeightMap::flat(
+      200,
+      60,
+      10.0,
+      TerrainMetadata {
+        width: 200,
+        height: 60,
+        metres_per_sample: 10.0,
+        ..TerrainMetadata::default()
+      },
+    );
+    let dry = vec![false; 200 * 60];
+    // Along row 20; 1 m³/s reaches R = 25 + 12 = 37 m.
+    let river = |discharge: f32| {
+      let points = straight_reach(200)
+        .into_iter()
+        .map(|mut point| {
+          point.discharge = discharge;
+          point
+        })
+        .collect();
+      vec![Reach { points }]
+    };
+    let at = |field: &[u8], dy: usize| field[(20 + dy) * 200 + 50];
+    let field = riparian_field(&map, &river(1.0), &dry, 1.0);
+
+    assert_eq!(at(&field, 0), 255);
+    // (1 - 30 / 37)^2 = 0.036.
+    assert!((8..=10).contains(&at(&field, 3)), "{}", at(&field, 3));
+    assert_eq!(at(&field, 4), 0);
+    // Bigger rivers reach further: 100 m³/s reaches 145 m.
+    assert!(at(&riparian_field(&map, &river(100.0), &dry, 1.0), 12) > 0);
+    // A strength of 2 doubles it, up to 1.
+    assert_eq!(at(&riparian_field(&map, &river(1.0), &dry, 2.0), 1), 255);
+    // Lakes reach 40 m.
+    let mut lake = dry.clone();
+    lake[20 * 200 + 50] = true;
+    let field = riparian_field(&map, &[], &lake, 1.0);
+    assert!(at(&field, 3) > 10 && at(&field, 4) == 0);
+    assert!(riparian_field(&map, &river(1.0), &dry, 0.0).is_empty());
+    assert!(riparian_field(&map, &[], &dry, 1.0).is_empty());
+  }
+
+  #[test]
   fn river_mouths_near_sea_level_are_sand() {
     let (mut map, mut reaches, mask) = bed_scene(1.5, 0.0);
     map.metadata.sea_level_metres = 49.8;
@@ -2053,6 +2226,7 @@ mod tests {
       Some(&warm),
       Some(&network.wet),
       &network.brooks,
+      &network.riparian,
       &grass,
       1.0,
     );

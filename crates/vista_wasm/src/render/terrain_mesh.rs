@@ -289,7 +289,7 @@ pub fn bake_terrain_shading(
   river_mask: Option<&[bool]>,
 ) -> (Vec<Vec3>, Vec<SurfaceSample>) {
   let normals = generate_normals(map);
-  let surface = classify_surface(map, &normals, river_mask, biomes);
+  let surface = classify_surface(map, &normals, river_mask, &[], biomes);
   (normals, surface)
 }
 
