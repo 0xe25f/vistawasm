@@ -15,11 +15,11 @@
 
 use vista_types::{RiverOptions, WaterOptions};
 
-use crate::maths::length2;
+use crate::maths::{length2, smoothstep};
 use crate::terrain::biomes::SurfaceSample;
 use crate::terrain::channels::{
-  channel_depth, condition_channels, height_at, raw_streams, CarveRecord, ChannelContext,
-  ChannelPoint, Fall, FallStep, Oxbow, RawStream, Reach, GRAVITY,
+  channel_depth, condition_channels, height_at, kinoshita, kinoshita_table, raw_streams,
+  CarveRecord, ChannelContext, ChannelPoint, Fall, FallStep, Oxbow, RawStream, Reach, GRAVITY,
 };
 use crate::terrain::drainage::NO_RECEIVER;
 use crate::terrain::heightmap::HeightMap;
@@ -84,7 +84,8 @@ pub struct WaterVertex {
   pub flow: [f32; 2],
   /// x: kind (`WATER_KIND_*`), y: across-channel coordinate (-1 to 1) for
   /// rivers and falls, z: local vertex spacing in metres for the ocean
-  /// grid, impact speed for falls, sprite size for mist.
+  /// grid, half width for river ribbons, impact speed for falls, sprite
+  /// size for mist.
   pub params: [f32; 3],
   /// Rivers: slope, curvature (-1 to 1), depth (metres), °C. Lakes:
   /// unused, unused, depth, °C. Falls: metres travelled down the sheet,
@@ -230,6 +231,28 @@ pub struct RiverNetwork {
   /// Water entering from beyond the map: where it enters, in heightmap
   /// sample coordinates, its water level and its discharge.
   pub inflows: Vec<InflowPoint>,
+  /// Bank strips beside streams narrower than a heightmap sample, drawn
+  /// over the terrain by their own pipeline.
+  pub bank_vertices: Vec<BankVertex>,
+  /// Triangle list indices for `bank_vertices`.
+  pub bank_indices: Vec<u32>,
+  /// Slow streams narrower than a heightmap sample, as runs of world x, z
+  /// and half width along their drawn centrelines, for reeds on their true
+  /// banks.
+  pub brooks: Vec<Vec<[f32; 3]>>,
+}
+
+/// One bank strip vertex (36 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BankVertex {
+  /// World position in terrain metres.
+  pub position: [f32; 3],
+  /// Unit direction away from the water (x, z).
+  pub outward: [f32; 2],
+  /// x: 0 at the water's edge to 1 at the strip's outer edge, y: strip
+  /// width in metres, z: flow speed in metres per second, w: unused.
+  pub params: [f32; 4],
 }
 
 /// An inflow in use.
@@ -498,15 +521,21 @@ pub fn build_river_network(
       || hydrology.lake[cell_at(&hydrology, [point.x, point.y]) as usize] != NO_LAKE
   };
 
-  for reach in &channels.reaches {
-    add_ribbon(
-      &mut network,
+  let table = kinoshita_table();
+
+  for (index, reach) in channels.reaches.iter().enumerate() {
+    let phase = crate::maths::hash_u64(seed ^ index as u64) as f32 / u64::MAX as f32;
+    let centre = sub_sample_centreline(
       &reach.points,
       metres,
-      half,
-      current,
+      options.meanders,
+      phase,
+      &table,
       &anchored,
     );
+    let drawn = add_ribbon(&mut network, &centre, metres, half, current, &anchored);
+    add_bank_strips(&mut network, map, &drawn, metres, half);
+    add_brooks(&mut network, &drawn, metres, half);
   }
 
   for oxbow in &channels.oxbows {
@@ -528,8 +557,14 @@ pub fn build_river_network(
     }
   }
 
+  // Brooks narrower than a sample grow their reeds along their true banks
+  // (see `RiverNetwork::brooks`), so only wider rivers count here.
   for reach in &channels.reaches {
-    for point in reach.points.iter().filter(|point| point.speed < REED_SPEED) {
+    for point in reach
+      .points
+      .iter()
+      .filter(|point| point.speed < REED_SPEED && point.width >= metres)
+    {
       mark_sample(&mut still, map, [point.x, point.y]);
     }
   }
@@ -704,7 +739,7 @@ fn push_strip(
           centre[1] + side[1] * half_width * across,
         ],
         flow: *flow,
-        params: [kind, across, 0.0],
+        params: [kind, across, *half_width],
         extra: *extra,
       });
     }
@@ -724,7 +759,7 @@ fn push_strip(
 /// shader fades it out by depth. Steep reaches are subdivided so no
 /// segment is longer than half the width (or half a sample: the ground
 /// has no finer detail to follow), then straight, uniform runs are
-/// thinned out (see [`simplify_ribbon`]).
+/// thinned out (see [`simplify_ribbon`]). Returns the points drawn.
 fn add_ribbon(
   network: &mut RiverNetwork,
   points: &[ChannelPoint],
@@ -732,9 +767,9 @@ fn add_ribbon(
   half: [f32; 2],
   current: f32,
   anchored: &dyn Fn(&ChannelPoint) -> bool,
-) {
+) -> Vec<ChannelPoint> {
   if points.len() < 2 {
-    return;
+    return points.to_vec();
   }
 
   let mut dense: Vec<ChannelPoint> = vec![points[0]];
@@ -788,7 +823,9 @@ fn add_ribbon(
       let length = length2(tangent[0], tangent[1]).max(1e-4);
       let tangent = [tangent[0] / length, tangent[1] / length];
       let half_width = 0.65 * p.width;
-      let speed = p.speed * current;
+      // The flow always carries the direction, which the shader needs to
+      // widen far ribbons across it, even with the current stopped.
+      let speed = (p.speed * current).max(0.001);
       (
         world[i],
         [-tangent[1], tangent[0]],
@@ -809,6 +846,194 @@ fn add_ribbon(
     &rows,
     &skip,
   );
+  dense
+}
+
+/// Loops of the sub-sample centreline stay this far, in heightmap
+/// samples, from the carved path, inside the carved trench.
+pub const CORRIDOR_SAMPLES: f32 = 0.45;
+
+/// The centreline a stream is drawn along. Streams narrower than a
+/// heightmap sample on slopes under 1 % meander at their own wavelength
+/// (about 11 w), which a grid 12 to 30 m apart cannot carve: a Kinoshita
+/// curve of amplitude up to 2.5 w, kept within [`CORRIDOR_SAMPLES`] of
+/// the carved path and pinned at its ends, at joins (`joined`), falls
+/// and wider water. The
+/// hydrology, carving and sounds keep the carved path.
+fn sub_sample_centreline(
+  points: &[ChannelPoint],
+  metres: f32,
+  strength: f32,
+  phase: f32,
+  table: &[f32; 64],
+  joined: &dyn Fn(&ChannelPoint) -> bool,
+) -> Vec<ChannelPoint> {
+  let strength = strength.clamp(0.0, 1.0);
+  // Loops shorter than a sixth of a sample would need many points for
+  // little to see.
+  let amplitude = |p: &ChannelPoint| {
+    let loops = p.width < metres && 11.0 * p.width >= metres / 6.0 && !p.falling;
+    let gentle = 1.0 - smoothstep((p.slope - 0.006) / 0.004);
+    f32::from(u8::from(loops)) * gentle * (2.5 * p.width * strength).min(CORRIDOR_SAMPLES * metres)
+  };
+
+  if points.len() < 3 || strength <= 0.0 || points.iter().all(|p| amplitude(p) < 0.02 * metres) {
+    return points.to_vec();
+  }
+
+  let mut out = vec![points[0]];
+  let mut phase = phase;
+  let mut along = 0.0;
+  // Distances along the carved path to the points the loops must pass
+  // through: both ends and every join with another reach.
+  let mut pins = vec![0.0];
+  let mut walked = 0.0;
+
+  for (i, pair) in points.windows(2).enumerate() {
+    walked += length2(pair[1].x - pair[0].x, pair[1].y - pair[0].y) * metres;
+
+    if i + 2 == points.len() || joined(&pair[1]) {
+      pins.push(walked);
+    }
+  }
+
+  let mut pin_index = 0;
+
+  for pair in points.windows(2) {
+    let (a, b) = (pair[0], pair[1]);
+    let length = length2(b.x - a.x, b.y - a.y) * metres;
+    let normal = [
+      -(b.y - a.y) * metres / length.max(1e-4),
+      (b.x - a.x) * metres / length.max(1e-4),
+    ];
+    let wavelength = 11.0 * a.width.min(b.width);
+    let pieces = if amplitude(&a).max(amplitude(&b)) > 0.0 {
+      (length / (wavelength / 8.0)).ceil().clamp(1.0, 256.0) as usize
+    } else {
+      1
+    };
+
+    for k in 1..=pieces {
+      let t = k as f32 / pieces as f32;
+      let lerp = |u: f32, v: f32| u + (v - u) * t;
+      let mut p = a;
+      p.x = lerp(a.x, b.x);
+      p.y = lerp(a.y, b.y);
+      p.level = lerp(a.level, b.level);
+      p.bed = lerp(a.bed, b.bed);
+      p.width = lerp(a.width, b.width);
+      p.depth = lerp(a.depth, b.depth);
+      p.slope = lerp(a.slope, b.slope);
+      p.speed = lerp(a.speed, b.speed);
+      p.celsius = lerp(a.celsius, b.celsius);
+      p.falling = if k == pieces {
+        b.falling
+      } else {
+        a.falling && b.falling
+      };
+      let step = length / pieces as f32;
+      along += step;
+      phase += step / (11.0 * p.width).max(0.01);
+
+      while pin_index + 2 < pins.len() && pins[pin_index + 1] <= along {
+        pin_index += 1;
+      }
+
+      // Pinned over half a wavelength around each pin, so joins meet.
+      let reach = 5.5 * p.width;
+      let pin = smoothstep((along - pins[pin_index]) / reach)
+        * smoothstep((pins[pin_index + 1] - along) / reach);
+      let offset =
+        amplitude(&p).min(amplitude(&a)).min(amplitude(&b)) * pin * kinoshita(table, phase);
+      p.x += normal[0] * offset / metres;
+      p.y += normal[1] * offset / metres;
+      out.push(p);
+    }
+  }
+
+  out
+}
+
+/// Bank strips on either side of a stream narrower than a heightmap
+/// sample, from 0.5 w out to 0.5 w + b, where b = max(0.5 m, 0.4 w), 2 cm
+/// over the ground as the terrain mesh draws it. The heightmap has only a
+/// trench one sample wide there, so the strips give it crisp banks. Where
+/// that trench lies below the water surface, the strip rises to the
+/// surface, or it would slide out from under the water at low angles.
+fn add_bank_strips(
+  network: &mut RiverNetwork,
+  map: &HeightMap,
+  points: &[ChannelPoint],
+  metres: f32,
+  half: [f32; 2],
+) {
+  let n = points.len();
+
+  for side in [-1.0f32, 1.0] {
+    let mut row = 0;
+
+    for i in 0..n {
+      let p = &points[i];
+      let (prev, next) = (&points[i.saturating_sub(1)], &points[(i + 1).min(n - 1)]);
+      let tangent = [next.x - prev.x, next.y - prev.y];
+      let length = length2(tangent[0], tangent[1]);
+      let narrow = p.width < metres && !p.falling && length > 1e-5;
+
+      if !narrow {
+        row = 0;
+        continue;
+      }
+
+      let outward = [-tangent[1] / length * side, tangent[0] / length * side];
+      let strip = (0.4 * p.width).max(0.5);
+      let first = network.bank_vertices.len() as u32;
+
+      for (t, offset) in [(0.0, 0.5 * p.width), (1.0, 0.5 * p.width + strip)] {
+        let x = p.x + outward[0] * offset / metres;
+        let y = p.y + outward[1] * offset / metres;
+        let world = to_world([x, y], metres, half);
+        network.bank_vertices.push(BankVertex {
+          position: [
+            world[0],
+            (mesh_height_at(map, x, y) + 0.02).max(p.level),
+            world[1],
+          ],
+          outward,
+          params: [t, strip, p.speed, 0.0],
+        });
+      }
+
+      if row > 0 {
+        let (a, b) = (first - 2, first - 1);
+        network
+          .bank_indices
+          .extend_from_slice(&[a, first, b, b, first, first + 1]);
+      }
+
+      row += 1;
+    }
+  }
+}
+
+/// Record the slow runs of a stream narrower than a heightmap sample, for
+/// reeds along its true banks.
+fn add_brooks(network: &mut RiverNetwork, points: &[ChannelPoint], metres: f32, half: [f32; 2]) {
+  let mut run: Vec<[f32; 3]> = Vec::new();
+
+  for p in points {
+    if p.width < metres && p.speed < REED_SPEED && !p.falling {
+      let world = to_world([p.x, p.y], metres, half);
+      run.push([world[0], world[1], 0.5 * p.width]);
+    } else if run.len() > 1 {
+      network.brooks.push(std::mem::take(&mut run));
+    } else {
+      run.clear();
+    }
+  }
+
+  if run.len() > 1 {
+    network.brooks.push(run);
+  }
 }
 
 /// Most points one simplified ribbon segment may span.
@@ -1419,6 +1644,199 @@ mod tests {
     kinked[100].y += 0.2;
     let kept = simplify_ribbon(&kinked, &[true; 200], 12.0, &|_| false);
     assert!(kept.iter().any(|point| *point == kinked[100]));
+  }
+
+  /// A slow, straight stream `width` metres wide on a flat 30 m grid.
+  fn flat_brook(width: f32) -> Vec<ChannelPoint> {
+    straight_reach(160)
+      .into_iter()
+      .map(|mut point| {
+        point.x = 4.0 + (point.x - 4.0) * 2.0;
+        point.width = width;
+        point.slope = 0.001;
+        point.speed = 0.4;
+        point
+      })
+      .collect()
+  }
+
+  #[test]
+  fn narrow_stream_loops_pass_through_joins() {
+    let table = kinoshita_table();
+    let carved = flat_brook(2.0);
+    let join = carved[80];
+    let centre = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|point| *point == join);
+    let at_join = centre
+      .iter()
+      .min_by(|a, b| (a.x - join.x).abs().total_cmp(&(b.x - join.x).abs()))
+      .unwrap();
+
+    assert!(
+      (at_join.y - join.y).abs() < 1e-3,
+      "{} samples off the join",
+      (at_join.y - join.y).abs()
+    );
+    assert!(centre.iter().any(|point| (point.y - join.y).abs() > 0.1));
+  }
+
+  #[test]
+  fn narrow_streams_meander_within_their_carved_corridor() {
+    let table = kinoshita_table();
+    let carved = flat_brook(2.0);
+    let centre = sub_sample_centreline(&carved, 30.0, 1.0, 0.3, &table, &|_| false);
+    let y = carved[0].y;
+
+    for point in &centre {
+      assert!(
+        (point.y - y).abs() <= CORRIDOR_SAMPLES + 1e-4,
+        "{} samples off the carved path",
+        (point.y - y).abs()
+      );
+    }
+
+    let length: f32 = centre
+      .windows(2)
+      .map(|pair| length2(pair[1].x - pair[0].x, pair[1].y - pair[0].y))
+      .sum();
+    let chord = centre[centre.len() - 1].x - centre[0].x;
+    assert!(length / chord >= 1.3, "sinuosity {}", length / chord);
+    assert_eq!(centre[0], carved[0]);
+
+    // Streams a sample wide or more keep their carved path.
+    let wide = flat_brook(40.0);
+    assert_eq!(
+      sub_sample_centreline(&wide, 30.0, 1.0, 0.3, &table, &|_| false),
+      wide
+    );
+    assert_eq!(
+      sub_sample_centreline(&carved, 30.0, 0.0, 0.3, &table, &|_| false),
+      carved
+    );
+  }
+
+  #[test]
+  fn only_streams_narrower_than_a_sample_get_bank_strips() {
+    let map = HeightMap::flat(
+      128,
+      64,
+      5.0,
+      TerrainMetadata {
+        width: 128,
+        height: 64,
+        metres_per_sample: 30.0,
+        ..TerrainMetadata::default()
+      },
+    );
+    let low: Vec<_> = flat_brook(2.0)
+      .into_iter()
+      .map(|mut point| {
+        point.level = 4.8;
+        point
+      })
+      .collect();
+    let mut network = RiverNetwork::default();
+    add_bank_strips(&mut network, &map, &low, 30.0, [1905.0, 945.0]);
+    assert!(!network.bank_vertices.is_empty());
+    assert!(network
+      .bank_vertices
+      .iter()
+      .all(|vertex| (vertex.position[1] - 5.02).abs() < 1e-4));
+    let strip = network.bank_vertices[1].params[1];
+    assert!((strip - 0.8).abs() < 1e-4, "strip {strip} m");
+
+    // Never below the water surface of a stream over a coarse trench.
+    let mut raised = RiverNetwork::default();
+    let high: Vec<_> = flat_brook(2.0)
+      .into_iter()
+      .map(|mut point| {
+        point.level = 5.5;
+        point
+      })
+      .collect();
+    add_bank_strips(&mut raised, &map, &high, 30.0, [1905.0, 945.0]);
+    assert!(raised
+      .bank_vertices
+      .iter()
+      .all(|vertex| (vertex.position[1] - 5.5).abs() < 1e-4));
+
+    let mut wide = RiverNetwork::default();
+    add_bank_strips(&mut wide, &map, &flat_brook(40.0), 30.0, [1905.0, 945.0]);
+    assert!(wide.bank_vertices.is_empty());
+  }
+
+  #[test]
+  fn reeds_line_the_true_banks_of_slow_brooks_on_coarse_maps() {
+    use crate::render::flora::GRASS_STYLE_REED;
+    use crate::render::grass::build_grass_instances_by_water;
+    // A very gentle valley on a 120 m grid: slow brooks far narrower than
+    // a sample.
+    let size = 64;
+    let metadata = TerrainMetadata {
+      width: size,
+      height: size,
+      metres_per_sample: 120.0,
+      sea_level_metres: 0.0,
+      ..TerrainMetadata::default()
+    };
+    let mut map = HeightMap::flat(size, size, 0.0, metadata);
+
+    for y in 0..size {
+      for x in 0..size {
+        let _ = map.set_height(x, y, y as f32 * 0.06 + 2.0 + (x as f32 - 32.0).abs() * 0.5);
+      }
+    }
+
+    update_stats(&map.heights, &map.no_data, &mut map.metadata);
+    let options = RiverOptions {
+      min_catchment_km2: 2.0,
+      inflow: vista_types::RiverInflows::Mode(vista_types::InflowMode::None),
+      ..RiverOptions::default()
+    };
+    let sources = plain(map.heights.len());
+    let network = build_river_network(&mut map, &options, sources);
+    assert!(!network.brooks.is_empty(), "no slow brook");
+    let warm = vec![
+      SurfaceSample {
+        celsius_hundredths: 1500,
+        ..SurfaceSample::default()
+      };
+      map.heights.len()
+    ];
+    let grass = vista_types::GrassOptions {
+      enabled: true,
+      density: 1.0,
+      ..vista_types::GrassOptions::default()
+    };
+    let instances = build_grass_instances_by_water(
+      &map,
+      Some(&warm),
+      Some(&network.wet),
+      &network.brooks,
+      &grass,
+      1.0,
+    );
+    let reeds: Vec<_> = instances
+      .iter()
+      .filter(|instance| instance.style == GRASS_STYLE_REED)
+      .collect();
+    assert!(reeds.len() > 20, "{} reeds", reeds.len());
+
+    for reed in reeds {
+      let [x, _, z] = reed.position;
+      let edge = network
+        .brooks
+        .iter()
+        .flat_map(|run| run.windows(2))
+        .map(|pair| {
+          let (a, b) = (pair[0], pair[1]);
+          let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+          let t =
+            (((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz).max(1e-6)).clamp(0.0, 1.0);
+          length2(x - a[0] - dx * t, z - a[1] - dz * t) - a[2].max(b[2])
+        })
+        .fold(f32::MAX, f32::min);
+      assert!(edge <= 3.05, "a reed {edge} m from the water's edge");
+    }
   }
 
   #[test]

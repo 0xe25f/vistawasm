@@ -57,6 +57,8 @@ struct VertexOut {
   @location(4) spacing: f32,
   @location(5) rest_xz: vec2<f32>,
   @location(6) extra: vec4<f32>,
+  // True width over drawn width, for ribbons widened to stay visible.
+  @location(7) coverage: f32,
 };
 
 const KIND_OCEAN: i32 = 0;
@@ -392,10 +394,19 @@ fn vertex_main(in: VertexIn) -> VertexOut {
     position = position + displacement;
   }
 
+  out.coverage = 1.0;
+
   // Snowmelt fills rivers within their channels: up to a fifth of their
-  // depth higher at full melt.
+  // depth higher at full melt. A far ribbon narrower than a pixel breaks
+  // into dashes, so each side is widened to at least 0.75 pixel, and its
+  // alpha scaled by how much of that the water covers.
   if (INLAND && kind == KIND_RIVER) {
     position.y = position.y + 0.2 * in.extra.z * saturate((frame.rivers.x - 1.0) / 0.4);
+    let footprint = distance(position, frame.camera_position.xyz) * frame.camera_forward.w * 2.0 * frame.viewport.w;
+    let drawn = max(in.params.z, 0.75 * footprint);
+    let side = normalize(vec2<f32>(-in.flow.y, in.flow.x));
+    position = position + vec3<f32>(side.x, 0.0, side.y) * (drawn - in.params.z) * in.params.y;
+    out.coverage = in.params.z / drawn;
   }
 
   // Mist sprites rise from the foot of a fall and drift downwind, then
@@ -797,7 +808,7 @@ fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     // A soft edge where a river's ribbon ends over lower ground.
     if (river) {
-      alpha_out = alpha_out * (1.0 - smoothstep(0.7, 1.0, abs(in.across)));
+      alpha_out = alpha_out * (1.0 - smoothstep(0.7, 1.0, abs(in.across))) * in.coverage;
     }
 
     if (INLAND && freezing_possible() && (in.kind == KIND_LAKE || river || in.kind == KIND_POOL)) {

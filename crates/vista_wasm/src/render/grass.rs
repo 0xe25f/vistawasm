@@ -113,7 +113,7 @@ pub fn build_grass_instances(
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
-  build_grass_instances_by_water(map, materials, None, options, density_scale)
+  build_grass_instances_by_water(map, materials, None, &[], options, density_scale)
 }
 
 /// Reeds grow within this distance of still or slow water, in metres, or
@@ -124,13 +124,20 @@ const REED_METRES: f32 = 3.0;
 /// Reeds need a mean temperature above this, in °C.
 const REED_CELSIUS: f32 = 4.0;
 
+/// Reeds stand this far apart along each bank of a brook, in metres,
+/// before thinning by density.
+const REED_SPACING: f32 = 1.5;
+
 /// [`build_grass_instances`] beside water: within 12 m of it grass grows
 /// denser and greener, and reeds grow by still or slow water in
-/// temperate and warm climates.
+/// temperate and warm climates. `brooks` are slow streams narrower than a
+/// heightmap sample (see `RiverNetwork::brooks`): their reeds are placed
+/// along their true banks, whatever the sample spacing.
 pub fn build_grass_instances_by_water(
   map: &HeightMap,
   materials: Option<&[SurfaceSample]>,
   wet: Option<&WetBanks>,
+  brooks: &[Vec<[f32; 3]>],
   options: &GrassOptions,
   density_scale: f32,
 ) -> Vec<FloraInstance> {
@@ -199,6 +206,7 @@ pub fn build_grass_instances_by_water(
     y += stride;
   }
 
+  add_brook_reeds(&mut candidates, map, materials, brooks, density, seed);
   let max_instances = options.max_instances as usize;
 
   if candidates.len() <= max_instances {
@@ -212,6 +220,73 @@ pub fn build_grass_instances_by_water(
     .step_by(keep_every.max(1))
     .take(max_instances)
     .collect()
+}
+
+/// Reeds along both banks of each brook, within [`REED_METRES`] of its
+/// true edge, where the climate is warm enough.
+fn add_brook_reeds(
+  candidates: &mut Vec<FloraInstance>,
+  map: &HeightMap,
+  materials: Option<&[SurfaceSample]>,
+  brooks: &[Vec<[f32; 3]>],
+  density: f32,
+  seed: u64,
+) {
+  let metres = map.metadata.metres_per_sample.max(0.001);
+  let (width, height) = (map.metadata.width, map.metadata.height);
+  let half = [(width as f32 - 1.0) * 0.5, (height as f32 - 1.0) * 0.5];
+
+  for (index, run) in brooks.iter().enumerate() {
+    let mut along = 0.0f32;
+
+    for pair in run.windows(2) {
+      let (a, b) = (pair[0], pair[1]);
+      let length = crate::maths::length2(b[0] - a[0], b[1] - a[1]);
+
+      if length < 1e-4 {
+        continue;
+      }
+
+      let tangent = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+      let mut t = along.rem_euclid(REED_SPACING);
+
+      while t < length {
+        for side in [-1.0f32, 1.0] {
+          let key = ((along + t) * 100.0) as i32;
+          let lane = index as i32 * 2 + i32::from(side > 0.0);
+          let roll = |salt: u64| unit_from_hash(hash_noise(seed ^ salt, key, lane));
+
+          if roll(0x7a3d_91c1) > density * 0.8 {
+            continue;
+          }
+
+          let out = a[2] + roll(0x1b87_3593) * REED_METRES;
+          let x = a[0] + tangent[0] * t - tangent[1] * side * out;
+          let z = a[1] + tangent[1] * t + tangent[0] * side * out;
+          let (sx, sy) = (x / metres + half[0], z / metres + half[1]);
+          let sample = (sy.round().clamp(0.0, half[1] * 2.0) as u32 * width
+            + sx.round().clamp(0.0, half[0] * 2.0) as u32) as usize;
+          let warm = materials
+            .and_then(|surface| surface.get(sample))
+            .is_some_and(|sample| !sample.is_glacier() && sample.celsius() > REED_CELSIUS);
+
+          if warm && !map.no_data[sample] {
+            candidates.push(FloraInstance {
+              position: [x, crate::terrain::channels::height_at(map, sx, sy), z],
+              scale: 1.4 + roll(0x0a2b_c3d4) * 0.8,
+              tint: roll(0x5f2e_1d0c),
+              dryness: 0.0,
+              style: GRASS_STYLE_REED,
+            });
+          }
+        }
+
+        t += REED_SPACING;
+      }
+
+      along += length;
+    }
+  }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,7 +522,8 @@ mod tests {
       ..grass_options()
     };
     let warm = surface(12.0);
-    let with_water = build_grass_instances_by_water(&map, Some(&warm), Some(&wet), &options, 1.0);
+    let with_water =
+      build_grass_instances_by_water(&map, Some(&warm), Some(&wet), &[], &options, 1.0);
     let without = build_grass_instances(&map, Some(&warm), &options, 1.0);
     // Instances are centred on the map; back to sample columns.
     let column = |i: &FloraInstance| (i.position[0] + 95.0 * 2.0) / 4.0;
@@ -469,7 +545,8 @@ mod tests {
       .all(|reed| reed.scale >= 1.4 && reed.scale <= 2.2 && column(reed) <= 9.0));
 
     let cold = surface(1.0);
-    let cold_grass = build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &options, 1.0);
+    let cold_grass =
+      build_grass_instances_by_water(&map, Some(&cold), Some(&wet), &[], &options, 1.0);
     assert!(cold_grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));
   }
 
@@ -500,7 +577,8 @@ mod tests {
       density: 1.0,
       ..grass_options()
     };
-    let grass = build_grass_instances_by_water(&map, Some(&surface), Some(&wet), &options, 1.0);
+    let grass =
+      build_grass_instances_by_water(&map, Some(&surface), Some(&wet), &[], &options, 1.0);
 
     assert!(!grass.is_empty());
     assert!(grass.iter().all(|i| i.style == GRASS_STYLE_TUFT));

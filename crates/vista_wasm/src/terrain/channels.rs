@@ -625,7 +625,7 @@ pub fn condition_profile(levels: &mut [f32], steps: &[(usize, usize)]) {
 /// A normalised lateral offset curve for one meander wavelength, from a
 /// Kinoshita curve (a sine-generated curve with skew and flattening
 /// terms), sampled at 64 points along the valley.
-fn kinoshita_table() -> [f32; 64] {
+pub(crate) fn kinoshita_table() -> [f32; 64] {
   let theta0 = 1.4f32;
   let skew = 1.0 / 32.0;
   let flat = 1.0 / 192.0;
@@ -677,7 +677,7 @@ fn kinoshita_table() -> [f32; 64] {
   table
 }
 
-fn kinoshita(table: &[f32; 64], phase: f32) -> f32 {
+pub(crate) fn kinoshita(table: &[f32; 64], phase: f32) -> f32 {
   let p = phase.rem_euclid(1.0) * 64.0;
   let i = p as usize % 64;
   let t = p - p.floor();

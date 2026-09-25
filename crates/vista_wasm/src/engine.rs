@@ -1095,6 +1095,9 @@ impl EngineCore {
       self
         .gpu
         .upload_falls(&self.rivers.fall_vertices, &self.rivers.fall_indices);
+      self
+        .gpu
+        .upload_bank_strips(&self.rivers.bank_vertices, &self.rivers.bank_indices);
       self.gpu.upload_wet_banks(&self.rivers.wet);
     }
 
@@ -1218,6 +1221,7 @@ impl EngineCore {
         terrain,
         surface,
         Some(&self.rivers.wet),
+        &self.rivers.brooks,
         &self.grass,
         density_scale,
       ),
@@ -1384,6 +1388,7 @@ impl EngineCore {
       sea_near_freezing: false,
       inland_water: !self.rivers.vertices.is_empty(),
       falls: !self.rivers.fall_vertices.is_empty(),
+      bank_strips: !self.rivers.bank_vertices.is_empty(),
       present: !self.lens_drops.is_empty() || self.stats.render_scale < 0.999,
     };
     let options = self.weather.options();

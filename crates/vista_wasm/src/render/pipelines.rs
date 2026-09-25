@@ -30,6 +30,8 @@ pub enum PipelineKind {
   TreeShadow,
   /// Terrain.
   Terrain,
+  /// Bank strips beside streams narrower than a heightmap sample.
+  BankStrips,
   /// Full tree meshes near the camera.
   TreeMesh,
   /// Tree impostors.
@@ -56,11 +58,12 @@ pub enum PipelineKind {
 
 impl PipelineKind {
   /// Every kind, in the order a frame uses them.
-  pub const ALL: [Self; 15] = [
+  pub const ALL: [Self; 16] = [
     Self::TerrainShadow,
     Self::TreeCull,
     Self::TreeShadow,
     Self::Terrain,
+    Self::BankStrips,
     Self::TreeMesh,
     Self::TreeImpostor,
     Self::Grass,
@@ -116,6 +119,8 @@ pub struct Needs {
   pub inland_water: bool,
   /// Waterfalls are present.
   pub falls: bool,
+  /// Bank strips are present.
+  pub bank_strips: bool,
   /// The frame goes through the final pass: lens drops, or a scene drawn
   /// below the canvas resolution.
   pub present: bool,
@@ -138,6 +143,7 @@ impl Needs {
       PipelineKind::OpenOcean => self.water && (!self.sea_ice || self.sea_near_freezing),
       PipelineKind::InlandWater => self.water && self.inland_water,
       PipelineKind::Falls => self.water && self.falls,
+      PipelineKind::BankStrips => self.water && self.bank_strips,
       PipelineKind::Present => self.present,
     }
   }

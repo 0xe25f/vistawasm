@@ -630,6 +630,8 @@ pub struct GpuContext {
   rivers: Option<IndexedMesh>,
   /// Waterfall sheets, mist and plunge pools, drawn after the rivers.
   falls: Option<IndexedMesh>,
+  /// Bank strips beside the narrowest streams, drawn over the terrain.
+  bank_strips: Option<IndexedMesh>,
   water_visible: bool,
   uniforms: FrameUniforms,
   last_time: f32,
@@ -1284,6 +1286,12 @@ const GRASS_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_
   6 => Float32,
 ];
 
+const BANK_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+  0 => Float32x3,
+  1 => Float32x2,
+  2 => Float32x4,
+];
+
 const WATER_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
   0 => Float32x3,
   1 => Float32x2,
@@ -1583,6 +1591,31 @@ fn create_pipeline_of(
           modules.terrain(device),
           main,
           &terrain_buffers,
+        )
+      },
+    )),
+    // Blended over the terrain it lies on, pulled towards the camera so it
+    // wins the depth test against the ground it follows.
+    PipelineKind::BankStrips => render(create_pipeline(
+      device,
+      &layouts.receivers,
+      PipelineSpec {
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        depth: Some((false, wgpu::CompareFunction::LessEqual)),
+        depth_bias: wgpu::DepthBiasState {
+          constant: -4,
+          slope_scale: -1.0,
+          clamp: 0.0,
+        },
+        ..PipelineSpec::opaque(
+          "VistaWASM bank strips",
+          modules.terrain(device),
+          ("vertex_bank", "fragment_bank"),
+          &[Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<crate::render::water::BankVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &BANK_ATTRIBUTES,
+          })],
         )
       },
     )),
@@ -1915,6 +1948,7 @@ impl GpuContext {
       ocean,
       rivers: None,
       falls: None,
+      bank_strips: None,
       water_visible: false,
       uniforms,
       last_time: 0.0,
@@ -2612,6 +2646,23 @@ impl GpuContext {
         &self.device,
         &self.queue,
         "VistaWASM waterfalls",
+        bytemuck::cast_slice(vertices),
+        indices,
+      )
+    });
+  }
+
+  /// Upload bank strip geometry, replacing any previous buffers.
+  pub fn upload_bank_strips(
+    &mut self,
+    vertices: &[crate::render::water::BankVertex],
+    indices: &[u32],
+  ) {
+    self.bank_strips = (!vertices.is_empty() && !indices.is_empty()).then(|| {
+      indexed_mesh(
+        &self.device,
+        &self.queue,
+        "VistaWASM bank strips",
         bytemuck::cast_slice(vertices),
         indices,
       )
@@ -3376,6 +3427,17 @@ impl GpuContext {
         pass.set_vertex_buffer(0, terrain.vertex_buffers[terrain.front].slice(..));
         pass.set_index_buffer(terrain.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..terrain.index_count, 0, 0..1);
+      }
+
+      if let (Some(strips), Some(pipeline), true) = (
+        &self.bank_strips,
+        self.pipelines.render(PipelineKind::BankStrips),
+        self.water_visible,
+      ) {
+        pass.set_pipeline(pipeline);
+        pass.set_vertex_buffer(0, strips.vertex_buffer.slice(..));
+        pass.set_index_buffer(strips.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..strips.index_count, 0, 0..1);
       }
     }
 
