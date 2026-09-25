@@ -99,9 +99,11 @@ its own.
 - Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
     start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
     (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
-    plan states how much it may add on top of that. Every byte must buy
-    real value that can't be done smaller. Generate data procedurally at
-    start-up instead of embedding it.
+    plan states how much it may add on top of that. Treat that figure as
+    a soft target, and double it as the hard limit, which must never be
+    exceeded. Every byte must buy real value that can't be done smaller;
+    above the soft target, the report must justify the extra bytes.
+    Generate data procedurally at start-up instead of embedding it.
 - Performance gate: from plan 2b onwards, run
     `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
     No pass may be more than 5 % slower than before, beyond what the plan's
@@ -219,6 +221,26 @@ implemented:
 - With `edges: "coast"` (the default), every map is ringed by sea, so
     rivers can always reach it. With `"open"`, channels reaching the map
     edge end there, which counts as a valid outlet.
+- Beyond the map, a skirt descends into the sea (plan 2b):
+    `skirt_height` in `common.wgsl` and `render/terrain_mesh.rs`.
+    `terrain_height_at` already returns skirt heights outside the
+    footprint, so water depth there is correct. Never build channels,
+    lakes, waterfalls or wet banks on the skirt: the river build works
+    only on the height map.
+- Plan 2b ships a like-for-like performance gate,
+    `scripts/visual-check/fixed-scene.mjs`. It loads a fixed 512 x 512
+    height map through `loadRawHeightmap`, so rivers are built for it too.
+    Its water pass will change with this plan; see Budgets.
+- Glacial troughs (plan 2b, commit `ac5cf31`) leave shallow basins behind
+    their steps, under 15 % of the over-deepening. Section 2 fills them
+    as tarns, which is intended. `finish_fractal_heightmap` already
+    removes pits smaller than `MIN_BASIN_SAMPLES`, so only real basins
+    remain.
+- Pack ice is drawn by `pack_ice(xz, concentration, footprint, distance)`
+    in `water.wgsl`, behind the uniform guard `sea_ice_possible()`.
+    Section 4b reuses both.
+- The WASM is 285,511 bytes gzipped after plan 2b. Measure it again at
+    the start.
 
 ## Current state
 
@@ -289,10 +311,22 @@ Read these files before starting:
 
 ### 3. Channel form (erosion-coupled)
 
-- Carving happens as part of terrain generation, not as a separate step.
-- Add a final `condition_channels` stage in `terrain/`, run after plan
-    1's erosion and plan 2's glacier smoothing, whenever rivers are
-    enabled:
+- Carving follows the eroded terrain. Channels run along the valleys
+    that plan 1's erosion carved, and conditioning only shapes the beds
+    and banks. It stays restorable, because options and masks can change
+    after generation.
+- Add a final `condition_channels` stage in `terrain/`. It replaces the
+    carving inside `build_river_network`, and keeps the order that
+    `engine.rs` `rebuild_world` uses today:
+    1. `restore_carving`;
+    2. `restore_glaciers`;
+    3. `shape_glaciers`;
+    4. then this stage, whenever rivers are enabled.
+- Channels do not run over glacier ice (`IceArctic` samples with
+    `permanent_snow` 255). Water there flows beneath the ice: follow the
+    drainage, but carve and draw nothing until the first non-glacier
+    sample, which is the snout source from section 1.
+- The stage covers:
     - **Hydraulic geometry:** width `w = 2.7 x Q^0.5 x widthScale` metres
         and depth `d = 0.35 x Q^0.4` metres, both clamped to
         [0.6, 400] m.
@@ -374,9 +408,12 @@ Verification of plan 2 found lakes staying liquid and turquoise at
 
 - **Lakes** freeze where the lake's mean temperature (`celsius()` at its
     outlet) is below 0 °C.
-    - Draw them with plan 2b's pack-ice shading at concentration 1: large
-        smooth sheets with pressure cracks, and snow cover rising as the
-        temperature falls.
+    - Draw them with plan 2b's `pack_ice` at concentration 1, called with
+        a larger floe scale (lake ice is continuous: large, smooth sheets
+        with pressure cracks), and snow cover rising as the temperature
+        falls.
+    - Guard it the way `sea_ice_possible()` guards sea ice: a new uniform
+        flag that is set only when some lake or river is below 0 °C.
     - Clear blue-black ice shows where the snow is thin (by noise and
         wind exposure).
     - There are no ripples, flow or foam.
@@ -394,10 +431,10 @@ Verification of plan 2 found lakes staying liquid and turquoise at
     - a CPU port of the freeze function (fully frozen at -3 °C, open at
         1 °C, partial at -1 °C);
     - `getWaterSounds` returns null for a waterfall at -10 °C.
-- **Verification:** the plan 2 cold capture
-    (`meanTemperatureCelsius: -18`, `fjords` seed 2, camera 30 m above
-    the lake) shows a frozen, snow-covered lake with cracks, not open
-    water.
+- **Verification:** at `meanTemperatureCelsius: -18` on `fjords` seed
+    2, first find a lake with a top-down shot, because plan 2b changed
+    this terrain. Then capture from 30 m above it. It must show a frozen,
+    snow-covered lake with cracks, not open water.
 
 ### 5. Real waterfalls
 
@@ -647,9 +684,15 @@ tests for `setWaterMask` (wrong type, wrong length).
 
 ## Budgets
 
-- WASM growth: at most +20 KB gzipped.
-- GPU: water pass +0.6 ms at most with waterfalls in view; terrain +0.1
-    ms for wet banks.
+- WASM growth: a soft target of +20 KB gzipped, and a hard limit of
+    +40 KB. Above the soft target, the report must say what the extra
+    bytes buy and why it can't be done smaller.
+- GPU:
+    - water pass +0.6 ms at most with waterfalls in view;
+    - terrain +0.1 ms for wet banks.
+    - On the fixed-scene gate, only the water and terrain passes may
+        grow, and within these amounts, scaled from software ratios
+        against the terrain pass. Every other pass stays within 5 %.
 - River build: at most 300 ms at 512 x 512.
 
 ## Out of scope

@@ -91,9 +91,11 @@ its own.
 - Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
     start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
     (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
-    plan states how much it may add on top of that. Every byte must buy
-    real value that can't be done smaller. Generate data procedurally at
-    start-up instead of embedding it.
+    plan states how much it may add on top of that. Treat that figure as
+    a soft target, and double it as the hard limit, which must never be
+    exceeded. Every byte must buy real value that can't be done smaller;
+    above the soft target, the report must justify the extra bytes.
+    Generate data procedurally at start-up instead of embedding it.
 - Performance gate: from plan 2b onwards, run
     `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
     No pass may be more than 5 % slower than before, beyond what the plan's
@@ -184,6 +186,46 @@ GPU-time deltas, and any risks. Keep the report short.
     `group(1) binding(13)`, and the carved rivers).
 - Check that each exists. If one is missing, carry out that plan first;
     each is self-contained.
+
+### What plans 2b and 3 changed that this plan must match
+
+The terrain mesh was rebuilt in plan 2b, so section 1 must mirror today's
+`build_terrain_mesh_centred` in `render/terrain_mesh.rs` exactly:
+
+- **Bands:** vertex grid offsets come from
+    `band_sample_offset(grid_distance)`, with `LOD_BAND_WIDTH = 24`. The
+    step doubles every 24 grid steps out from the centre.
+- **Centre:** the centre sample is `centre.round()`. It is not in any
+    uniform yet; this plan adds it.
+- **Clamping at the skirt:** offsets are clamped to
+    `[-reach, size - 1 + reach]`, where
+    `reach = ceil(SKIRT_MESH_METRES / metres_per_sample)`.
+- **Inside the footprint,** a vertex takes the exact sample height,
+    `map.heights[index]`, with no filtering. Fetch it with `textureLoad`
+    from `height_texture`.
+- **Outside the footprint,** a vertex keeps its true position, and its
+    height is `skirt_ground(map, x, z)`: the clamped edge height, bilinear,
+    fed through `skirt_height` with `skirt_noise`. WGSL has matching
+    `skirt_height` and `skirt_noise`. `mesh_surface_height` must return the
+    same values there, so grass tufts at the very edge of the map are
+    grounded too.
+- **Triangles:** read the triangle split from the centred mesh's index
+    buffer. The index builder in `terrain_mesh.rs` splits each quad into
+    `(top_left, bottom_left, top_right)` and
+    `(top_right, bottom_left, bottom_right)`, so the shared diagonal runs
+    from bottom-left to top-right. Confirm that the centred mesh uses the
+    same builder, and mirror whatever it does.
+- **Placement:** trees and grass are placed only inside the footprint.
+    None on the skirt, and nothing beyond the coast that `edges: "coast"`
+    produces.
+- **Distance to water** comes from plan 3's `surface_texture_b.r`
+    (`@group(1) @binding(13)`, distance / 40 m). Its CPU field is the one
+    plan 3 builds with a two-pass distance transform; use that CPU copy
+    for placement rules.
+- **Frozen water** (plan 3, section 4b) is still water: the water
+    exclusion applies to frozen lakes and rivers too.
+- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
+    again at the start, after plan 3.
 
 ## Why trees float, sink and grow in the wrong places
 
@@ -423,7 +465,13 @@ meaning.
 
 ## Budgets
 
-- WASM growth: at most +6 KB gzipped.
+- WASM growth: a soft target of +6 KB gzipped, and a hard limit of
+    +12 KB. Above the soft target, the report must say what the extra
+    bytes buy and why it can't be done smaller.
+- **Performance gate** (`scripts/visual-check/fixed-scene.mjs`): only
+    the tree culling, trees, shadows and grass passes may grow, and within
+    the amounts below, scaled from software ratios against the terrain
+    pass. Every other pass stays within 5 %.
 - GPU: tree culling +0.05 ms (five height lookups per surviving tree);
     grass +0.1 ms at most.
 - Placement build time: at most +40 ms at 512 x 512.

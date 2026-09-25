@@ -93,9 +93,11 @@ its own.
 - Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
     start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
     (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
-    plan states how much it may add on top of that. Every byte must buy
-    real value that can't be done smaller. Generate data procedurally at
-    start-up instead of embedding it.
+    plan states how much it may add on top of that. Treat that figure as
+    a soft target, and double it as the hard limit, which must never be
+    exceeded. Every byte must buy real value that can't be done smaller;
+    above the soft target, the report must justify the extra bytes.
+    Generate data procedurally at start-up instead of embedding it.
 - Performance gate: from plan 2b onwards, run
     `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
     No pass may be more than 5 % slower than before, beyond what the plan's
@@ -167,7 +169,10 @@ GPU-time deltas, and any risks. Keep the report short.
 - Targets: branching structure, leaf cards and clumps, and variation and
     wind. Foliage lighting (translucency and crown self-shadowing) is not
     part of this plan. Keep the existing lighting as it is.
-- Size: procedural, at most +60 KB gzipped.
+- Size: procedural. A soft target of +60 KB gzipped, and a hard limit of
+    +120 KB. Every byte above the soft target must buy visible realism
+    that can't be had smaller: removing the hand-built species should
+    offset much of the growth engine.
 - Generated at start-up:
     - **Textures** (leaf-cluster atlases, bark, impostors) on the GPU.
     - **Geometry growth** (space colonisation) is inherently sequential,
@@ -184,9 +189,42 @@ GPU-time deltas, and any risks. Keep the report short.
 - **Plan 5** (vegetation density) must be merged. Check for
     `shaders/tree_generate.wgsl` and the cover texture. Near trees now
     come from streamed tiles, and this plan's LODs must fit its budgets.
-- **Plan 4** provides a `stunted` flag in the cover texture's alpha bit 7,
-    and grounding with a per-species root radius. Check that both exist.
-- If either plan is missing, carry it out first.
+- **Plan 4** provides grounding with a per-species `root_radius` in the
+    cull shader's species table, and the rules that mark trees `stunted`:
+    near the tree line, on exposed ridges, and in `alpineTransition`.
+- **Plan 5** carries `stunted` in the cover texture's alpha bit 7, and
+    into every generated instance: the far set and the near tiles.
+    - Check that the instance data has a stunted bit.
+    - If plan 5 stored it only in the cover texture, add it to the
+        instance's packed variant and age word in this plan. Both
+        generators must set it from the same cover-texture bit, and a test
+        must check that they agree.
+- If any of plans 4 and 5 is missing, carry it out first (it will
+    require plans 1, 2, 2b and 3).
+
+### What earlier plans built that this plan must respect
+
+- **Snow on trees** (plan 2): trees on cold ground get snow on their
+    upper surfaces through the existing snow path in `trees.wgsl`, driven
+    by permanent snow and weather snow cover. Keep it working on the new
+    meshes. Snow settles by the geometric (card or branch) normal facing
+    up, not the bent foliage normal: otherwise whole crowns turn white.
+    Add a before and after capture at `meanTemperatureCelsius: -3`.
+- **Dwarf shrubs** (plans 2 and 4): tundra (`iceArctic` fringe) and
+    `alpineTransition` plant `Shrub` at 0.35 to 0.6 scale. Give shrubs a
+    real dwarf, prostrate form: low (0.3 to 0.8 m), wide, and dense, with
+    small leaves. Use it for those biomes and for young shrubs. The
+    envelope is a flattened dome, and the tropism is sideways. Scaling
+    down the ordinary shrub doesn't read as tundra.
+- **Stunted conifers** (plan 4) in `alpineTransition` and near the tree
+    line use the krummholz variant in section 4.
+- **Grounding:** the root-flare depth below the origin (section 1) must
+    match plan 4's `root_radius` sinking rule, so trunks never show a gap
+    on slopes. Test it against plan 4's grounding function.
+- **The terrain skirt** (plan 2b) never carries trees. There is nothing
+    to do here, but don't add fallback placement outside the footprint.
+- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
+    again at the start, after plan 5.
 
 ## Current state
 
@@ -449,12 +487,18 @@ species with the custom mesh, as it replaces the single mesh today.
     - at plan 5's density 4 in the jungle, the trees pass is still within
         plan 5's 5 ms budget;
     - impostor memory is at most 64 MB.
-- Size: WASM gzipped growth at most +60 KB. Removing the old builders
+- Size: WASM gzipped growth within the soft target of +60 KB, and never
+    above the hard limit of +120 KB. Removing the old builders
     should offset part of it.
 
 ## Budgets
 
-- WASM growth: at most +60 KB gzipped.
+- WASM growth: a soft target of +60 KB gzipped, and a hard limit of
+    +120 KB. Above the soft target, the report must say what the extra
+    bytes buy and why it can't be done smaller.
+- **Performance gate** (`scripts/visual-check/fixed-scene.mjs`): only
+    the trees, shadows and tree culling passes may grow, and within the
+    per-frame budgets above. Every other pass stays within 5 %.
 - Start-up: growth at most 250 ms in WASM; texture and impostor bakes at
     most 300 ms on the GPU.
 - GPU per frame: as above.

@@ -40,3 +40,6 @@ GPU:
     bytes, reaching 276,951.
 - Every byte must buy real value that can't be done smaller, without lag,
     frame drops, regressions or any loss of realism.
+- From plan 3 onwards, each plan's size figure is a soft target, and
+    double it is the hard limit. Plan 2b added 8,560 bytes (within its
+    8,900), reaching 285,511.

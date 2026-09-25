@@ -93,9 +93,11 @@ its own.
 - Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
     start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
     (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
-    plan states how much it may add on top of that. Every byte must buy
-    real value that can't be done smaller. Generate data procedurally at
-    start-up instead of embedding it.
+    plan states how much it may add on top of that. Treat that figure as
+    a soft target, and double it as the hard limit, which must never be
+    exceeded. Every byte must buy real value that can't be done smaller;
+    above the soft target, the report must justify the extra bytes.
+    Generate data procedurally at start-up instead of embedding it.
 - Performance gate: from plan 2b onwards, run
     `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
     No pass may be more than 5 % slower than before, beyond what the plan's

@@ -93,9 +93,11 @@ its own.
 - Tiny files: measure the gzipped `dist/pkg/vista_wasm_bg.wasm` at the
     start of the plan with `gzip -9 -c dist/pkg/vista_wasm_bg.wasm | wc -c`
     (it was 237,820 bytes before plan 1 and 276,951 after plan 2). Each
-    plan states how much it may add on top of that. Every byte must buy
-    real value that can't be done smaller. Generate data procedurally at
-    start-up instead of embedding it.
+    plan states how much it may add on top of that. Treat that figure as
+    a soft target, and double it as the hard limit, which must never be
+    exceeded. Every byte must buy real value that can't be done smaller;
+    above the soft target, the report must justify the extra bytes.
+    Generate data procedurally at start-up instead of embedding it.
 - Performance gate: from plan 2b onwards, run
     `node scripts/visual-check/fixed-scene.mjs` before and after the plan.
     No pass may be more than 5 % slower than before, beyond what the plan's
@@ -180,7 +182,37 @@ GPU-time deltas, and any risks. Keep the report short.
     `mesh_surface_height` in `crates/vista_wasm/src/shaders/common.wgsl`,
     the `SpeciesNiche` table in `render/flora.rs`, and cull-pass
     grounding.
-- Plan 4 depends on plans 1 to 3. If any is missing, carry it out first.
+- Plan 4 depends on plans 1, 2, 2b and 3. If any is missing, carry it
+    out first.
+
+### What earlier plans built that this plan must respect
+
+- **Group 1 bindings:**
+    - 12 is the surface texture (plan 2: temperature, moisture, permanent
+        snow, biome index in alpha);
+    - 13 is `surface_texture_b` (plan 3: distance to water in r);
+    - this plan's cover texture takes 14.
+- **The terrain mesh continues onto a skirt beyond the map** (plan 2b).
+    The lattice, the far set, the near tiles and the grass tiles cover
+    only the height-map footprint. Tiles that fall outside are skipped,
+    not generated empty. The cover texture is 0 outside, so the canopy
+    shell draws nothing there (section 4).
+- **Biomes** include `alpineTransition` (15), `lowerSnowyPeaks` (16),
+    `upperSnowyPeaks` (17) and `iceArctic` (18). Plan 4's niches and
+    exclusions already handle them: shrubs and stunted conifers in the
+    transition band, and nothing on snowy peaks. The cover-texture bake
+    must use plan 4's suitability unchanged, so the far set, the near
+    tiles and exports all agree.
+- **Frozen lakes and rivers** (plan 3) are still water, so they are
+    excluded like open water.
+- **Lens drops** (plan 2b) live in the present pass. They're unaffected,
+    but the present pass must stay within 5 % on the performance gate.
+- **`pacing.rs`** is unchanged since the frame-rate work: `FrameClock`,
+    and `ResolutionController::update(interval, frame_rate, range)`. Add
+    `detail_pressure()` alongside, without changing `update`'s behaviour.
+    The existing pacing tests must keep passing untouched.
+- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
+    again at the start, after plan 4.
 
 ## Current state
 
@@ -488,7 +520,14 @@ export interface RenderQualityOptions {
 
 ## Budgets
 
-- WASM growth: at most +15 KB gzipped.
+- WASM growth: a soft target of +15 KB gzipped, and a hard limit of
+    +30 KB. Above the soft target, the report must say what the extra
+    bytes buy and why it can't be done smaller.
+- **Performance gate** (`scripts/visual-check/fixed-scene.mjs`, at the
+    default density): at most +0.3 ms in total, scaled from software
+    ratios against the terrain pass. Only the tree culling, trees,
+    shadows, grass and terrain (forest floor) passes may grow. Every other
+    pass stays within 5 %.
 - GPU: as above. Presets hold 60 FPS at 1080p on a mid-range GPU at
     density 4.
 
