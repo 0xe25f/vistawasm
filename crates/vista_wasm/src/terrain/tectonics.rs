@@ -392,8 +392,14 @@ pub fn tectonic_base(
 
   // Range belts lie within the landmass rather than along its shores, so
   // they stand where the land is wide enough to hold them. Ranges that
-  // cover nearly all the land have no choice of where to lie.
-  let inland_bias = 2.7 * (1.0 - landform.range_coverage);
+  // cover nearly all the land have no choice of where to lie. With open
+  // edges the land goes on past the border, which only looks like the
+  // deepest interior, so the belts are left where the noise puts them.
+  let inland_bias = if coast {
+    2.7 * (1.0 - landform.range_coverage)
+  } else {
+    0.0
+  };
 
   for ((value, d), is_land) in mask_noise.iter_mut().zip(&coast_distance).zip(&land) {
     if *is_land {

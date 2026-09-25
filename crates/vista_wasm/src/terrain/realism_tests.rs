@@ -475,13 +475,13 @@ fn open_edges_are_pinned_bit_for_bit() {
   // `edges` existed; the others were recorded when ranges were raised to
   // real relief, and pin it since.
   let expected = [
-    (LandformKind::Continental, 0x2777_7cc4_0099_c7cf),
-    (LandformKind::Alpine, 0xf9a0_06c8_6bbd_7581),
+    (LandformKind::Continental, 0x8adc_0859_9867_d28c),
+    (LandformKind::Alpine, 0xfcec_7956_d926_4d8f),
     (LandformKind::RollingHills, 0x615d_6e68_97e4_838b),
-    (LandformKind::Archipelago, 0x33db_44b0_ae46_d738),
-    (LandformKind::MesaDesert, 0xe62f_c432_b961_b6e7),
-    (LandformKind::Fjords, 0xe36d_af8b_de90_6ba7),
-    (LandformKind::VolcanicIsland, 0x80d3_8cc4_458f_31d3),
+    (LandformKind::Archipelago, 0x9190_a274_f1e4_e33e),
+    (LandformKind::MesaDesert, 0xc968_68c0_06fd_895e),
+    (LandformKind::Fjords, 0x164e_bf47_b38d_8dd0),
+    (LandformKind::VolcanicIsland, 0x72e2_78c5_2a3c_2d5a),
   ];
 
   for (landform, hash) in expected {

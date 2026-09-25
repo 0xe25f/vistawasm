@@ -175,8 +175,9 @@ for changed defaults.
   its own steepness allowance (alpine and fjords 0.55, archipelago and
   volcanic islands 0.4, continental 0.35, mesa desert 0.3), range belts
   stand on a massif that stream power carves, lie within the land rather
-  than along its shores, and keep steep river profiles. Glacial troughs
-  are over-deepened without lowering the ridges beside them. At 512 x 512
+  than along its shores on coast-ringed maps, and keep steep river
+  profiles. Glacial troughs are over-deepened in steps, with shallow
+  basins behind them, without lowering the ridges beside them. At 512 x 512
   and 12 m, alpine maps now reach p99 heights of 1,500 m and more with
   snowy peaks on every seed, fjords 1,100 m and more, and continental
   maps peak between 900 and 1,400 m.

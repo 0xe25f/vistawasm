@@ -54,7 +54,9 @@ the numbers each stage uses.
   ranges run 40 iterations to the steady state between uplift and erosion,
   with threshold hillslopes and glacial `n = 2` carving under ice. Valleys
   then get flat floors, glacial troughs are over-deepened (the sea floods
-  them as fjords), and the drainage area is kept in `HeightMap::aux`.
+  them as fjords) by a depth that grows smoothly down each channel, so
+  their floors step down with shallow basins rather than rows of pits,
+  and the drainage area is kept in `HeightMap::aux`.
 - **Stage C, detail** (`terrain/fractal.rs`). Bicubic upsampling to full
   resolution, derivative-damped fBm limited by slope and ruggedness, then
   the shape masks and vertical scaling.

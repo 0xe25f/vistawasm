@@ -655,12 +655,21 @@ pub fn plane_valley_floors(
         continue;
       }
 
+      // Ice deepens the trough's flat floor, fading out at its walls; the
+      // walls rise from the undeepened level, so the ridges between
+      // troughs keep their height and the lower walls steepen. A channel
+      // keeps its own depth, which grows smoothly downstream, and the
+      // floor beside it takes the deepest on offer, which is the nearest
+      // channel's. Taking the depth of whichever cell gave the lowest
+      // floor, faded by the distance up the channel, would dip the bed
+      // into a row of round basins.
+      if area[n] < cell_area * FLOODPLAIN_MIN_CELLS {
+        let deeper = cell.deepen * (1.0 - smooth(cell.width * 0.6, cell.width, travelled));
+        trough[n] = trough[n].max(deeper);
+      }
+
       if level < floor[n] {
         floor[n] = level;
-        // Ice deepens the trough's flat floor, fading out at its walls;
-        // the walls rise from the undeepened level, so the ridges between
-        // troughs keep their height and the lower walls steepen.
-        trough[n] = cell.deepen * (1.0 - smooth(cell.width * 0.6, cell.width, travelled));
         heap.push(FloorCell {
           floor: -level,
           index: neighbour,
@@ -873,6 +882,45 @@ mod tests {
 
     let exponent = (samples * sxy - sx * sy) / (samples * sxx - sx * sx);
     assert!((0.5..=0.6).contains(&exponent), "Hack exponent {exponent}");
+  }
+
+  #[test]
+  fn glacial_troughs_step_down_without_rows_of_deep_basins() {
+    // A straight valley falling east, its channel along the middle row,
+    // with drainage area growing downstream.
+    let (n, spacing, deepening) = (64usize, 40.0, 150.0);
+    let cell = (spacing * spacing) as f32;
+    let mid = n / 2;
+    let mut heights = vec![0.0f64; n * n];
+    let mut area = vec![cell; n * n];
+
+    for y in 0..n {
+      for x in 0..n {
+        let across = (y as f64 - mid as f64).abs();
+        heights[y * n + x] = 50.0 + 12.0 * (n - x) as f64 + 40.0 * across;
+      }
+    }
+
+    for x in 0..n {
+      area[mid * n + x] = cell * 20.0 * (x + 1) as f32;
+    }
+
+    plane_valley_floors(n as u32, spacing, &mut heights, &area, 1.0, deepening, 0.7);
+
+    let bed: Vec<f64> = (1..n - 1).map(|x| heights[mid * n + x]).collect();
+    assert!(bed[bed.len() - 1] < bed[0] - deepening, "{bed:?}");
+
+    // Real troughs step down, with shallow basins behind the steps. The
+    // bed never climbs far above any point upstream of it.
+    for (x, level) in bed.iter().enumerate() {
+      let rise = bed[x..]
+        .iter()
+        .fold(0.0f64, |rise, next| rise.max(next - level));
+      assert!(
+        rise < deepening * 0.15,
+        "a basin {rise} m deep at {x}: {bed:?}"
+      );
+    }
   }
 
   #[test]
