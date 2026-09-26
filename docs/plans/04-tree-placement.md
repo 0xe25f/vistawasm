@@ -184,6 +184,9 @@ GPU-time deltas, and any risks. Keep the report short.
 - **Plan 2b** (map edges with a skirt, and the performance gate).
 - **Plan 3** (the distance-to-water field in `surface_texture_b.r` at
     `group(1) binding(13)`, and the carved rivers).
+- **Plan 3b** (rivers at landscape scale). Check for
+    `RiverOptions.riparian`, `MAT_GRAVEL` in `terrain/biomes.rs`, and
+    `ensure_pipelines` and `warm_up` in `render/gpu.rs`.
 - Check that each exists. If one is missing, carry out that plan first;
     each is self-contained.
 
@@ -219,13 +222,81 @@ The terrain mesh was rebuilt in plan 2b, so section 1 must mirror today's
     None on the skirt, and nothing beyond the coast that `edges: "coast"`
     produces.
 - **Distance to water** comes from plan 3's `surface_texture_b.r`
-    (`@group(1) @binding(13)`, distance / 40 m). Its CPU field is the one
-    plan 3 builds with a two-pass distance transform; use that CPU copy
-    for placement rules.
+    (`@group(1) @binding(13)`, distance / 40 m). Its CPU copy is
+    `RiverNetwork::wet` (`WetBanks`); use that for placement rules.
+    `surface_texture_b.g` is snow and ice cover, and b and a are
+    reserved.
 - **Frozen water** (plan 3, section 4b) is still water: the water
     exclusion applies to frozen lakes and rivers too.
-- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
-    again at the start, after plan 3.
+
+### What plan 3b built that this plan must match
+
+Verified on `realism` after plan 3b. The WASM is 348,926 bytes gzipped,
+and 248 Rust and 44 TypeScript tests pass.
+
+- **A reference for the mesh height already exists.**
+    `render/water.rs` `mesh_height_at` gives the full-detail band's
+    triangle interpolation, splitting each sample square from top-right to
+    bottom-left, and rivers use it to sit on the drawn ground.
+    - Move it into `render/terrain_mesh.rs`, and generalise it into
+        `mesh_surface_height` for every band and the skirt (section 1).
+    - Make `water.rs` call the shared function, so there is exactly one
+        copy of the rule in Rust and one in WGSL.
+    - The existing river tests must still pass unchanged.
+- **Tree placement already jitters, but grounds trees wrongly.**
+    `render/flora.rs` `build_tree_instances` now:
+    - walks a stride grid, with up to 2 candidates per cell (`per_cell`)
+        on fine grids;
+    - jitters each candidate's position by up to half a cell;
+    - moves trees next to a channel back to the sample centre (the
+        `beside` rule).
+    But the height stays that of the rounded sample. On a 30-degree
+    slope with 12 m cells, trees therefore float or sink by up to about
+    3.5 m, even near the camera. This is the first bug to fix (section 1
+    fixes it on the GPU, and section 3 on the CPU).
+- **Thinning over the instance cap makes stripes.** When candidates
+    exceed `max_instances`, `build_tree_instances` keeps every Nth
+    candidate in row order (`step_by`), which thins whole rows. Replace it
+    with thinning by hashed rank: keep the candidates whose hash is below
+    `max_instances / count`. It is deterministic and spatially even.
+    Add a test that the kept set shows no row striping (the row-to-row
+    variance of the kept count is within Poisson noise).
+- **Channels narrower than a sample aren't in the channel mask.**
+    - Plan 3b draws small streams at their true size, including tight
+        loops, as reaches (`RiverNetwork::reaches`, `terrain/channels.rs`
+        `Reach` with `points`) and bank strips.
+    - The mask and the `beside` test miss these streams, so trees can
+        stand in them.
+    - `water_sounds.rs` already builds a spatial grid of river segments.
+        Reuse it, or share its builder, as a channel-distance query: the
+        distance to the nearest drawn centreline, minus that point's half
+        width.
+    - Exclude trees within `half width + 1.5 m` of every drawn channel,
+        brooks included, and within `half width + 1 m` of plunge pools.
+        Remove the `beside` snap: with the exact grounding and exclusion,
+        trees stand where they fall.
+- **The riparian field** (`RiverNetwork::riparian`, 0 to 255 per
+    sample, from `riparian_field`):
+    - Classification already adds `0.45 x value` to moisture.
+    - 3b raises tree density by up to `1.5 x value` in savannah, grassy
+        meadows and mesa-desert ground.
+    - Trees must never grow on gravel or sand bars, or below the bank
+        top.
+    Keep all three behaviours. Section 4's water term must use the
+    riparian value, and must not add its own distance-based moisture on
+    top, or moisture near water would be counted twice.
+- **Bed materials** (`RiverNetwork::bed`, and `MAT_GRAVEL = 10`): no
+    trees where gravel weight is above 0.4, or on bar samples from `bed`.
+- **Pipelines** are created on demand through `Pipelines`, `Needs`,
+    `ensure_pipelines` and a one-per-frame `warm_up`. This plan changes the
+    tree cull and grass shaders but adds no pipelines. If a new one proves
+    necessary, it goes through `Needs`, and the default capture's
+    `first frame ms` must not rise by more than 5 %.
+- **Screen-space reflections** (`reflections: "screen"`) reflect a copy
+    of the scene, so grounded trees are reflected grounded. Check it in
+    verification: a riverside tree's reflection meets its trunk.
+- **Clippy:** count the warnings at the start, and add none.
+
 
 ## Why trees float, sink and grow in the wrong places
 
@@ -260,6 +331,61 @@ Confirm each cause with a test or capture before fixing it.
     a later carve.
 
 ## Design
+
+### 0. Carried over from plan 3b
+
+Plan 3b's report left three things open. They sit where trees meet water,
+so they are fixed here, first, with before and after measurements.
+
+1. **The mesa river build is over budget.**
+    - The in-browser `"rivers"` phase on `mesaDesert` with open edges and
+        a 123 m³/s inflow takes 390 to 413 ms, against the 300 ms limit.
+        The base plan 3 build already took 288 to 298 ms there.
+    - Profiling found the extra 40 ms (native) in the small-stream loops.
+    - Bring it to 300 ms or less, without removing or flattening any
+        loop. Profile first. Likely levers:
+        - build loop geometry once per reach, not per segment;
+        - reuse the channel spatial grid instead of rescanning;
+        - avoid per-point allocation;
+        - skip loop work on reaches whose samples the loops can't
+            change.
+    - Output must stay bit-identical: add a test that hashes the river
+        network (heights, reaches, vertices) for a fixed mesa seed, before
+        and after.
+    - The continental case (250 to 278 ms today) must not get slower.
+2. **Bank-strip vertex counts can explode on coarse maps.**
+    - A flat coastal plain reached about 1.5 million bank-strip vertices,
+        after a device loss that 3b worked around by capping loop points
+        per map.
+    - That many vertices risks frame drops on phones and integrated GPUs,
+        which breaks the solid 60 FPS rule.
+    - Give bank strips a hard budget of 300,000 vertices per map:
+        - Strips are built once, not per view, so simplify them when
+            they are built: a curvature-aware decimation merges consecutive
+            segments where the heading changes by less than 4 degrees.
+        - If still over budget, lower strip resolution proportionally on
+            the least visible streams first: the narrowest, slowest, and
+            those furthest from the map centre.
+    - Test that the synthetic coastal plain stays within 300,000, and that
+        the continental reference map loses no visible strip (the pixel
+        difference in the reference shot is within 0.05 %).
+3. **Ground by water is too dark.**
+    - 3b's report says the extra bankside moisture darkens lakeside
+        ground, and that plan 3's brown mud band along small streams
+        remains on 30 m maps.
+    - Real riverbanks are greener and fresher, not darker; mud shows
+        only as a thin wet margin at the waterline.
+    - Fix it by:
+        - capping the wet-bank darkening to the first 2 m from the water
+            edge (it currently reaches further on coarse maps, because one
+            sample spans 30 m);
+        - scaling the mud band to the stream's true width from
+            `RiverNetwork::reaches`, not the sample size;
+        - letting riparian moisture raise greenness and saturation, not
+            lower albedo.
+    - Verify with before and after close-ups of a lake shore and a 30 m
+        map's small stream from 40 m. The ground by water must read as
+        fresh green turf with a thin darker margin.
 
 ### 1. Ground at the rendered surface (GPU)
 
@@ -306,13 +432,24 @@ Confirm each cause with a test or capture before fixing it.
 
 ### 3. Jittered, sub-cell candidates
 
-- Each candidate cell tries one tree at a jittered position:
-    `(x + j1, z + j2)` with `j` in [-0.45, 0.45] cells, from the existing
-    hash.
-- The CPU placement height is the bilinear height at that point, used
-    for rules and culling bounds only. The GPU grounds it exactly.
-- Plan 5 raises the number of candidates per cell. Keep the candidate
-    loop written so the count per cell is a parameter (1 in this plan).
+- Keep today's stride grid, `per_cell` (up to 2 candidates per cell on
+    fine grids) and jitter of up to ±0.45 of a cell. They are plan 3's,
+    and the tree count must not change noticeably.
+- **Fix the height.** The CPU height of a candidate is
+    `mesh_surface_height` at its jittered position for the full-detail
+    band: the triangle interpolation `mesh_height_at` does today. It is
+    not the rounded sample's height.
+    - Rules (slope, substrate, suitability) use the sample under the
+        jittered position, rounded as today.
+    - Culling bounds use the corrected height. The GPU then grounds the
+        tree exactly for whatever band is drawn (section 1).
+- **Remove the `beside` snap.** It moved trees next to a channel back to
+    the sample centre. The channel exclusion (see "What plan 3b built"),
+    applied at the jittered position, replaces it.
+- Replace `step_by` thinning with hash-rank thinning (see "What plan 3b
+    built").
+- Plan 5 replaces this loop with a world lattice. Keep the candidate
+    count per cell a parameter.
 
 ### 4. Ecological rules
 
@@ -330,13 +467,25 @@ Confirm each cause with a test or capture before fixing it.
 - Suitability at a candidate is a product of factors, each from 0 to 1:
     - **Temperature:** a triangular response between min, optimum and max.
     - **Moisture:** effective moisture
-        `= surface moisture + 0.25 x saturate(ln(drainage area) / 12) + aspect term + water-distance term`.
+        `= surface moisture + 0.25 x saturate(ln(drainage area) / 12) + aspect term + water term`.
+        - Surface moisture already includes plan 3b's `0.45 x riparian`
+            near rivers and lakes.
+        - Drainage area comes from plan 3's full-resolution accumulation
+            (`terrain/hydrology.rs`). `HeightMap.aux` is coarse and is
+            missing for imported maps.
         - Aspect term: slopes facing away from the sun's mean position
             (poleward in the current `SunOptions` hemisphere, or north by
             default) keep up to 0.12 more moisture, in proportion to the
             slope.
-        - Water-distance term: up to +0.2 within 30 m of water, and up to
-            +0.35 for species with water affinity 1.
+        - Water term: `0.35 x water_affinity x riparian`. It is
+            positive for water-loving species (cypress), and negative for
+            dry-ground species (acacia). It holds only the species
+            preference. Do not add a separate distance-to-water moisture:
+            the riparian value already carries it, and it must not be
+            counted twice.
+        - Keep plan 3b's riparian density boost of up to `1.5 x riparian`
+            in savannah, grassy meadows and mesa-desert ground, as a
+            multiplier on suitability.
     - **Slope:** 1 up to 60 % of the maximum slope, falling to 0 at the
         maximum. Use the fine per-sample normal, not the 4-neighbour
         stencil.
@@ -349,7 +498,12 @@ Confirm each cause with a test or capture before fixing it.
             shrink (scale x 0.5 to 1) and flag `stunted` for plan 6's
             krummholz shaping (an unused bit here).
     - **Substrate** (hard exclusions):
-        - water, and within `river width / 2 + 1.5 m` of a channel;
+        - water, and within `half width + 1.5 m` of any drawn channel
+            centreline, including streams narrower than a sample and
+            their loops (the channel-distance query in "What plan 3b
+            built"), and within `half width + 1 m` of plunge pools;
+        - gravel weight above 0.4, any bar sample in
+            `RiverNetwork::bed`, and anything below the bank top;
         - sand weight above 0.5, unless the species is `beach_ok`;
         - rock weight above 0.6;
         - permanent snow above 0.5;
@@ -409,25 +563,29 @@ meaning.
     more than 0.3 m from `mesh_surface_height` (via a temporary
     comparison in the cull shader). Remove the flag before committing,
     and keep the number for the report.
-2. Add `mesh_surface_height` (Rust and WGSL) and the uniform, with the
-    parity test.
-3. Add cull-pass grounding with root radius, and grass grounding.
-4. Add jittered candidates.
-5. Add the species niche table, the suitability factors, exposure,
+2. Section 0: the mesa river build, the bank-strip budget and bank
+    shading, each with its test and before and after numbers or shots.
+3. Move `mesh_height_at` into `render/terrain_mesh.rs`, and generalise
+    it into `mesh_surface_height` (Rust and WGSL, every band and the
+    skirt) with the uniform and the parity test. Switch `water.rs` to it.
+4. Add cull-pass grounding with root radius, and grass grounding.
+5. Fix the jitter height, remove the `beside` snap, add the
+    channel-distance exclusion, and replace the thinning.
+6. Add the species niche table, the suitability factors, exposure,
     exclusions, clustering, the tree line and stunting.
-6. Add `TreePlacement.ground`, with pack/unpack tests.
-7. Fix the placement order in `engine.rs`, with a test.
-8. Demo: none needed beyond existing controls. Add a "Ground
+7. Add `TreePlacement.ground`, with pack/unpack tests.
+8. Fix the placement order in `engine.rs`, with a test.
+9. Demo: none needed beyond existing controls. Add a "Ground
     hand-placed trees" checkbox to the grove button's options so the
     feature is visible.
-9. Docs:
+10. Docs:
     - `docs/vegetation.md`: how placement works, the niche table, and
         grounding;
     - `docs/hooks.md` (`ground`);
     - `docs/architecture.md` (grounding in the cull pass, and the uniform);
     - `CHANGELOG.md` (Fixed: floating and buried trees; Changed:
         placement).
-10. Verify, then commit and push.
+11. Verify, then commit and push.
 
 ## Tests
 
@@ -442,7 +600,22 @@ meaning.
 - **Aspect:** on a synthetic cone at moderate moisture, the shaded
     (poleward) half holds at least 20 % more trees than the sunny half.
 - **Water:** density within 30 m of a synthetic river is at least 15 %
-    higher than 200 m away, at equal moisture.
+    higher than 200 m away. The riparian boost holds (up to 1.5 x in
+    savannah beside a river).
+    - Effective moisture beside the river equals the classification's
+        moisture plus only the species' water term: no double counting.
+- **Jitter grounding:** on a synthetic 30-degree plane with 12 m cells,
+    every generated tree's CPU height is within 0.05 m of the full-detail
+    `mesh_surface_height` at its jittered position. Today's code is off by
+    metres; record the old error in the test comment.
+- **Small streams:** on a synthetic plain with a 2 m wide looping brook
+    (narrower than the 12 m samples), no tree lies within
+    `half width + 1.5 m` of its centreline, including inside loops.
+- **Bars and gravel:** none on gravel weight above 0.4 or on `bed` bars.
+- **No stripes:** with an instance cap at half the candidate count, the
+    per-row kept counts vary within Poisson noise, with no row runs.
+- **Shared height rule:** `water.rs` uses the shared
+    `mesh_surface_height`, and plan 3's river tests pass unchanged.
 - **Clustering:** the Clark-Evans nearest-neighbour ratio is below 0.9
     (clustered) on a uniform-suitability plain.
 - **Order:** after toggling rivers and after `setWaterMask`, every
@@ -459,7 +632,13 @@ meaning.
     not float.
 - A beach, a river bank, a cliff band and a glacier edge at 40 m: no
     trees where excluded.
-- A top-down forest at 300 m: groves and edges, no grid.
+- A top-down forest at 300 m: groves and edges, no grid, no stripes.
+- **Riverside trees at 25 m:** trees reach the bank but never stand in
+    any channel, including small-stream loops and brooks. They're absent
+    from gravel bars. Their screen-space reflections meet their trunks.
+- **Plan 3b's verification shots,** 1 (boreal valley), 4 (canyon) and 5
+    (meadow): no trees in water, and green banks as intended.
+- **The mesa river-build time** in the generation phases: at most 300 ms.
 - The reference shots render with no errors. The forest look changes as
     intended.
 
@@ -475,6 +654,13 @@ meaning.
 - GPU: tree culling +0.05 ms (five height lookups per surviving tree);
     grass +0.1 ms at most.
 - Placement build time: at most +40 ms at 512 x 512.
+- River build: at most 300 ms in the browser on every map, including
+    `mesaDesert` with an open edge and an inflow (section 0).
+- Bank strips: at most 300,000 vertices on any map.
+- **Solid 60 FPS is a hard target.** The whole frame at 1080p on a
+    mid-range GPU must stay within 12 ms in the default scene and 14 ms in
+    rain. Estimate it from the fixed-scene ratios against the terrain
+    pass. No pass on the gate may grow beyond this plan's amounts.
 
 ## Out of scope
 

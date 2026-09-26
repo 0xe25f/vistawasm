@@ -210,6 +210,21 @@ GPU-time deltas, and any risks. Keep the report short.
     full-resolution D8 accumulation.
 - If any is missing, carry it out first (each is self-contained).
 - This plan comes before plan 6. It adds no tree changes.
+- **From plan 3b:**
+    - Gravel owns material slot 10 and river beds (`RiverNetwork::bed`).
+        Scree must not overwrite bed materials.
+    - Rock-walled rapids already give rock banks. Keep their look and
+        let the soil model agree with them, not fight them.
+    - Pipelines are created on demand (`Needs`, `ensure_pipelines`,
+        `warm_up`). The boulder pipeline goes through `Needs` (boulders on
+        and in view), and the default capture's `first frame ms` must not
+        rise by more than 5 %.
+    - Boulders must avoid every drawn channel, including streams
+        narrower than a sample. Reuse plan 5's binned channel segments
+        in the boulder generator.
+- **Solid 60 FPS is a hard target.** The whole frame at 1080p on a
+    mid-range GPU stays within 12 ms in the default scene and 14 ms in
+    rain.
 
 ## Design
 

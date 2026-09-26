@@ -202,8 +202,8 @@ GPU-time deltas, and any risks. Keep the report short.
 - **Plan 5b** (rock outcrops and scree) should be merged first: check
     for `terrain/soil.rs` and `MAT_SCREE`. Trees don't depend on it, but
     the verification shots assume today's terrain look.
-- If any of plans 4 and 5 is missing, carry it out first (it will
-    require plans 1, 2, 2b and 3).
+- If any of plans 4, 5 and 5b is missing, carry it out first (they
+    require plans 1, 2, 2b, 3 and 3b).
 
 ### What earlier plans built that this plan must respect
 
@@ -226,8 +226,42 @@ GPU-time deltas, and any risks. Keep the report short.
     on slopes. Test it against plan 4's grounding function.
 - **The terrain skirt** (plan 2b) never carries trees. There is nothing
     to do here, but don't add fallback placement outside the footprint.
-- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
-    again at the start, after plan 5.
+- The WASM was 348,926 bytes gzipped after plan 3b. Measure it again at
+    the start, after plan 5b.
+
+### What plan 3b built that this plan must respect
+
+- **Pipelines are created on demand** (`Pipelines`, `Needs`,
+    `ensure_pipelines`, one-per-frame `warm_up`).
+    - Trees are already the largest start-up cost: 12.2 s of the default
+        capture's first frame under software WebGPU (tree, flora and
+        impostor pipelines).
+    - The LOD pipelines, the impostor bake and the leaf-atlas generation
+        in this plan must not make that worse. The default capture's
+        `first frame ms` must not rise by more than 5 %; aim to lower it.
+        - LOD0, LOD1 and shadow share one shader module, varied by
+            override constants.
+        - The impostor bake pipeline is created for the bake and dropped
+            afterwards, as plan 3b does.
+        - Variants may grow lazily after the first frame, one per frame,
+            alongside `warm_up`.
+- **Screen-space reflections** copy the scene after the opaque passes, at
+    half resolution. Trees at every LOD, and impostors, must be drawn
+    before the copy, so lakes and rivers reflect them. The reflection
+    must show the new silhouettes, not blobs; check it on plan 3b's boreal
+    valley or a forested lake shore.
+- **Trees by water:** plan 3b's riparian rules put trees right up to
+    river banks. Near water, prefer young and mature age classes with
+    fuller crowns leaning slightly over the water, as bank trees reach
+    for the light over a channel.
+    - Keep this within the lean rule in section 4: up to 6 degrees,
+        biased towards the water within 8 m of a channel's centreline,
+        from plan 4's channel-distance query.
+    - Roots stay grounded.
+- **Trees are already the most expensive pass** on the fixed scene
+    (1,143 ms against terrain's 899 ms, software). With a solid 60 FPS as
+    a hard target, this plan's LOD1 and impostors must pay for its richer
+    LOD0 (see Budgets).
 
 ## Current state
 
@@ -485,8 +519,9 @@ species with the custom mesh, as it replaces the single mesh today.
     contact does not move.
 - The reference shots render with no errors.
 - GPU:
-    - the trees pass at the default density is at most +0.8 ms compared
-        with before (scaled estimate);
+    - at the default density, trees plus shadows plus tree culling are at
+        most +0.4 ms compared with before (scaled estimate). LOD1 and the
+        impostors must recover most of LOD0's extra cost;
     - at plan 5's density 4 in the jungle, the trees pass is still within
         plan 5's 5 ms budget;
     - impostor memory is at most 64 MB.
@@ -505,6 +540,13 @@ species with the custom mesh, as it replaces the single mesh today.
 - Start-up: growth at most 250 ms in WASM; texture and impostor bakes at
     most 300 ms on the GPU.
 - GPU per frame: as above.
+- **Solid 60 FPS is a hard target.**
+    - The whole frame at 1080p on a mid-range GPU stays within 12 ms in
+        the default scene and 14 ms in rain, and within 14 ms at plan 5's
+        density 4 in the inner jungle.
+    - Report the estimated totals from the fixed-scene ratios.
+- `first frame ms` in the default capture: at most +5 %, and ideally
+    lower.
 
 ## Out of scope
 

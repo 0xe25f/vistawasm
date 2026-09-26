@@ -182,15 +182,16 @@ GPU-time deltas, and any risks. Keep the report short.
     `mesh_surface_height` in `crates/vista_wasm/src/shaders/common.wgsl`,
     the `SpeciesNiche` table in `render/flora.rs`, and cull-pass
     grounding.
-- Plan 4 depends on plans 1, 2, 2b and 3. If any is missing, carry it
-    out first.
+- Plan 4 depends on plans 1, 2, 2b, 3 and 3b. If any is missing, carry
+    it out first.
 
 ### What earlier plans built that this plan must respect
 
 - **Group 1 bindings:**
     - 12 is the surface texture (plan 2: temperature, moisture, permanent
         snow, biome index in alpha);
-    - 13 is `surface_texture_b` (plan 3: distance to water in r);
+    - 13 is `surface_texture_b` (plan 3: distance to water / 40 m in r;
+        plan 3b: snow and ice cover in g; b and a reserved);
     - this plan's cover texture takes 14.
 - **The terrain mesh continues onto a skirt beyond the map** (plan 2b).
     The lattice, the far set, the near tiles and the grass tiles cover
@@ -211,8 +212,72 @@ GPU-time deltas, and any risks. Keep the report short.
     and `ResolutionController::update(interval, frame_rate, range)`. Add
     `detail_pressure()` alongside, without changing `update`'s behaviour.
     The existing pacing tests must keep passing untouched.
-- The WASM is at least 285,511 bytes gzipped after plan 2b. Measure it
-    again at the start, after plan 4.
+- The WASM was 348,926 bytes gzipped after plan 3b. Measure it again at
+    the start, after plan 4.
+
+### What plans 3, 3b and 4 built that this plan must keep
+
+- **Grass is no longer simple.** `render/grass.rs`
+    (`build_grass_instances_by_water`) now also:
+    - raises density and greens grass within 12 m of water, and along
+        the riparian field;
+    - grows reeds (style 1, 1.4 to 2.2 m) by still or slow water above
+        4 °C;
+    - places reeds along the true banks of streams narrower than a sample
+        (`add_brook_reeds`, from `RiverNetwork::brooks`), whatever the
+        sample spacing;
+    - grows short, sparse tundra tufts, and none on glaciers;
+    - keeps reeds from spreading over coarse maps.
+
+    Section 3's GPU grass must keep every one of these, with their
+    existing tests passing.
+    - Meadow, forest-floor and tundra grass move to `grass_generate.wgsl`.
+        Riparian density, the within-12 m boost, tundra height and
+        glacier exclusion come from textures already bound:
+        `surface_texture_b` and the cover texture. Carry the riparian
+        value in the cover texture's g channel if needed, and update its
+        documented layout.
+    - Reeds stay a sparse CPU-built instance set, because brook reeds
+        follow stream polylines. Draw them with the same grass pipeline,
+        as today. Rename the CPU builder to say it builds reeds only, and
+        delete the parts the GPU now does. There must be no dead code.
+- **Channels narrower than a sample are not in the channel mask.** Plan
+    4 excludes trees near every drawn centreline through a
+    channel-distance query on the CPU. The GPU generators need the same
+    test.
+    - Upload the drawn channel segments (centreline points with half
+        widths, from `RiverNetwork::reaches` and falls' pools) into a
+        storage buffer, binned by 64 m tile, as plan 2b bins lens drops.
+    - `tree_generate.wgsl` and `grass_generate.wgsl` reject candidates
+        within `half width + 1.5 m` (trees) or inside the water
+        (`half width`, for grass).
+    - A CPU emulation test must match plan 4's CPU exclusion exactly on
+        a looping-brook map.
+- **Riparian trees:** keep plan 4's water term and plan 3b's riparian
+    density boost (up to 1.5 x in savannah, grassy meadows and mesa
+    desert) inside `suitability`. Keep the bar and gravel exclusions too.
+    The cover-texture bake must call plan 4's suitability function, not a
+    copy of it.
+- **Calibrate against the current build.** "Today's" densities mean the
+    build at the start of this plan (after plan 4), which uses up to 2
+    candidates per cell and riparian boosts. The 0.35 and 1 points of
+    `target_density` must match its instance counts within ±10 % on the
+    default map and on plan 3b's boreal-valley shot.
+- **Pipelines are created on demand** (`Pipelines`, `Needs`,
+    `ensure_pipelines`, and one-per-frame `warm_up`, from plan 3b).
+    - `tree_generate`, `grass_generate` and the canopy pipeline go
+        through `Needs`: trees present, grass on, and canopy distance in
+        view.
+    - The default capture's `first frame ms` must not rise by more than
+        5 %.
+    - Share shader modules where pipelines differ only by an override
+        constant.
+- **Screen-space reflections** copy the scene after the opaque passes.
+    Streamed trees and the canopy shell must be drawn before that copy, so
+    water reflects the forest. Verify it on a lake with a forested shore.
+- **Trees are already the most expensive pass.** On the fixed scene,
+    trees take 1,143 ms against terrain's 899 ms (software). At default
+    density this plan must not make them more expensive (see Budgets).
 
 ## Current state
 
@@ -315,7 +380,8 @@ GPU-time deltas, and any risks. Keep the report short.
         shrinking to 0. This avoids popping.
     - Apply all of this in the cull pass, so it is continuous per frame.
 - **Grass:** the same lattice scheme, with its own `grass_generate.wgsl`,
-    replaces the CPU tuft build.
+    replaces the CPU tuft build for everything except reeds (see "What
+    plans 3, 3b and 4 built").
     - The pitch is 0.35 m, and the tiles are 16 m, within the grass view
         distance.
     - `grassDensity` maps 0 → 0, 0.5 → today's default count (calibrate),
@@ -460,9 +526,11 @@ export interface RenderQualityOptions {
 4. Move the far set onto the lattice.
 5. Add `tree_generate.wgsl`, the tile ring and cull-pass integration,
     with thinning and compensation.
-6. Add `grass_generate.wgsl`, and retire the CPU grass build. Keep
-    `build_grass_instances` only if tests need it as a CPU reference,
-    renamed accordingly. It must not be dead code.
+6. Add `grass_generate.wgsl` with riparian, tundra and glacier rules,
+    and reduce the CPU grass build to reeds only, with the binned channel
+    segments for exclusion. Keep every existing grass and reed test
+    passing. Tests that covered the removed CPU paths move to CPU
+    emulations of the GPU generator. There must be no dead code.
 7. Add the canopy layer and the crossfade.
 8. Add the forest floor (materials, ferns and undergrowth textures and
     styles, dapple, damp shade).
@@ -512,6 +580,11 @@ export interface RenderQualityOptions {
 - A meadow with grass at 4: full cover.
 - The default density shots match the before images: the same look, the
     same counts within 10 %.
+- **Plan 3b's verification shots** 1 (boreal valley), 2 (cobbled
+    stream) and 5 (meadow): reeds along brook loops as before, and no
+    trees or tufts in any channel.
+- **A forested lake shore,** with screen reflections: the forest and the
+    canopy appear in the reflection.
 - GPU times: in the default scene, total GPU time is at most +0.3 ms
     (scaled from the software ratio to terrain). At density 4 in the
     jungle, estimate against the budget in the report: trees at most
@@ -528,8 +601,17 @@ export interface RenderQualityOptions {
     ratios against the terrain pass. Only the tree culling, trees,
     shadows, grass and terrain (forest floor) passes may grow. Every other
     pass stays within 5 %.
-- GPU: as above. Presets hold 60 FPS at 1080p on a mid-range GPU at
-    density 4.
+- **Solid 60 FPS is a hard target, at every density.**
+    - At density 4 in the inner jungle, the whole frame at 1080p on a
+        mid-range GPU must stay within 14 ms: the per-pass ceilings above
+        are maxima within that total, not additions to it.
+    - The budgets (`maxTreeInstances`, `maxGrassInstances`) and
+        `detail_pressure` must enforce this automatically. Show it with
+        the estimated frame total for density 4 at the `balanced` preset
+        in the report.
+    - In the default scene, trees plus shadows plus tree culling must not
+        exceed their cost before this plan on the fixed scene.
+- `first frame ms` in the default capture: at most +5 %.
 
 ## Out of scope
 
