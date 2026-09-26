@@ -579,30 +579,29 @@ fn fragment_fall(in: VertexOut) -> @location(0) vec4<f32> {
   return vec4<f32>(finish_colour(apply_fog(colour, position, in.clip_position.xy)), saturate(alpha));
 }
 
-// Screen position of a world point: uv, then linear view depth.
-fn screen_uv(p: vec3<f32>) -> vec3<f32> {
-  let clip = frame.view_proj * vec4<f32>(p, 1.0);
+// Screen uv and linear view depth of a clip-space position.
+fn clip_to_screen(clip: vec4<f32>) -> vec3<f32> {
   let ndc = clip.xy / max(clip.w, 1.0e-4);
   return vec3<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, clip.w);
 }
 
 // The scene copy's depth at a uv, unfiltered: filtering would blend a
-// near edge with the sky behind it into a depth that is neither.
-fn copy_depth(uv: vec2<f32>) -> f32 {
-  let size = vec2<f32>(textureDimensions(scene_copy));
+// near edge with the sky behind it into a depth that is neither. `size`
+// is the copy's size in texels.
+fn copy_depth(uv: vec2<f32>, size: vec2<f32>) -> f32 {
   return textureLoad(scene_copy, vec2<i32>(clamp(uv * size, vec2<f32>(0.0), size - 1.0)), 0).a;
 }
 
-// Height of the scene point at a uv and linear view depth.
+// Height of the scene point at a uv and linear view depth. The view ray
+// through the uv, unnormalised, is one unit long along the camera's
+// forward axis, so the point lies `depth` of it from the camera.
 fn scene_height(uv: vec2<f32>, depth: f32) -> f32 {
   let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   let tan_half = frame.camera_forward.w;
-  let ray = normalize(
-    frame.camera_forward.xyz
-      + frame.camera_right.xyz * ndc.x * tan_half * frame.camera_right.w
-      + frame.camera_up.xyz * ndc.y * tan_half
-  );
-  return frame.camera_position.y + ray.y * depth / max(dot(ray, frame.camera_forward.xyz), 1.0e-4);
+  let rise = frame.camera_forward.y
+    + frame.camera_right.y * ndc.x * tan_half * frame.camera_right.w
+    + frame.camera_up.y * ndc.y * tan_half;
+  return frame.camera_position.y + rise * depth;
 }
 
 // How much of a reflection hit to trust: none at the screen edges or at
@@ -616,8 +615,15 @@ fn reflection_fade(uv: vec2<f32>, travelled: f32, reach: f32) -> f32 {
 // growing stride from 2 m out to `reach` metres, so near banks and far
 // hills are both found, then 4 bisection steps against the scene copy's
 // depth, counting only scene points half a metre above `level`, the
-// water's surface. rgb is the colour, a how much to use it.
+// water's surface. rgb is the colour, a how much to use it. Clip space is
+// linear along the ray, so each step adds to two projected points instead
+// of projecting its own.
 fn trace_reflection(origin: vec3<f32>, ray: vec3<f32>, reach: f32, level: f32) -> vec4<f32> {
+  let size = vec2<f32>(textureDimensions(scene_copy));
+  let clip_origin = frame.view_proj * vec4<f32>(origin, 1.0);
+  let clip_ray = frame.view_proj * vec4<f32>(ray, 0.0);
+  let growth = pow(reach / 2.0, 1.0 / 16.0);
+  var t = 2.0;
   var near_t = 0.0;
   var far_t = -1.0;
   // Every step runs, with no early exit: the first hit, or leaving the
@@ -625,9 +631,9 @@ fn trace_reflection(origin: vec3<f32>, ray: vec3<f32>, reach: f32, level: f32) -
   var searching = true;
 
   for (var i = 1; i <= 16; i = i + 1) {
-    let t = 2.0 * pow(reach / 2.0, f32(i) / 16.0);
-    let s = screen_uv(origin + ray * t);
-    let depth = copy_depth(s.xy);
+    t = t * growth;
+    let s = clip_to_screen(clip_origin + clip_ray * t);
+    let depth = copy_depth(s.xy, size);
     let on_screen = s.z > 0.0 && all(s.xy >= vec2<f32>(0.0)) && all(s.xy <= vec2<f32>(1.0));
     let hit = on_screen && s.z > depth && scene_height(s.xy, depth) > level + 0.5;
     far_t = select(far_t, t, searching && hit);
@@ -640,20 +646,19 @@ fn trace_reflection(origin: vec3<f32>, ray: vec3<f32>, reach: f32, level: f32) -
   }
 
   for (var k = 0; k < 4; k = k + 1) {
-    let t = 0.5 * (near_t + far_t);
-    let s = screen_uv(origin + ray * t);
-
-    let depth = copy_depth(s.xy);
+    let mid = 0.5 * (near_t + far_t);
+    let s = clip_to_screen(clip_origin + clip_ray * mid);
+    let depth = copy_depth(s.xy, size);
 
     if (s.z > depth && scene_height(s.xy, depth) > level + 0.5) {
-      far_t = t;
+      far_t = mid;
     } else {
-      near_t = t;
+      near_t = mid;
     }
   }
 
-  let s = screen_uv(origin + ray * far_t);
-  let hit = vec4<f32>(textureSampleLevel(scene_copy, linear_sampler, s.xy, 0.0).rgb, copy_depth(s.xy));
+  let s = clip_to_screen(clip_origin + clip_ray * far_t);
+  let hit = vec4<f32>(textureSampleLevel(scene_copy, linear_sampler, s.xy, 0.0).rgb, copy_depth(s.xy, size));
   // A hit must be where the ray is: a ray passing behind what it crossed,
   // or over it, found nothing there. One heading back towards the camera
   // sees surfaces facing away. Nothing nearer the camera than the water
@@ -663,7 +668,7 @@ fn trace_reflection(origin: vec3<f32>, ray: vec3<f32>, reach: f32, level: f32) -
   // above the water: depth precision puts a shallow bed that close.
   let miss = abs(scene_height(s.xy, hit.a) - origin.y - ray.y * far_t);
   let solid = (1.0 - smoothstep(0.5, 1.0, miss / (1.0 + 0.05 * far_t)))
-    * step(0.95 * screen_uv(origin).z, hit.a);
+    * step(0.95 * clip_origin.w, hit.a);
   let facing = smoothstep(-0.1, 0.2, dot(ray, frame.camera_forward.xyz));
   return vec4<f32>(hit.rgb, reflection_fade(s.xy, far_t, reach) * solid * facing);
 }
