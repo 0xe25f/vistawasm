@@ -9,9 +9,18 @@ pub mod config;
 pub mod dem;
 pub mod engine;
 pub mod errors;
+pub mod export;
+#[cfg(test)]
+mod export_tests;
+#[cfg(test)]
+mod import_tests;
+pub mod lens_drops;
 pub mod maths;
+pub mod pacing;
 pub mod render;
 pub mod terrain;
+pub mod water_sounds;
+pub mod weather;
 
 #[cfg(target_arch = "wasm32")]
 pub mod api;

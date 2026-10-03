@@ -14,6 +14,12 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
 
+/// Length of a 2D vector. Cheaper in code size than `f32::hypot`, which
+/// pulls in a careful overflow-safe routine these distances never need.
+pub fn length2(x: f32, y: f32) -> f32 {
+  (x * x + y * y).sqrt()
+}
+
 /// Smooth interpolation curve used by value noise.
 pub fn smoothstep(t: f32) -> f32 {
   let t = clamp_f32(t, 0.0, 1.0);
@@ -41,15 +47,18 @@ pub fn hash_noise(seed: u64, x: i32, y: i32) -> f32 {
 
 /// Two-dimensional deterministic value noise.
 pub fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
+  // Coordinates beyond `i32` saturate; wrapping the neighbours keeps such
+  // lookups a hash instead of an overflow.
   let xi = x.floor() as i32;
   let yi = y.floor() as i32;
   let tx = smoothstep(x - xi as f32);
   let ty = smoothstep(y - yi as f32);
+  let (xn, yn) = (xi.wrapping_add(1), yi.wrapping_add(1));
 
   let a = hash_noise(seed, xi, yi);
-  let b = hash_noise(seed, xi + 1, yi);
-  let c = hash_noise(seed, xi, yi + 1);
-  let d = hash_noise(seed, xi + 1, yi + 1);
+  let b = hash_noise(seed, xn, yi);
+  let c = hash_noise(seed, xi, yn);
+  let d = hash_noise(seed, xn, yn);
   let ab = lerp(a, b, tx);
   let cd = lerp(c, d, tx);
 
@@ -133,6 +142,41 @@ pub fn sun_direction_vector(azimuth_degrees: f32, elevation_degrees: f32) -> Vec
     elevation.sin(),
     azimuth.sin() * horizontal,
   ])
+}
+
+/// Extract normalised frustum planes (`ax + by + cz + d >= 0` inside) from
+/// a column-major view-projection matrix with a 0..1 depth range.
+pub fn frustum_planes(m: &[f32; 16]) -> [[f32; 4]; 6] {
+  let row = |i: usize| [m[i], m[4 + i], m[8 + i], m[12 + i]];
+  let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+  let combine = |a: [f32; 4], b: [f32; 4], sign: f32| {
+    [
+      a[0] + sign * b[0],
+      a[1] + sign * b[1],
+      a[2] + sign * b[2],
+      a[3] + sign * b[3],
+    ]
+  };
+  let planes = [
+    combine(r3, r0, 1.0),
+    combine(r3, r0, -1.0),
+    combine(r3, r1, 1.0),
+    combine(r3, r1, -1.0),
+    r2,
+    combine(r3, r2, -1.0),
+  ];
+
+  planes.map(|plane| {
+    let length = (plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2])
+      .sqrt()
+      .max(1e-6);
+    [
+      plane[0] / length,
+      plane[1] / length,
+      plane[2] / length,
+      plane[3] / length,
+    ]
+  })
 }
 
 #[cfg(test)]

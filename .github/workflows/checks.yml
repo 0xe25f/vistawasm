@@ -1,0 +1,319 @@
+name: Checks
+
+# Every check a contributor runs before pushing (see
+# docs/testing-and-contributing.md), plus the size budget, the audits,
+# the fuzzers and a browser smoke test, on every push and pull request.
+# The jobs run in parallel; none is allowed to fail. deploy-demo.yml
+# calls this workflow and deploys only when every job passes.
+on:
+  push:
+  pull_request:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request replaces a run still
+# in progress. Runs called from the deploy workflow form their own group.
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The toolchain release sizes are measured with. Keep these in step
+  # with docs/testing-and-contributing.md.
+  RUST_TOOLCHAIN: "1.97.0"
+  WASM_PACK_VERSION: v0.15.0
+  NODE_VERSION: 24
+  PLAYWRIGHT_VERSION: 1.56.0
+
+jobs:
+  rust:
+    name: Rust (format, Clippy, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        # Third-party actions are pinned to a full commit SHA.
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Library code may not unwrap, expect or panic; tests opt out with
+      # their own `allow`. The warning baseline is zero, so any warning
+      # fails the job.
+      - name: Clippy (library, native)
+        run: cargo clippy --workspace --lib -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+
+      # Every GPU path is compiled for wasm32 only.
+      - name: Clippy (library, wasm32)
+        run: cargo clippy --workspace --lib --target wasm32-unknown-unknown -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+
+      - name: Clippy (tests and all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+  js:
+    name: JavaScript (build, types, tests, indentation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: ${{ env.WASM_PACK_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build the WASM package and TypeScript wrapper
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Tests, type tests included
+        run: npx vitest run
+
+      - name: Indentation
+        run: npm run lint:indent
+
+  size:
+    name: Size budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry
+        # Only the registry: the size is measured from a clean build.
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: ${{ env.WASM_PACK_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Clean build
+        run: npm run build
+
+      - name: Compare gzipped sizes with scripts/size-budget.json
+        run: node scripts/check-size.mjs
+
+  audit:
+    name: Dependency audits
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: npm audit (root)
+        run: npm audit --audit-level=low
+
+      - name: npm audit (bench)
+        working-directory: bench
+        run: npm audit --audit-level=low
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo-audit
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-0.22.2
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit || cargo install cargo-audit --version 0.22.2 --locked
+
+      # An advisory with no fix gets a dated, reviewed ignore entry in
+      # .cargo/audit.toml; it is never silenced here.
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+  fuzz:
+    name: Fuzzers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-fuzz-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Rust fuzzers
+        run: cargo test -p vista_wasm --test untrusted_input_fuzz
+
+      - name: JavaScript fuzzers
+        run: npx vitest run js/tests/fuzz.test.ts
+
+  browser:
+    name: Browser smoke test (software WebGPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: ${{ env.WASM_PACK_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build the WASM package and TypeScript wrapper
+        run: npm run build
+
+      # Playwright is not a dependency of the package; the smoke test
+      # alone uses it, at an exact version.
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/playwright" --no-save --no-package-lock "playwright@$PLAYWRIGHT_VERSION"
+          "$RUNNER_TEMP/playwright/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Render the smoke scenes
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/playwright/node_modules/playwright/index.mjs
+        run: |
+          python3 -m http.server 8124 > /dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          node scripts/visual-check/smoke.mjs "$RUNNER_TEMP/smoke"
+
+      - name: Upload the rendered scenes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-scenes
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: ignore

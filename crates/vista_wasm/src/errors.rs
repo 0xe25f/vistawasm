@@ -37,6 +37,9 @@ pub enum VistaError {
   /// The request exceeds GPU limits.
   #[error("The request exceeds the active GPU limits: {0}")]
   GpuLimitExceeded(String),
+  /// The GPU reported a validation or out-of-memory error.
+  #[error("The GPU reported an error: {0}")]
+  GpuError(String),
   /// The engine was used after disposal.
   #[error("The VistaWASM engine has been disposed.")]
   EngineDisposed,
@@ -59,6 +62,7 @@ impl VistaError {
       Self::DemFormatUnsupported(_) => VistaErrorCode::DemFormatUnsupported,
       Self::DemMetadataMissing(_) => VistaErrorCode::DemMetadataMissing,
       Self::GpuLimitExceeded(_) => VistaErrorCode::GpuLimitExceeded,
+      Self::GpuError(_) => VistaErrorCode::GpuError,
       Self::EngineDisposed => VistaErrorCode::EngineDisposed,
       Self::InternalError(_) => VistaErrorCode::InternalError,
     }

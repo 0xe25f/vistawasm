@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VistaWASM GPU profile</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+        max-width: 1100px;
+      }
+
+      table {
+        border-collapse: collapse;
+        margin: 16px 0;
+      }
+
+      th,
+      td {
+        padding: 4px 10px;
+        border: 1px solid #ccc;
+        text-align: left;
+      }
+
+      td.number {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      tr.scene th,
+      tr.scene td {
+        background: #f2f2f2;
+      }
+
+      tr.pass th {
+        font-weight: normal;
+        padding-left: 28px;
+      }
+
+      .over {
+        color: #a00000;
+        font-weight: bold;
+      }
+
+      .notice {
+        border-left: 4px solid #b36b00;
+        padding: 8px 12px;
+        background: #fff6e5;
+      }
+
+      .error {
+        border-left: 4px solid #a00000;
+        padding: 8px 12px;
+        background: #fdecec;
+      }
+
+      canvas {
+        display: block;
+        width: min(100%, 480px);
+        height: auto;
+        background: #000;
+      }
+
+      pre {
+        max-height: 320px;
+        overflow: auto;
+        background: #f6f6f6;
+        padding: 8px;
+      }
+
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        margin-right: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>GPU profile</h1>
+    <p>
+      Renders every budgeted scene at render scale 1, with dynamic resolution off,
+      and records the median and 90th percentile of each pass's GPU time and of
+      the whole frame. See <code>docs/performance.md</code> for the budgets and
+      how to record results.
+    </p>
+    <dl id="environment"></dl>
+    <p id="software" class="notice" hidden></p>
+    <p id="timestamps" class="notice" hidden></p>
+    <p id="error" class="error" role="alert" hidden></p>
+    <p>
+      <button id="run" type="button">Run the profile</button>
+    </p>
+    <p id="status" role="status" aria-live="polite">Ready. Keep this tab in front while it runs.</p>
+    <div id="view"></div>
+    <h2>Results</h2>
+    <table id="results" aria-describedby="results-note">
+      <caption id="results-note">
+        Milliseconds. Passes that measured 0 on every frame are left out of the table but kept in the JSON.
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Scene or pass</th>
+          <th scope="col">Median (ms)</th>
+          <th scope="col">90th percentile (ms)</th>
+          <th scope="col">Budget (ms)</th>
+          <th scope="col">Median within budget</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <h2>JSON</h2>
+    <p>
+      <button id="copy" type="button" disabled>Copy JSON</button>
+      <button id="download" type="button" disabled>Download JSON</button>
+      <span id="copied" role="status" aria-live="polite"></span>
+    </p>
+    <pre id="json" aria-label="Results as JSON">No results yet.</pre>
+    <script type="module" src="./profile.js"></script>
+  </body>
+</html>

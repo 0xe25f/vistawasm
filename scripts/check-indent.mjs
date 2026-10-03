@@ -19,8 +19,10 @@ const extensions = new Set([
 const ignoredParts = new Set([
   ".git",
   "dist",
+  "dist-size",
   "js/pkg",
   "node_modules",
+  "_site",
   "target"
 ]);
 

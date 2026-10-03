@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>{{title}} | VistaWASM</title>
+    <meta name="description" content="{{description}}">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="{{title}}">
+    <meta property="og:description" content="{{description}}">
+    <meta property="og:image" content="https://0xe25f.github.io/vistawasm/assets/images/vistawasm-bay.jpg">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="theme-color" content="#0b1011">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script type="module" src="assets/site.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+{{nav}}
+    <main id="main">
+      <section class="doc-hero">
+        <div class="wrap">
+          <p class="kicker">Guide</p>
+          <h1>{{title}}</h1>
+          <p class="lead">{{lead}}</p>
+          <div class="actions">
+            <a class="button button-primary button-small" href="{{example}}">Get the runnable example</a>
+            <a class="button button-ghost button-small" href="demo/">Try the live demo</a>
+            <a class="button button-ghost button-small" href="https://github.com/0xe25f/vistawasm">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z"/></svg>
+              Star on GitHub
+              <span class="stars" data-stars hidden></span>
+            </a>
+          </div>
+        </div>
+      </section>
+      <div class="wrap doc">
+        <nav class="toc" aria-label="On this page">
+          <p>On this page</p>
+{{toc}}
+        </nav>
+        <article class="prose">
+{{content}}
+          <div class="next">
+            <article class="card card-link">
+              <h3><a href="{{otherHref}}">{{otherTitle}}</a></h3>
+              <p>The same patterns for {{otherName}}.</p>
+              <span class="more" aria-hidden="true">Read the guide &rarr;</span>
+            </article>
+            <article class="card card-link">
+              <h3><a href="api.html">API reference</a></h3>
+              <p>Every function, method, event and error code.</p>
+              <span class="more" aria-hidden="true">Browse the API &rarr;</span>
+            </article>
+          </div>
+        </article>
+      </div>
+    </main>
+{{footer}}
+  </body>
+</html>

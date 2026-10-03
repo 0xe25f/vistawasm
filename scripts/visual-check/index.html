@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>VistaWASM visual check</title>
+  </head>
+  <body style="margin: 0">
+    <canvas id="canvas" width="960" height="600"></canvas>
+    <script src="offscreen-canvas.js"></script>
+    <script type="module">
+      import { createVistaEngine } from "../../dist/index.js";
+      import { applyCalls, fractalDefaults, heightSampler } from "./scenes.mjs";
+
+      window.log = [];
+      const canvas = document.querySelector("#canvas");
+      const config = JSON.parse(new URLSearchParams(location.search).get("config") || "{}");
+      const [width, height] = config.size || [960, 600];
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+
+      // Load time: `engine ms` is how long createVistaEngine took, and
+      // `first frame ms` runs from its start until the GPU has finished the
+      // first rendered frame.
+      const created = performance.now();
+      let firstFrameLogged = false;
+      window.logFirstFrame = () => {
+        if (!firstFrameLogged) {
+          firstFrameLogged = true;
+          window.log.push(`first frame ms ${Math.round(performance.now() - created)}`);
+        }
+      };
+
+      try {
+        const engine = await createVistaEngine(
+          canvas,
+          Object.assign({ render: { width, height, devicePixelRatio: 1 } }, config.engine || {})
+        );
+        window.log.push(`engine ms ${Math.round(performance.now() - created)}`);
+        window.engine = engine;
+        engine.on("warning", ({ message }) => window.log.push(`warning ${message}`));
+        engine.on("gpuError", ({ message }) => window.log.push(`gpuError ${message}`));
+        engine.on("deviceLost", ({ message }) => window.log.push(`deviceLost ${message}`));
+        // Log how long each generation phase took, from its first progress
+        // event to the next phase's.
+        const phases = [];
+        engine.on("progress", ({ phase, progress }) => {
+          const now = performance.now();
+          const last = phases[phases.length - 1];
+
+          if (!last || last.phase !== phase) {
+            phases.push({ phase, started: now, ended: now, progress });
+          } else {
+            last.ended = now;
+            last.progress = progress;
+          }
+        });
+        const started = performance.now();
+        // A fixed heightmap (a gzipped raw file) instead of a generated one,
+        // so a scene stays identical while the generator changes.
+        const handle = config.heightmap
+          ? await engine.loadRawHeightmap(
+            await new Response(
+              (await fetch(config.heightmap.url)).body.pipeThrough(new DecompressionStream("gzip"))
+            ).arrayBuffer(),
+            config.heightmap.options
+          )
+          : await engine.generateFractal(Object.assign({}, fractalDefaults, config.terrain || {}));
+        window.log.push(`generation ms ${Math.round(performance.now() - started)}`);
+        window.log.push(
+          `phases ${phases
+            .map((entry, index) => {
+              const next = phases[index + 1];
+              const ended = next ? next.started : entry.ended;
+              return `${entry.phase} ${Math.round(ended - entry.started)} ms`;
+            })
+            .join(", ")}`
+        );
+        window.metadata = handle.metadata;
+
+        for (const [method, value] of Object.entries(config.set || {})) {
+          engine[method](value);
+        }
+
+        engine.setCamera(Object.assign({
+          position: [0, 420, 900],
+          target: [0, 300, 0],
+          fieldOfViewDegrees: 55,
+          nearMetres: 0.5,
+          farMetres: 120000
+        }, config.camera || {}));
+        const heights = new Float32Array(engine.exportHeightmap().buffer.slice(0));
+        window.heightAt = heightSampler(heights, handle.metadata);
+        // A scene's calls from `scenes.mjs`, as `fixed-scene.mjs` sends them.
+        window.applyCalls = (calls) => applyCalls(engine, calls, window.heightAt);
+        window.findBiome = (name) => {
+          for (let radius = 0; radius < 4000; radius += 60) {
+            for (let angle = 0; angle < 6.28; angle += 0.3) {
+              const x = Math.cos(angle) * radius;
+              const z = Math.sin(angle) * radius;
+
+              if (engine.biomeAt(x, z) === name) {
+                return [x, z];
+              }
+            }
+          }
+
+          return null;
+        };
+      } catch (error) {
+        window.log.push(`error ${error.code || ""} ${error.message}`);
+      }
+
+      // Render `frames` frames, waiting for the GPU after each, and return
+      // the last one as a PNG data URL with its stats.
+      window.capture = async (frames = 1) => {
+        const device = window.gpuDevice;
+        let stats;
+
+        for (let frame = 0; frame < frames - 1; frame += 1) {
+          stats = window.engine.renderOnce();
+          await device.queue.onSubmittedWorkDone();
+          window.logFirstFrame();
+        }
+
+        await device.queue.onSubmittedWorkDone();
+        const started = performance.now();
+        stats = window.engine.renderOnce();
+        const texture = window.gpuTexture;
+        const { width: w, height: h } = texture;
+        const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+        const buffer = device.createBuffer({
+          size: bytesPerRow * h,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [w, h]);
+        device.queue.submit([encoder.finish()]);
+        await buffer.mapAsync(GPUMapMode.READ);
+        const gpuMs = performance.now() - started;
+        const source = new Uint8Array(buffer.getMappedRange());
+        const pixels = new Uint8ClampedArray(w * h * 4);
+        const bgra = String(window.gpuFormat).startsWith("bgra");
+
+        for (let y = 0; y < h; y += 1) {
+          for (let x = 0; x < w; x += 1) {
+            const from = y * bytesPerRow + x * 4;
+            const to = (y * w + x) * 4;
+            pixels[to] = source[from + (bgra ? 2 : 0)];
+            pixels[to + 1] = source[from + 1];
+            pixels[to + 2] = source[from + (bgra ? 0 : 2)];
+            pixels[to + 3] = 255;
+          }
+        }
+
+        buffer.unmap();
+        window.logFirstFrame();
+        const image = document.createElement("canvas");
+        image.width = w;
+        image.height = h;
+        image.getContext("2d").putImageData(new ImageData(pixels, w, h), 0, 0);
+        return { stats, gpuMs, url: image.toDataURL("image/png") };
+      };
+
+      // Render `warm` frames, then `frames` more, waiting for the GPU after
+      // each, and return the stats of the measured frames.
+      window.measure = async (warm, frames) => {
+        const device = window.gpuDevice;
+        const stats = [];
+
+        for (let frame = 0; frame < warm + frames; frame += 1) {
+          const result = window.engine.renderOnce();
+          await device.queue.onSubmittedWorkDone();
+          window.logFirstFrame();
+
+          if (frame >= warm) {
+            stats.push(result);
+          }
+        }
+
+        return stats;
+      };
+
+      window.ready = true;
+    </script>
+  </body>
+</html>

@@ -2,6 +2,14 @@ node_modules/
 target/
 dist/
 demo/dist/
+_site/
 js/pkg/
 *.log
 .DS_Store
+bench/dist-size/
+
+# Secrets and keys never belong in the repository.
+.env
+.env.*
+*.pem
+*.key

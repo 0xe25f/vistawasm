@@ -1,0 +1,19 @@
+{
+  "name": "vistawasm-bench",
+  "private": true,
+  "type": "module",
+  "description": "Size and speed comparisons for VistaWASM. Not part of the published package.",
+  "scripts": {
+    "size": "node size/measure.mjs",
+    "speed": "vite --host 127.0.0.1 --port 5174 --open /speed/",
+    "gpu": "vite --host 127.0.0.1 --port 5174 --open /gpu/"
+  },
+  "devDependencies": {
+    "@vista-wasm/vista-wasm": "file:..",
+    "cesium": "1.146.0",
+    "three": "0.186.1",
+    "three-terrain": "0.0.10",
+    "three.terrain.js": "3.1.1",
+    "vite": "8.3.1"
+  }
+}

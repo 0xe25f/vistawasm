@@ -1,0 +1,36 @@
+# Keep npm, Cargo and GitHub Actions dependencies current. Minor and
+# patch updates arrive grouped, as one pull request per ecosystem a week;
+# major updates arrive one by one, so each can be checked on its own.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/bench"
+    schedule:
+      interval: "weekly"
+    groups:
+      bench-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-and-patch:
+        update-types: ["minor", "patch"]

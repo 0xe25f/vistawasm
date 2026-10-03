@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>VistaWASM: living 3D landscapes for the web</title>
+    <meta name="description" content="VistaWASM is an open-source Rust and WebAssembly terrain engine for WebGPU. Give it a canvas and it builds a world: eroded mountains, forests, rivers, oceans, clouds and weather.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="VistaWASM: living 3D landscapes for the web">
+    <meta property="og:description" content="An open-source Rust and WebAssembly terrain engine for WebGPU. Mountains, forests, rivers, oceans, clouds and weather from one npm package.">
+    <meta property="og:image" content="https://0xe25f.github.io/vistawasm/assets/images/vistawasm-bay.jpg">
+    <meta property="og:url" content="https://0xe25f.github.io/vistawasm/">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="theme-color" content="#0b1011">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script type="module" src="assets/site.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+{{nav}}
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <img class="hero-image" src="assets/images/vistawasm-bay.jpg" width="1134" height="600" alt="A sandy bay between forested headlands under cumulus clouds, rendered in real time by VistaWASM" fetchpriority="high">
+        <div class="wrap hero-content">
+          <p class="eyebrow">Version 2.0 &middot; Rust, WebAssembly and WebGPU</p>
+          <h1 id="hero-title">Living 3D landscapes, <em>in a few lines of code.</em></h1>
+          <p class="lead">Give VistaWASM a canvas and it builds a world: mountains carved by erosion, forests that sway in the wind, rivers, oceans, clouds and weather. One npm package, a typed API, and nothing else to download.</p>
+          <div class="actions">
+            <a class="button button-primary" href="demo/">
+              Launch the live demo
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </a>
+            <a class="button button-ghost" href="https://github.com/0xe25f/vistawasm">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z"/></svg>
+              Star on GitHub
+              <span class="stars" data-stars hidden></span>
+            </a>
+          </div>
+          <div class="install">
+            <code>npm install @vista-wasm/vista-wasm</code>
+            <button class="copy" type="button" data-copy="npm install @vista-wasm/vista-wasm" aria-label="Copy the install command">Copy</button>
+          </div>
+          <p class="fine">Free and open source. Runs in browsers with WebGPU, such as current Chrome and Edge.</p>
+        </div>
+      </section>
+
+      <section class="section" aria-label="VistaWASM in numbers">
+        <div class="wrap">
+          <ul class="numbers">
+            <li><strong>19</strong><span>climate-driven biomes</span></li>
+            <li><strong>8</strong><span>modelled tree species</span></li>
+            <li><strong>7</strong><span>landform presets</span></li>
+            <li><strong>13</strong><span>weather presets</span></li>
+            <li><strong>15</strong><span>exportable maps</span></li>
+            <li><strong>0</strong><span>assets to download</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section section-alt" id="features" aria-labelledby="features-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">What you get</p>
+            <h2 id="features-title">A whole world, not just a heightmap</h2>
+            <p>Every system is on by default and looks right out of the box. Each one can be tuned, switched off, or replaced with your own.</p>
+          </div>
+          <div class="grid grid-3">
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M2 20l7-12 4 6 3-4 6 10z"/></svg></div>
+              <h3>Terrain from geology</h3>
+              <p>Tectonic uplift, drainage and GPU erosion shape seven landforms, from alpine ranges to fjords. Or load real elevation from GeoTIFF files, raw heightmaps and images.</p>
+            </article>
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l5 7h-3l4 6H6l4-6H7z"/><path d="M12 15v7"/></svg></div>
+              <h3>Forests that feel alive</h3>
+              <p>Nineteen biomes place eight grown tree species by climate, slope and water, with grass, rock and scree. Trees sway in layered wind and cast shadows.</p>
+            </article>
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2 10c2 0 2-2 4-2s2 2 4 2 2-2 4-2 2 2 4 2 2-2 4-2"/><path d="M2 16c2 0 2-2 4-2s2 2 4 2 2-2 4-2 2 2 4 2 2-2 4-2"/></svg></div>
+              <h3>Water that flows</h3>
+              <p>An ocean to the horizon with simulated waves and surf, and rivers, lakes and waterfalls routed from rain and snowmelt, carved into the land.</p>
+            </article>
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 15a4 4 0 1 1 .5-8 5 5 0 0 1 9.5 1 3.5 3.5 0 1 1 0 7z"/><path d="M9 18l-1 3M13 18l-1 3M17 18l-1 3"/></svg></div>
+              <h3>Sky and weather</h3>
+              <p>A physically based sky, volumetric clouds from fair cumulus to storms, cirrus and mid-level layers, time of day, rain, snow, fog and lightning.</p>
+            </article>
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6-9 9H5v-6z"/><path d="M12 6l6 6"/></svg></div>
+              <h3>Paint, import, export</h3>
+              <p>Paint height, biomes, water and vegetation, import them as images, and export fifteen maps, every tree and a round-trip bundle.</p>
+            </article>
+            <article class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4c-2 0-3 1-3 3v2c0 1.5-1 2.5-2.5 3C5 12.5 6 13.5 6 15v2c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2c0 1.5 1 2.5 2.5 3-1.5.5-2.5 1.5-2.5 3v2c0 2-1 3-3 3"/></svg></div>
+              <h3>A small, typed API</h3>
+              <p>An async loader, validated options with clear errors, events, and TypeScript declarations for everything. Written in Rust, drawn with WebGPU.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="gallery-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">Rendered in the browser</p>
+            <h2 id="gallery-title">Real time, not a pre-render</h2>
+            <p>Every picture below comes straight from VistaWASM running in a browser tab. Try it yourself: the demo generates a new world from any seed.</p>
+          </div>
+          <div class="gallery">
+            <figure>
+              <a href="assets/images/vistawasm-bay-sky.jpg"><img src="assets/images/vistawasm-bay-sky.jpg" width="930" height="805" alt="Cumulus and cirrus clouds over a forested bay with sandy beaches" loading="lazy"></a>
+              <figcaption><strong>A continental coast</strong>Volumetric cumulus, high cirrus, and forest to the shore.</figcaption>
+            </figure>
+            <figure>
+              <a href="assets/images/vistawasm-hero.jpg"><img src="assets/images/vistawasm-hero.jpg" width="1600" height="800" alt="Snow-capped islands in a hazy sea under drifting cumulus" loading="lazy"></a>
+              <figcaption><strong>Islands to the horizon</strong>Snow lines, haze and an ocean that never ends.</figcaption>
+            </figure>
+            <figure>
+              <a href="assets/images/demo-paint.jpg"><img src="assets/images/demo-paint.jpg" width="1100" height="688" alt="The demo's Paint tab, with a painted ridge, forest, river and lake" loading="lazy"></a>
+              <figcaption><strong>Paint your own world</strong>Sketch a ridge, a river and a forest, then fly over it in 3D.</figcaption>
+            </figure>
+          </div>
+          <div class="actions" id="try">
+            <a class="button button-primary" href="demo/">
+              Open the demo
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-alt" aria-labelledby="start-title">
+        <div class="wrap split">
+          <div>
+            <p class="kicker">Quick start</p>
+            <h2 id="start-title">From canvas to world in one file</h2>
+            <p>Install the package, give it a canvas, and generate. The package ships pre-built, so you need no Rust and no build tools.</p>
+            <ul class="checks">
+              <li>Loads its WebAssembly for you, once per page</li>
+              <li>Validates every option, with errors that say how to fix them</li>
+              <li>Works with any bundler, framework or none at all</li>
+              <li>Hands you the terrain's data for games and physics</li>
+            </ul>
+            <div class="actions">
+              <a class="button button-ghost" href="https://github.com/0xe25f/vistawasm/blob/main/docs/getting-started.md">Read the full walkthrough</a>
+            </div>
+          </div>
+          <div class="code">
+            <div class="code-title">main.ts</div>
+            <pre><code class="language-ts">import { attachFlyCameraControls, createVistaEngine } from "@vista-wasm/vista-wasm";
+
+const canvas = document.querySelector("canvas")!;
+const engine = await createVistaEngine(canvas, {
+  render: {
+    width: canvas.clientWidth,
+    height: canvas.clientHeight,
+    devicePixelRatio: window.devicePixelRatio
+  }
+});
+
+await engine.generateFractal({
+  seed: 12345,
+  size: 1024,
+  horizontalScaleMetres: 12,
+  verticalScale: 1,
+  landform: "continental",
+  noise: { kind: "ridged", octaves: 7, gain: 0.5, lacunarity: 2 }
+});
+
+// Fly with the mouse and WASD, then make it rain.
+attachFlyCameraControls(engine, canvas, {
+  initialPosition: [0, 420, 1400],
+  initialYawDegrees: 180,
+  initialPitchDegrees: -14
+});
+engine.setWeather({ enabled: true, state: "rain" });
+engine.start();</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="stack-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">Fits your stack</p>
+            <h2 id="stack-title">Bring your own engine</h2>
+            <p>Draw your characters and effects over a VistaWASM world, or take its terrain into the scene you already have.</p>
+          </div>
+          <div class="grid">
+            <article class="card card-link">
+              <h3><a href="threejs.html">three.js</a></h3>
+              <p>three.js objects over the landscape with one shared camera, or VistaWASM terrain as a three.js mesh.</p>
+              <span class="more" aria-hidden="true">Read the guide &rarr;</span>
+            </article>
+            <article class="card card-link">
+              <h3><a href="babylonjs.html">Babylon.js</a></h3>
+              <p>Babylon.js meshes over the landscape, with hills that hide them, or the terrain in your Babylon.js scene.</p>
+              <span class="more" aria-hidden="true">Read the guide &rarr;</span>
+            </article>
+            <article class="card card-link">
+              <h3><a href="https://github.com/0xe25f/vistawasm/blob/main/docs/frameworks.md">React, Vue and Svelte</a></h3>
+              <p>Complete components that create, resize and dispose of the engine the right way.</p>
+              <span class="more" aria-hidden="true">See the components &rarr;</span>
+            </article>
+            <article class="card card-link">
+              <h3><a href="api.html">The API</a></h3>
+              <p>Every function, method, event and error code on one page, with links to each option's range.</p>
+              <span class="more" aria-hidden="true">Browse the API &rarr;</span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="star-title">
+        <div class="wrap">
+          <div class="star-band">
+            <h2 id="star-title">Like what you see? Give it a star.</h2>
+            <p>VistaWASM is built in the open. A star takes one click, helps other developers find the project, and tells us to keep going.</p>
+            <div class="actions">
+              <a class="button button-primary" href="https://github.com/0xe25f/vistawasm">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z"/></svg>
+                Star VistaWASM on GitHub
+                <span class="stars" data-stars hidden></span>
+              </a>
+              <a class="button button-ghost" href="https://github.com/0xe25f/vistawasm/issues">Suggest a feature</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-alt" aria-labelledby="faq-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">Questions</p>
+            <h2 id="faq-title">Before you start</h2>
+          </div>
+          <div class="faq">
+            <details>
+              <summary>Which browsers does it run in?</summary>
+              <div>
+                <p>Any browser with WebGPU in a secure context (HTTPS, or <code>localhost</code> while developing), such as current Chrome and Edge. There is no WebGL fallback.</p>
+                <p>Call <code>detectVistaWasmSupport()</code> first to show your own fallback, or export the terrain and draw it with three.js or Babylon.js on WebGL.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Do I need Rust or a build step?</summary>
+              <div>
+                <p>No. The npm package ships the compiled WebAssembly, its JavaScript glue and TypeScript declarations. Serve <code>.wasm</code> files as <code>application/wasm</code> and you are done.</p>
+              </div>
+            </details>
+            <details>
+              <summary>How big is it?</summary>
+              <div>
+                <p>A minimal app is about 570 KB gzipped, or 460 KB with Brotli, the WebAssembly included. That one download draws everything: textures and trees are generated on the GPU at start-up, so there are no assets to fetch.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Can I use my own trees, textures and placement?</summary>
+              <div>
+                <p>Yes. Replace any tree species' model, any texture layer, or procedural placement with your own trees. Paint biomes, water and vegetation density, or import them as images.</p>
+              </div>
+            </details>
+            <details>
+              <summary>What does the licence mean for my project?</summary>
+              <div>
+                <p>VistaWASM is free and open source under the GNU AGPL, version 3. If you distribute an application that includes it, or offer one to people over a network, you must make that application's complete source code available to them under the same licence.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+{{footer}}
+  </body>
+</html>

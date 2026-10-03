@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>API reference | VistaWASM</title>
+    <meta name="description" content="Every function, engine method, event and error code in VistaWASM's JavaScript and TypeScript API.">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="VistaWASM API reference">
+    <meta property="og:description" content="Every function, engine method, event and error code in VistaWASM's JavaScript and TypeScript API.">
+    <meta property="og:image" content="https://0xe25f.github.io/vistawasm/assets/images/vistawasm-bay.jpg">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="theme-color" content="#0b1011">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script type="module" src="assets/site.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+{{nav}}
+    <main id="main">
+      <section class="doc-hero">
+        <div class="wrap">
+          <p class="kicker">Reference</p>
+          <h1>The VistaWASM API</h1>
+          <p class="lead">One async loader, one engine object, and plain functions for export and import. Everything is typed: the TypeScript declarations ship with the package and document every option's default and range.</p>
+          <div class="actions">
+            <a class="button button-primary button-small" href="https://github.com/0xe25f/vistawasm/blob/main/docs/options-reference.md">Every option and its range</a>
+            <a class="button button-ghost button-small" href="https://github.com/0xe25f/vistawasm/blob/main/js/src/types.ts">The type declarations</a>
+          </div>
+        </div>
+      </section>
+      <div class="wrap doc">
+        <nav class="toc" aria-label="On this page">
+          <p>On this page</p>
+          <ol>
+            <li><a href="#loading">Loading</a></li>
+            <li><a href="#terrain">Terrain</a></li>
+            <li><a href="#rendering">Rendering</a></li>
+            <li><a href="#camera">Camera</a></li>
+            <li><a href="#sky">Sun, sky and weather</a></li>
+            <li><a href="#land">Land and life</a></li>
+            <li><a href="#water">Water</a></li>
+            <li><a href="#painting">Painted maps</a></li>
+            <li><a href="#export">Export</a></li>
+            <li><a href="#events">Events</a></li>
+            <li><a href="#errors">Errors</a></li>
+            <li><a href="#options">Option groups</a></li>
+          </ol>
+        </nav>
+        <article class="prose">
+          <p>Everything on this page is a named export of <code>@vista-wasm/vista-wasm</code>, or a method of the <code>VistaEngine</code> that <code>createVistaEngine()</code> returns. Coordinates are in metres, with +Y up and the terrain centred on the origin.</p>
+
+          <h2 id="loading">Loading</h2>
+          <div class="code"><pre><code class="language-ts">import { createVistaEngine, detectVistaWasmSupport } from "@vista-wasm/vista-wasm";
+
+if (!detectVistaWasmSupport().webGpu) {
+  showFallback();
+} else {
+  const engine = await createVistaEngine(canvas, { render: { width: 1280, height: 720 } });
+}</code></pre></div>
+          <dl class="api-list">
+            <div><dt>createVistaEngine(canvas, options?)</dt><dd>Create an engine for a canvas: loads the WASM once, requests a WebGPU device and configures the canvas. Resolves to a <code>VistaEngine</code>.</dd></div>
+            <div><dt>initialiseVistaWasm(options?)</dt><dd>Load the WASM module ahead of time, or from your own <code>wasmUrl</code>, <code>moduleUrl</code> or compiled <code>wasmModule</code>. Optional: <code>createVistaEngine()</code> calls it for you.</dd></div>
+            <div><dt>detectVistaWasmSupport()</dt><dd>Which of WebGPU, WebAssembly and ES modules this browser has, without throwing.</dd></div>
+          </dl>
+
+          <h2 id="terrain">Terrain</h2>
+          <p>Each call replaces the terrain and resolves to a <code>TerrainHandle</code> whose <code>metadata</code> gives the size, spacing and height range.</p>
+          <dl class="api-list">
+            <div><dt>engine.generateFractal(options)</dt><dd>Generate a seeded world: a landform preset, noise, shaping, and GPU erosion. Reports each phase through <code>"progress"</code> events.</dd></div>
+            <div><dt>engine.loadDemFromUrl(url, options?)</dt><dd>Load real elevation from a GeoTIFF or raw heightmap at a URL.</dd></div>
+            <div><dt>engine.loadDemFromArrayBuffer(buffer, options?)</dt><dd>Load a GeoTIFF or raw heightmap you already hold.</dd></div>
+            <div><dt>engine.loadRawHeightmap(buffer, options)</dt><dd>Load raw heights from an <code>ArrayBuffer</code>, with their size, sample format and spacing.</dd></div>
+            <div><dt>engine.loadHeightmapImage(source, options)</dt><dd>Load a heightmap image: a PNG at 8 or 16 bits a channel, or any image the browser decodes.</dd></div>
+            <div><dt>loadTerrainFromImages(engine, images, options)</dt><dd>Load a heightmap image with painted biome, water and vegetation maps in one call.</dd></div>
+            <div><dt>loadBundle(engine, source, options?)</dt><dd>Load a bundle from <code>exportBundle()</code>: the heights, options and painted maps, exactly as they were.</dd></div>
+            <div><dt>fetchDemBytes(url, options?)</dt><dd>Fetch elevation bytes with your own headers, abort signal or <code>maxBytes</code>.</dd></div>
+          </dl>
+
+          <h2 id="rendering">Rendering</h2>
+          <dl class="api-list">
+            <div><dt>engine.start()</dt><dd>Run the built-in render loop, paced to the display and the GPU.</dd></div>
+            <div><dt>engine.stop()</dt><dd>Stop the built-in loop.</dd></div>
+            <div><dt>engine.renderOnce()</dt><dd>Draw one frame from your own loop and return its <code>RenderStats</code>.</dd></div>
+            <div><dt>engine.resize(width, height, devicePixelRatio?)</dt><dd>Match the canvas's new size.</dd></div>
+            <div><dt>engine.setRenderQuality(options)</dt><dd>A quality preset, render and cloud distances, terrain detail, a frame-rate cap and dynamic resolution.</dd></div>
+            <div><dt>engine.setDebugView(view)</dt><dd>Show height, slope, normals, level of detail, flow, materials or biomes instead of the shaded view.</dd></div>
+            <div><dt>engine.dispose()</dt><dd>Release every GPU resource. Final: create a new engine to draw again.</dd></div>
+          </dl>
+
+          <h2 id="camera">Camera</h2>
+          <div class="code"><pre><code class="language-ts">const controls = attachFlyCameraControls(engine, canvas, {
+  initialPosition: [0, 420, 1400],
+  initialYawDegrees: 180,
+  initialPitchDegrees: -14,
+  onCameraChange: (camera) =&gt; console.log(camera.position)
+});
+
+// Later: controls.dispose();</code></pre></div>
+          <dl class="api-list">
+            <div><dt>engine.setCamera(camera)</dt><dd>Place the camera: a position, a target and a vertical field of view in degrees.</dd></div>
+            <div><dt>attachFlyCameraControls(engine, canvas, options?)</dt><dd>Mouse-look and WASD flight, with Space and Shift to rise and fall. Returns controls to move, aim and dispose of.</dd></div>
+            <div><dt>computeForwardVector(yaw, pitch)</dt><dd>The unit forward vector for a yaw and pitch in radians.</dd></div>
+            <div><dt>computeRightVector(yaw)</dt><dd>The unit rightward vector for a yaw in radians.</dd></div>
+            <div><dt>computeYawPitchTowards(from, to)</dt><dd>The yaw and pitch that look from one point towards another.</dd></div>
+          </dl>
+
+          <h2 id="sky">Sun, sky and weather</h2>
+          <div class="code"><pre><code class="language-ts">engine.setWeather({ enabled: true, state: "storm" });
+engine.on("weatherChanged", (kind) =&gt; console.log("Now:", kind));</code></pre></div>
+          <dl class="api-list">
+            <div><dt>engine.setSun(sun)</dt><dd>The sun's azimuth, elevation and intensity.</dd></div>
+            <div><dt>engine.setAtmosphere(atmosphere)</dt><dd>Sky scattering, haze distance, exposure and sky tint.</dd></div>
+            <div><dt>engine.setClouds(clouds)</dt><dd>Volumetric clouds: coverage, height, speed, density, towering and sheet clouds, the mid-level layer, cirrus and cloud shadows.</dd></div>
+            <div><dt>engine.setMist(mist)</dt><dd>Drifting mist: density, height, wind and colour.</dd></div>
+            <div><dt>engine.setWeather(weather)</dt><dd>Weather presets from clear to blizzard, custom presets, automatic cycling and regional weather cells.</dd></div>
+            <div><dt>engine.getWeather()</dt><dd>The current blended weather, or <code>undefined</code> when the weather is off.</dd></div>
+            <div><dt>engine.getWeatherPresets()</dt><dd>Every resolved preset, built in and custom, by name.</dd></div>
+            <div><dt>engine.weatherAt(x, z)</dt><dd>The weather at a world position, for gameplay and audio.</dd></div>
+            <div><dt>engine.advanceWeather(seconds)</dt><dd>Run the weather forward by up to a day at once.</dd></div>
+            <div><dt>engine.setTimeOfDay(options)</dt><dd>A clock that moves the sun, from the hour, day length, latitude and day of the year.</dd></div>
+            <div><dt>engine.getTimeOfDay()</dt><dd>The time of day and where it puts the sun.</dd></div>
+            <div><dt>engine.setShadows(shadows)</dt><dd>Terrain, tree and cloud shadows: strength, softness, reach and resolution.</dd></div>
+          </dl>
+
+          <h2 id="land">Land and life</h2>
+          <dl class="api-list">
+            <div><dt>engine.setBiomes(biomes)</dt><dd>The climate behind the nineteen biomes: temperature, moisture, volcanism, beach height and snow line.</dd></div>
+            <div><dt>engine.biomeAt(x, z)</dt><dd>The biome at a world position.</dd></div>
+            <div><dt>engine.temperatureAt(x, z)</dt><dd>The mean annual temperature in °C at a world position.</dd></div>
+            <div><dt>engine.setFlora(flora)</dt><dd>Tree density, tree line, species mix per biome, quality and wind.</dd></div>
+            <div><dt>engine.setGrass(grass)</dt><dd>Grass density, style and view distance, and the forest floor.</dd></div>
+            <div><dt>engine.setSurface(surface)</dt><dd>Procedural textures, detail normals, material tints, rockiness and boulders.</dd></div>
+            <div><dt>engine.setTreeModel(species, model)</dt><dd>Replace one species' model with your own mesh.</dd></div>
+            <div><dt>engine.resetTreeModel(species)</dt><dd>Restore one species' procedural model.</dd></div>
+            <div><dt>engine.setTreeInstances(trees)</dt><dd>Place your own trees, or pass <code>undefined</code> for procedural placement.</dd></div>
+            <div><dt>engine.replaceTexture(target, layer, rgba)</dt><dd>Replace one 512 &times; 512 texture layer.</dd></div>
+            <div><dt>engine.resetTextures()</dt><dd>Restore every procedural texture.</dd></div>
+            <div><dt>imageToRgba(source, size?)</dt><dd>Draw an image into a texture layer for <code>replaceTexture()</code>.</dd></div>
+          </dl>
+
+          <h2 id="water">Water</h2>
+          <dl class="api-list">
+            <div><dt>engine.setWater(water)</dt><dd>Sea level, waves, currents, colour, clarity, foam, reflections, and rivers, lakes and waterfalls.</dd></div>
+            <div><dt>engine.getWaterfalls()</dt><dd>Every waterfall on the terrain, with its height, width and flow.</dd></div>
+            <div><dt>engine.getInflows()</dt><dd>The rivers flowing in from beyond the map.</dd></div>
+            <div><dt>engine.getWaterSounds(x, y, z)</dt><dd>The loudest river, waterfall, lake shore and surf near a point, for your own audio.</dd></div>
+          </dl>
+
+          <h2 id="painting">Painted maps</h2>
+          <dl class="api-list">
+            <div><dt>engine.setWaterMask(mask)</dt><dd>Paint rivers and lakes, carved and drawn like the engine's own, or clear them with <code>null</code>.</dd></div>
+            <div><dt>engine.setBiomeMap(map)</dt><dd>Paint biomes onto the terrain, or clear them with <code>null</code>.</dd></div>
+            <div><dt>engine.setVegetationMasks(masks)</dt><dd>Scale where trees and grass grow.</dd></div>
+            <div><dt>engine.getPaintedMaps()</dt><dd>The painted maps in effect.</dd></div>
+            <div><dt>biomeMapFromImage(image, options?)</dt><dd>Read a biome map from an image, by legend colour.</dd></div>
+            <div><dt>waterMaskFromImage(image, options?)</dt><dd>Read a water mask from an image.</dd></div>
+            <div><dt>densityMaskFromImage(image, options?)</dt><dd>Read a tree or grass density mask from an image.</dd></div>
+          </dl>
+
+          <h2 id="export">Export</h2>
+          <div class="code"><pre><code class="language-ts">const heights = readHeightmapFloats(engine.exportHeightmap());
+const { width, height, metresPerSample } = terrain.metadata;
+
+await downloadBundle(engine, "my-world.zip");</code></pre></div>
+          <dl class="api-list">
+            <div><dt>engine.exportHeightmap()</dt><dd>The heights as little-endian <code>float32</code> bytes, row by row.</dd></div>
+            <div><dt>readHeightmapFloats(bytes)</dt><dd>Read those bytes into a <code>Float32Array</code>.</dd></div>
+            <div><dt>engine.exportMap(kind, options?)</dt><dd>One of fifteen maps: height, biome, water, flow, materials, slope, normals, temperature, tree density and more.</dd></div>
+            <div><dt>engine.exportTrees(options?)</dt><dd>Every tree on the map, or in a region: species, position, size and rotation.</dd></div>
+            <div><dt>engine.exportSnapshot(options?)</dt><dd>A screenshot of the view as an image <code>Blob</code>.</dd></div>
+            <div><dt>engine.getOptionsSnapshot()</dt><dd>The options in effect, as plain JSON, to rebuild the same scene.</dd></div>
+            <div><dt>exportBundle(engine, options?)</dt><dd>Every map, the trees and the options in one zip that <code>loadBundle()</code> reads back.</dd></div>
+            <div><dt>downloadBundle(engine, filename, options?)</dt><dd>Export a bundle and download it.</dd></div>
+            <div><dt>encodePng(map, options?) / encodeRaw(map, options?)</dt><dd>Encode an exported map as PNG files or raw samples.</dd></div>
+            <div><dt>treesToCsv(trees) / treesToJson(trees)</dt><dd>Trees as CSV or JSON.</dd></div>
+            <div><dt>exportTerrainObj(metadata, bytes, options?)</dt><dd>A Wavefront OBJ mesh of the terrain.</dd></div>
+            <div><dt>exportHeightmapImage(metadata, bytes, options?)</dt><dd>A shaded or grayscale heightmap image.</dd></div>
+            <div><dt>renderHeightmapToCanvas(canvas, metadata, bytes)</dt><dd>Draw a top-down map onto a canvas, as the demo's minimap does.</dd></div>
+            <div><dt>downloadRawHeightmap / downloadBlob / downloadText</dt><dd>Save heights, blobs or text as downloads.</dd></div>
+            <div><dt>decodePng(bytes)</dt><dd>Decode any PNG in full, with bounded memory.</dd></div>
+            <div><dt>imageSize(bytes)</dt><dd>A PNG, JPEG or WebP's size from its header, before decoding it.</dd></div>
+          </dl>
+
+          <h2 id="events">Events</h2>
+          <p><code>engine.on(name, listener)</code> subscribes and returns a function that unsubscribes.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Event</th><th scope="col">When</th></tr></thead>
+              <tbody>
+                <tr><td><code>"ready"</code></td><td>Once, when the engine has been created.</td></tr>
+                <tr><td><code>"progress"</code></td><td>As terrain generates or a bundle loads: <code>{ phase, progress }</code>, from 0 to 1 within each phase.</td></tr>
+                <tr><td><code>"terrainLoaded"</code></td><td>After every new terrain, with its <code>TerrainHandle</code>.</td></tr>
+                <tr><td><code>"warning"</code></td><td>For each warning a call raised, such as erosion falling back to the CPU, or an unknown option key that was ignored.</td></tr>
+                <tr><td><code>"stats"</code></td><td>After every drawn frame, with its <code>RenderStats</code>: triangles, trees, grass and GPU time per pass.</td></tr>
+                <tr><td><code>"weatherChanged"</code></td><td>When the dominant weather changes.</td></tr>
+                <tr><td><code>"deviceLost"</code></td><td>When the browser takes the GPU device away. Dispose of the engine and create a new one.</td></tr>
+                <tr><td><code>"fatalError"</code></td><td>Once, when the engine stops for good after an internal error, from whichever call met it, or when the built-in loop stops on an error.</td></tr>
+                <tr><td><code>"gpuError"</code></td><td>For each GPU validation or out-of-memory error the engine did not catch itself, or that a terrain upload raised. The engine keeps running.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="errors">Errors</h2>
+          <p>Engine failures reject with a <code>VistaWasmError</code>, whose <code>code</code> never changes between versions. Arguments of the wrong type throw a <code>TypeError</code> first, and values out of range throw <code>OPTIONS_INVALID</code> with the valid range in the message.</p>
+          <div class="code"><pre><code class="language-ts">try {
+  await engine.generateFractal(options);
+} catch (error) {
+  if (error instanceof VistaWasmError &amp;&amp; error.code === "OPTIONS_INVALID") {
+    showMessage(error.message);
+  }
+}</code></pre></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Code</th><th scope="col">Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><code>WEBGPU_UNAVAILABLE</code></td><td>The browser has no WebGPU.</td></tr>
+                <tr><td><code>WEBGPU_DEVICE_REQUEST_FAILED</code></td><td>WebGPU exists, but the browser refused a device.</td></tr>
+                <tr><td><code>WEBGPU_DEVICE_LOST</code></td><td>The device was lost after start-up.</td></tr>
+                <tr><td><code>WASM_LOAD_FAILED</code></td><td>The WASM or its glue could not load. Check that <code>.wasm</code> is served as <code>application/wasm</code>.</td></tr>
+                <tr><td><code>CANVAS_INVALID</code></td><td>The canvas is missing or unusable.</td></tr>
+                <tr><td><code>OPTIONS_INVALID</code></td><td>An option is out of range; the message says which and what is allowed.</td></tr>
+                <tr><td><code>TERRAIN_GENERATION_FAILED</code></td><td>Terrain generation failed.</td></tr>
+                <tr><td><code>DEM_FETCH_FAILED</code></td><td>Elevation data could not be fetched.</td></tr>
+                <tr><td><code>DEM_FORMAT_UNSUPPORTED</code>, <code>DEM_METADATA_MISSING</code>, <code>INVALID_DEM</code></td><td>The elevation file is not one VistaWASM reads, or lacks what it needs.</td></tr>
+                <tr><td><code>GPU_LIMIT_EXCEEDED</code></td><td>The request needs more than this GPU allows.</td></tr>
+                <tr><td><code>GPU_ERROR</code></td><td>The GPU reported a validation or out-of-memory error while the engine was created or eroded a terrain.</td></tr>
+                <tr><td><code>ENGINE_DISPOSED</code></td><td>The engine was used after <code>dispose()</code>, or after an internal error stopped it.</td></tr>
+                <tr><td><code>INTERNAL_ERROR</code></td><td>Something unexpected; please report it.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="options">Option groups</h2>
+          <p><code>createVistaEngine()</code> takes every group at once, and each engine setter replaces one group. Unset fields keep their defaults.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Group</th><th scope="col">Setter</th><th scope="col">Controls</th></tr></thead>
+              <tbody>
+                <tr><td><code>render</code></td><td><code>resize()</code></td><td>Canvas size and device pixel ratio</td></tr>
+                <tr><td><code>camera</code></td><td><code>setCamera()</code></td><td>Position, target, field of view, near and far</td></tr>
+                <tr><td><code>sun</code></td><td><code>setSun()</code></td><td>Direction and intensity</td></tr>
+                <tr><td><code>atmosphere</code></td><td><code>setAtmosphere()</code></td><td>Sky scattering, haze and exposure</td></tr>
+                <tr><td><code>water</code></td><td><code>setWater()</code></td><td>Sea, waves, currents, rivers, lakes and waterfalls</td></tr>
+                <tr><td><code>flora</code></td><td><code>setFlora()</code></td><td>Trees, species and wind</td></tr>
+                <tr><td><code>grass</code></td><td><code>setGrass()</code></td><td>Grass cover</td></tr>
+                <tr><td><code>clouds</code></td><td><code>setClouds()</code></td><td>Cloud layers</td></tr>
+                <tr><td><code>mist</code></td><td><code>setMist()</code></td><td>Drifting mist</td></tr>
+                <tr><td><code>quality</code></td><td><code>setRenderQuality()</code></td><td>Distances, detail and frame rate</td></tr>
+                <tr><td><code>biomes</code></td><td><code>setBiomes()</code></td><td>Climate and biome rules</td></tr>
+                <tr><td><code>weather</code></td><td><code>setWeather()</code></td><td>Presets and cycling</td></tr>
+                <tr><td><code>shadows</code></td><td><code>setShadows()</code></td><td>Shadow casters and reach</td></tr>
+                <tr><td><code>surface</code></td><td><code>setSurface()</code></td><td>Textures, rock and boulders</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout">
+            <p>The <a href="https://github.com/0xe25f/vistawasm/blob/main/docs/options-reference.md">options reference</a> lists every field, its default and its valid range. The <a href="https://github.com/0xe25f/vistawasm/blob/main/docs/README.md">documentation index</a> has a guide for each feature.</p>
+          </div>
+
+          <div class="next">
+            <article class="card card-link">
+              <h3><a href="threejs.html">three.js guide</a></h3>
+              <p>Draw three.js objects over a VistaWASM world.</p>
+              <span class="more" aria-hidden="true">Read the guide &rarr;</span>
+            </article>
+            <article class="card card-link">
+              <h3><a href="babylonjs.html">Babylon.js guide</a></h3>
+              <p>Draw Babylon.js meshes over a VistaWASM world.</p>
+              <span class="more" aria-hidden="true">Read the guide &rarr;</span>
+            </article>
+          </div>
+        </article>
+      </div>
+    </main>
+{{footer}}
+  </body>
+</html>

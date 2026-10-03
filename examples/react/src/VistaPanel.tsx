@@ -138,8 +138,8 @@ export function VistaPanel() {
       seedOffset: 3001,
       maxInstances: 20000,
       treeQuality: select("treeQuality").value as TreeQuality,
-      speciesVariation: readNumber(input("speciesVariation"), 0),
-      windStrength: readNumber(input("windStrength"), 0)
+      speciesVariation: readNumber(input("speciesVariation"), 0.6),
+      windStrength: readNumber(input("windStrength"), 0.3)
     });
   }
 
@@ -385,11 +385,19 @@ export function VistaPanel() {
       });
       observer.observe(canvas);
 
+      // Time between frames is what the viewer sees. `frameTimeMs` only counts
+      // the CPU time to submit a frame, not the GPU time to draw it.
+      let lastFrameAt = performance.now();
+      let smoothedFrameMs = 1000 / 60;
+
       engine.on("stats", (frameStats) => {
-        const fps = frameStats.frameTimeMs > 0 ? Math.round(1000 / frameStats.frameTimeMs) : 0;
+        const now = performance.now();
+        smoothedFrameMs += (now - lastFrameAt - smoothedFrameMs) * 0.1;
+        lastFrameAt = now;
+        const fps = Math.round(1000 / Math.max(1, smoothedFrameMs));
         setStats(
           [
-            `FPS ~${fps}`,
+            `FPS ${fps} (${smoothedFrameMs.toFixed(1)} ms per frame)`,
             `Triangles ${frameStats.terrainTriangles.toLocaleString()}`,
             `Flora instances ${frameStats.floraInstances.toLocaleString()}`,
             `Grass instances ${frameStats.grassInstances.toLocaleString()}`,
@@ -572,19 +580,19 @@ export function VistaPanel() {
           </label>
           <label>
             Tree quality
-            <select id="treeQuality" defaultValue="billboard">
-              <option value="billboard">Billboard (fast)</option>
+            <select id="treeQuality" defaultValue="mesh">
+              <option value="billboard">Billboard impostors (fastest)</option>
               <option value="cross-quad">Cross-quad</option>
-              <option value="mesh">Mesh (hyper-realistic)</option>
+              <option value="mesh">3D meshes + impostors (realistic)</option>
             </select>
           </label>
           <label>
             Species variation
-            <input id="speciesVariation" type="range" min={0} max={1} step={0.05} defaultValue={0} />
+            <input id="speciesVariation" type="range" min={0} max={1} step={0.05} defaultValue={0.6} />
           </label>
           <label>
             Wind strength
-            <input id="windStrength" type="range" min={0} max={1} step={0.05} defaultValue={0} />
+            <input id="windStrength" type="range" min={0} max={1} step={0.05} defaultValue={0.3} />
           </label>
         </fieldset>
 

@@ -1,3 +1,5 @@
+import { MAX_TERRAIN_SIDE } from "./codec.js";
+import { invalid } from "./errors.js";
 import type { TerrainMetadata } from "./types.js";
 
 /**
@@ -20,6 +22,10 @@ export interface HeightmapImageOptions {
  * into a plain `Float32Array`, regardless of the source buffer's alignment.
  */
 export function readHeightmapFloats(heightBytes: Uint8Array): Float32Array {
+  if (!(heightBytes instanceof Uint8Array)) {
+    throw new TypeError("heightBytes must be a Uint8Array of little-endian float32 heights, as exportHeightmap() returns.");
+  }
+
   const view = new DataView(
     heightBytes.buffer,
     heightBytes.byteOffset,
@@ -46,10 +52,10 @@ export function computeHeightmapPixels(
   heightBytes: Uint8Array,
   options: HeightmapImageOptions = {}
 ): Uint8ClampedArray<ArrayBuffer> {
-  const { width, height } = metadata;
+  const { width, height } = Object(metadata) as TerrainMetadata;
 
-  if (width <= 0 || height <= 0) {
-    throw new TypeError("metadata.width and metadata.height must be greater than 0.");
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new TypeError("metadata.width and metadata.height must be whole numbers greater than 0.");
   }
 
   const heights = readHeightmapFloats(heightBytes);
@@ -61,6 +67,11 @@ export function computeHeightmapPixels(
   }
 
   const colourMode = options.colourMode ?? "hypsometric";
+
+  if (colourMode !== "grayscale" && colourMode !== "hypsometric") {
+    throw invalid(`colourMode must be "grayscale" or "hypsometric", but it is ${String(colourMode)}.`);
+  }
+
   const min = metadata.minHeightMetres;
   const max = metadata.maxHeightMetres;
   const range = max - min > 0.0001 ? max - min : 1;
@@ -164,10 +175,14 @@ export function exportTerrainObj(
   heightBytes: Uint8Array,
   options: TerrainObjExportOptions = {}
 ): string {
-  const { width, height, metresPerSample } = metadata;
+  const { width, height, metresPerSample } = Object(metadata) as TerrainMetadata;
 
-  if (width <= 1 || height <= 1) {
-    throw new TypeError("metadata.width and metadata.height must be greater than 1.");
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 1 || height <= 1) {
+    throw new TypeError("metadata.width and metadata.height must be whole numbers greater than 1.");
+  }
+
+  if (!Number.isFinite(metresPerSample)) {
+    throw new TypeError("metadata.metresPerSample must be a finite number of metres.");
   }
 
   const heights = readHeightmapFloats(heightBytes);
@@ -179,6 +194,11 @@ export function exportTerrainObj(
   }
 
   const maxSamplesPerSide = Math.max(2, options.maxSamplesPerSide ?? 256);
+
+  if (!Number.isInteger(maxSamplesPerSide) || maxSamplesPerSide > MAX_TERRAIN_SIDE) {
+    throw invalid(`exportTerrainObj() maxSamplesPerSide must be a whole number up to ${MAX_TERRAIN_SIDE}, the largest terrain, but it is ${String(options.maxSamplesPerSide)}.`);
+  }
+
   const stride = Math.max(1, Math.ceil((Math.max(width, height) - 1) / (maxSamplesPerSide - 1)));
   const samplesX = Math.floor((width - 1) / stride) + 1;
   const samplesY = Math.floor((height - 1) / stride) + 1;

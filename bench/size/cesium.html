@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>CesiumJS size app</title>
+    <script>
+      // Cesium loads its workers and sky textures from here at run time.
+      window.CESIUM_BASE_URL = "./cesium/";
+    </script>
+  </head>
+  <body>
+    <div id="view" style="width: 960px; height: 540px"></div>
+    <script type="module" src="./cesium.js"></script>
+  </body>
+</html>

@@ -2,6 +2,11 @@
   box-sizing: border-box;
 }
 
+/* Elements with display rules of their own still hide with `hidden`. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   width: 100%;
@@ -20,6 +25,61 @@ body {
   grid-template-columns: minmax(0, 1fr) 300px;
   width: 100%;
   height: 100vh;
+}
+
+.shell.panel-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.stage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgb(255 255 255 / 14%);
+  background: #1b2020;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tabbar button {
+  width: auto;
+  min-height: 32px;
+  padding: 4px 14px;
+}
+
+.tab {
+  background: transparent;
+  color: #cdd8d1;
+  border-color: transparent;
+}
+
+.tab[aria-selected="true"] {
+  background: #d7f078;
+  color: #151817;
+}
+
+.tab:focus-visible,
+.restore:focus-visible,
+.paint-surface:focus-visible {
+  outline: 2px solid #d7f078;
+  outline-offset: 2px;
+}
+
+.restore {
+  background: #2c3434;
+  color: #eef3ef;
 }
 
 .viewer {
@@ -61,7 +121,7 @@ canvas {
   position: absolute;
   left: 16px;
   bottom: 16px;
-  max-width: min(520px, calc(100% - 32px));
+  max-width: min(520px, calc(50% - 24px));
   padding: 8px 10px;
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 6px;
@@ -84,9 +144,9 @@ canvas {
 
 .hint {
   position: absolute;
-  left: 50%;
+  right: 16px;
   bottom: 16px;
-  transform: translateX(-50%);
+  max-width: calc(50% - 24px);
   padding: 6px 12px;
   border: 1px solid rgb(255 255 255 / 14%);
   border-radius: 999px;
@@ -94,41 +154,268 @@ canvas {
   font-size: 12px;
   color: rgb(238 243 239 / 80%);
   pointer-events: none;
-  white-space: nowrap;
+  text-align: right;
+}
+
+/* The loading overlay covers the view while the engine starts and while */
+/* terrain generates. Opacity and transforms animate on the compositor, so */
+/* the bar's shimmer keeps moving while WASM holds the main thread. */
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(6 12 12 / 45%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 200ms ease, visibility 0s linear 200ms;
+}
+
+/* A short delay, so a quick rebuild never flashes the overlay. */
+.loading.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 200ms ease 120ms, visibility 0s;
+}
+
+.loading.is-first {
+  background: radial-gradient(ellipse at 50% 35%, #29464d 0%, #101414 72%);
+  transition: none;
+}
+
+.loading-card {
+  width: min(420px, 100%);
+  padding: 20px 22px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 12px;
+  background: rgb(12 18 18 / 88%);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+}
+
+.loading-brand {
+  margin: 0 0 4px;
+  color: #d7f078;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.loading-title {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.loading-track {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+}
+
+.loading-track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 35%), transparent);
+  transform: translateX(-100%);
+  animation: loading-shimmer 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes loading-shimmer {
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.loading-bar {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.loading-bar::-webkit-progress-bar {
+  background: transparent;
+}
+
+.loading-bar::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #8fd694, #d7f078);
+  transition: width 160ms ease;
+}
+
+.loading-bar::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #8fd694, #d7f078);
+}
+
+.loading-bar:indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+.loading-detail {
+  min-height: 1.4em;
+  margin: 10px 0 0;
+  color: rgb(238 243 239 / 80%);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.loading-dismiss {
+  width: auto;
+  margin-top: 14px;
+  padding: 4px 18px;
+}
+
+.loading.is-error .loading-track {
+  display: none;
+}
+
+.loading.is-error .loading-title {
+  color: #ffb4a8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading,
+  .loading.is-visible {
+    transition: none;
+  }
+
+  .loading-track::after {
+    display: none;
+  }
 }
 
 .controls {
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 10px;
   padding: 16px;
   overflow-y: auto;
   border-left: 1px solid rgb(255 255 255 / 14%);
   background: #1b2020;
 }
 
-fieldset {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
+.section {
   border: 1px solid rgb(255 255 255 / 14%);
   border-radius: 8px;
+  background: rgb(255 255 255 / 2%);
 }
 
-legend {
-  padding: 0 6px;
+.section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #9fe08a;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.section > summary::after {
+  content: "+";
+  font-size: 16px;
+  line-height: 1;
+  color: rgb(238 243 239 / 60%);
+}
+
+.section[open] > summary::after {
+  content: "\2212";
+}
+
+.section > summary:focus-visible {
+  outline: 2px solid #d7f078;
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.subsection {
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  padding-top: 8px;
+}
+
+.subsection > summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(238 243 239 / 80%);
+  cursor: pointer;
+}
+
+.subsection-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0 12px 12px;
+  border: 0;
+  min-width: 0;
 }
 
 label {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   font-size: 13px;
   color: #cdd8d1;
+}
+
+label > input,
+label > select {
+  grid-column: 1 / -1;
+}
+
+label > .value {
+  font-variant-numeric: tabular-nums;
+  color: #eef3ef;
+  opacity: 0.8;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chips .chip {
+  width: auto;
+  min-height: 28px;
+  margin: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #2c3434;
+  color: #eef3ef;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chips .chip[aria-pressed="true"] {
+  background: #d7f078;
+  color: #151817;
 }
 
 label.checkbox {
@@ -162,8 +449,143 @@ button {
   font-weight: 700;
 }
 
-button + button {
-  margin-top: 4px;
+button.secondary {
+  background: #2c3434;
+  color: #eef3ef;
+  font-weight: 600;
+}
+
+button.secondary:hover,
+button.secondary:focus-visible {
+  background: #3a4545;
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+input[type="range"] {
+  min-height: 0;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: #d7f078;
+}
+
+input[type="checkbox"] {
+  accent-color: #d7f078;
+}
+
+input[type="file"] {
+  min-height: 0;
+  padding: 6px;
+  background: #2c3434;
+  color: #eef3ef;
+  font-size: 12px;
+}
+
+.paint {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.paint-surface {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  cursor: crosshair;
+  background: #0b0f0f;
+}
+
+.paint-surface.panning {
+  cursor: grab;
+}
+
+#paintCanvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  touch-action: none;
+}
+
+#paintCanvas.pixelated {
+  image-rendering: pixelated;
+}
+
+.brush-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 60%);
+  pointer-events: none;
+}
+
+.paint-cursor,
+.paint-status {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.paint-cursor {
+  border-top: 1px solid rgb(255 255 255 / 14%);
+  font-variant-numeric: tabular-nums;
+  color: #cdd8d1;
+}
+
+.paint-status {
+  background: #1b2020;
+}
+
+.paint-options {
+  display: grid;
+  gap: 10px;
+}
+
+.button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.palette {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.palette .swatch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 2px 6px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.palette .swatch[aria-pressed="true"] {
+  outline: 2px solid #d7f078;
+  outline-offset: -2px;
+}
+
+.palette .swatch span {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgb(255 255 255 / 30%);
+}
+
+.palette .swatch span.erase {
+  background: repeating-linear-gradient(45deg, #2c3434 0 3px, #eef3ef 3px 5px);
 }
 
 @media (max-width: 760px) {
@@ -172,9 +594,169 @@ button + button {
     grid-template-rows: minmax(360px, 1fr) auto;
   }
 
+  .shell.panel-hidden {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 1fr);
+  }
+
   .controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     border-top: 1px solid rgb(255 255 255 / 14%);
     border-left: 0;
   }
+
+  .project {
+    grid-column: 1 / -1;
+  }
+
+  .hint {
+    display: none;
+  }
+
+  #minimap {
+    width: 110px;
+    height: 110px;
+  }
+
+  .status {
+    max-width: calc(100% - 32px);
+  }
+}
+
+@media (max-width: 480px) {
+  .controls {
+    grid-template-columns: 1fr;
+  }
+}
+
+.readout {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: #cdd8d1;
+}
+
+.legend[hidden] {
+  display: none;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend span {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgb(255 255 255 / 0.25);
+}
+
+/* The legend's colours live here rather than in style attributes, so the page needs no inline styles under its Content Security Policy. */
+.legend span[data-biome="grassyMeadows"] {
+  background: rgb(140 204 77);
+}
+
+.legend span[data-biome="outerThicket"] {
+  background: rgb(102 158 56);
+}
+
+.legend span[data-biome="outerForest"] {
+  background: rgb(51 128 46);
+}
+
+.legend span[data-biome="innerForest"] {
+  background: rgb(20 82 26);
+}
+
+.legend span[data-biome="mountainFoothills"] {
+  background: rgb(153 140 102);
+}
+
+.legend span[data-biome="mountainProper"] {
+  background: rgb(140 140 148);
+}
+
+.legend span[data-biome="outerVolcanic"] {
+  background: rgb(89 51 46);
+}
+
+.legend span[data-biome="calderaVolcanic"] {
+  background: rgb(230 64 13);
+}
+
+.legend span[data-biome="savannahExpanse"] {
+  background: rgb(217 184 89);
+}
+
+.legend span[data-biome="coastalBeach"] {
+  background: rgb(242 224 158);
+}
+
+.legend span[data-biome="coastalRocky"] {
+  background: rgb(128 115 107);
+}
+
+.legend span[data-biome="outerJungle"] {
+  background: rgb(38 179 89);
+}
+
+.legend span[data-biome="innerJungle"] {
+  background: rgb(5 115 51);
+}
+
+.legend span[data-biome="swampWetlands"] {
+  background: rgb(77 97 64);
+}
+
+.legend span[data-biome="ocean"] {
+  background: rgb(26 64 140);
+}
+
+.legend span[data-biome="alpineTransition"] {
+  background: rgb(153 128 158);
+}
+
+.legend span[data-biome="lowerSnowyPeaks"] {
+  background: rgb(158 199 242);
+}
+
+.legend span[data-biome="upperSnowyPeaks"] {
+  background: rgb(247 252 255);
+}
+
+.legend span[data-biome="iceArctic"] {
+  background: rgb(191 235 255);
+}
+
+.project {
+  display: grid;
+  gap: 4px;
+  padding: 4px 2px 0;
+  font-size: 13px;
+}
+
+.project strong {
+  font-size: 16px;
+}
+
+.project a {
+  color: #9fe08a;
+}
+
+.project a:hover,
+.project a:focus-visible {
+  color: #c8f5b8;
 }

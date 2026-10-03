@@ -37,35 +37,18 @@ non-terrain 2D/3D overlays.
   *is* the environment and other engines only render characters, effects,
   or UI on top. It does not give you shared depth-testing between
   VistaWASM's terrain and the other engine's objects (each renders to a
-  fully separate WebGPU/WebGL context with no shared depth buffer) — so
-  objects from the other engine will always draw fully in front of or
-  fully behind VistaWASM's terrain unless you fake it (e.g. hide a
-  character behind a hill by not rendering it, based on your own
-  height-query against the exported heightmap — see
-  [`docs/game-development.md`](game-development.md#2-player-movement-and-camera-control)).
+  fully separate WebGPU/WebGL context with no shared depth buffer). To let
+  hills hide the other engine's objects, give that engine an invisible,
+  depth-only copy of the terrain built from `engine.exportHeightmap()`.
+  This covers the terrain only, not VistaWASM's trees or water.
 
-```html
-<div style="position: relative; width: 100vw; height: 100vh;">
-  <canvas id="vista" style="position: absolute; inset: 0;"></canvas>
-  <canvas id="overlay" style="position: absolute; inset: 0; pointer-events: none;"></canvas>
-</div>
-```
-
-```ts
-const vista = await createVistaEngine(document.querySelector("#vista")!);
-const overlayRenderer = new THREE.WebGLRenderer({
-  canvas: document.querySelector("#overlay")!,
-  alpha: true
-});
-
-function tick() {
-  const camera = computeSharedCamera();
-  vista.setCamera(toVistaCamera(camera));
-  syncThreeCamera(threeCamera, camera);
-  overlayRenderer.render(overlayScene, threeCamera);
-  requestAnimationFrame(tick);
-}
-```
+[Using VistaWASM with three.js](threejs.md) walks through the whole
+pattern with tested code: stacked canvases, camera sync with the fly
+camera, a matching sun light, terrain height queries, and the depth-only
+occluder. `examples/threejs/` is the runnable version
+(`npm run dev:threejs`). [Using VistaWASM with Babylon.js](babylonjs.md)
+does the same for Babylon.js, with `examples/babylonjs/`
+(`npm run dev:babylonjs`). The same steps apply to PlayCanvas.
 
 ### A note on WebGPU device sharing
 
@@ -107,6 +90,10 @@ runtime engine.
 
 ### Three.js: heightfield-displaced plane
 
+[Using VistaWASM with three.js](threejs.md#2-heightmap-mesh-threejs-draws-the-terrain)
+has a fuller version, with vertex colours and loading pre-generated terrain
+without WebGPU.
+
 ```ts
 import * as THREE from "three";
 import { readHeightmapFloats } from "@vista-wasm/vista-wasm";
@@ -147,9 +134,12 @@ sample — the same reasoning VistaWASM's own renderer uses internally (see
 
 ### Babylon.js: built-in heightmap terrain
 
+[Using VistaWASM with Babylon.js](babylonjs.md#2-heightmap-mesh-babylonjs-draws-the-terrain)
+builds the mesh from the raw heights instead, which keeps full precision.
+
 Babylon has first-class heightmap terrain support
 (`MeshBuilder.CreateGroundFromHeightMap`), but it expects an *image*
-(a grayscale heightmap texture), not a raw float buffer. Render VistaWASM's
+(a greyscale heightmap texture), not a raw float buffer. Render VistaWASM's
 own PNG minimap/heightmap export to a canvas and use that:
 
 ```ts
@@ -174,7 +164,7 @@ const ground = BABYLON.MeshBuilder.CreateGroundFromHeightMap(
 );
 ```
 
-A grayscale image loses precision compared to the raw `Float32Array` (8 bits
+A greyscale image loses precision compared to the raw `Float32Array` (8 bits
 per channel unless you encode 16-bit across two channels yourself) — prefer
 the raw-buffer approach (as in the Three.js example) if Babylon's heightmap
 image path isn't precise enough for your terrain's height range.
@@ -202,7 +192,7 @@ in this section.
 | Browser support | Requires WebGPU | Works anywhere your chosen engine works (including WebGL2/mobile) |
 | Runtime cost | One extra WebGPU context/canvas | None beyond your engine's own terrain rendering |
 | Terrain updates | Live — regenerate any time, renders immediately | Re-export and re-build your engine's mesh/collider on every change |
-| Depth-correct compositing with other 3D objects | No (separate canvases, see note above) | Yes — it's all one scene in your engine |
+| Depth-correct compositing with other 3D objects | Terrain only, with a depth-only occluder; trees and water do not hide objects (see [`docs/threejs.md`](threejs.md#let-hills-hide-your-objects)) | Yes — it's all one scene in your engine |
 | Best for | Exploration/flight/environment-forward games where VistaWASM's own look is the point | Games that need a specific existing rendering pipeline, WebGL fallback, or want terrain as just one asset among many in an existing engine |
 
 Most projects that reach for "integrate with a web game engine" want

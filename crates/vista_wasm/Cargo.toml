@@ -31,8 +31,19 @@ web-sys = { version = "0.3", features = [
   "Element",
   "HtmlCanvasElement",
   "Navigator",
+  "Performance",
   "Window"
 ] }
 
 [dev-dependencies]
 futures-executor = "0.3"
+naga = { version = "30", features = ["wgsl-in"] }
+
+# wasm-opt as wasm-pack runs it by default, plus two facts about this
+# module that let it fold more: its memory is its own, so it starts
+# zeroed and zero bytes need not be stored, and the stack comes first
+# and grows down from 1 MiB, so the lowest 1 KiB is never used (a stack
+# that deep has already overflowed), and constant offsets can be folded
+# into loads and stores without a wrapped address reaching it.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--zero-filled-memory", "--low-memory-unused"]

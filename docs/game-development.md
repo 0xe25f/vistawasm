@@ -42,6 +42,11 @@ function tick(nowMs: number) {
 requestAnimationFrame(tick);
 ```
 
+When the GPU is still drawing two earlier frames, `renderOnce()` skips
+drawing and returns the previous stats (same `frameIndex`), so frames never
+queue up behind a slow GPU (see
+[Frame pacing](events-errors-and-lifecycle.md#frame-pacing)).
+
 Option B is preferable once you have a real player/vehicle controller, since
 it guarantees the camera you set is the one used for that exact frame,
 rather than racing against VistaWASM's own internal loop.
@@ -123,9 +128,10 @@ practical approaches, depending on how much of the terrain you need
 colliders for:
 
 - **Heightfield collider (most physics engines support this natively).**
-  Export the heightmap once with `exportHeightmap()` and feed the raw
-  `Float32Array` (via `readHeightmapFloats`) directly into your physics
-  engine's heightfield/terrain collider (Rapier's `ColliderDesc.heightfield`,
+  Export the heightmap once with `exportHeightmap()`, read it with
+  `readHeightmapFloats()` (row-major, row 0 at −z), and give it to your
+  physics engine's heightfield/terrain collider, reordering it if the
+  engine expects column-major data (Rapier's `ColliderDesc.heightfield`,
   Ammo.js's `btHeightfieldTerrainShape`, Cannon-es's `Heightfield`). This
   is exact, fast, and — because it's the same data VistaWASM itself
   renders from — never drifts out of sync with what the player sees.
@@ -147,12 +153,15 @@ of environment settings. There is no built-in concept of terrain "tiles" or
 streaming multiple terrains in and out. If your game needs a world larger
 than a single heightmap comfortably supports:
 
-- Prefer a single large `generateFractal({ size: 2048 | 4096 | 8192, ... })`
+- Prefer a single large `generateFractal({ size: 2048, ... })`
   or a single large DEM. VistaWASM's terrain mesh already recentres on the
   camera with distance-based level of detail (see
   [`docs/architecture.md`](architecture.md#terrain-rendering-and-level-of-detail)) —
   a single call, high vertex budget near the camera, coarser far away — so
-  you rarely need to manage LOD yourself even for large worlds.
+  you rarely need to manage LOD yourself even for large worlds. A terrain
+  is at most 2048 samples a side (25 km at 12 m, 61 km at 30 m), a limit
+  set by WebAssembly's 4 GiB of memory (see
+  [`docs/security.md`](security.md#terrain-size)).
 - For genuinely unbounded/procedural worlds (larger than any single
   heightmap should be), you will need your own tiling scheme above
   VistaWASM: generate a new terrain (new seed, offset shape parameters) when
@@ -162,34 +171,49 @@ than a single heightmap comfortably supports:
 ## 5. Performance and async work
 
 - `generateFractal()`, `loadDemFromUrl()`, `loadDemFromArrayBuffer()`, and
-  `loadRawHeightmap()` are the only async engine calls, and they can take
-  anywhere from a few milliseconds (small terrain, no erosion) to hundreds
-  of milliseconds (large terrain with many erosion iterations). Always show
-  loading UI driven by the `"progress"` event while one is in flight, and
-  disable "Generate" buttons/inputs until it resolves.
-- While an async call is in flight, sync calls (`setCamera`, `setSun`,
+  `loadRawHeightmap()` are the only async engine calls. They take from
+  tens of milliseconds for a small terrain to much longer for a large one
+  with many erosion iterations. Show loading UI while the returned promise
+  is pending, and disable "Generate" buttons/inputs until it settles. (The
+  `"progress"` event only reports the start and end of `generateFractal()`,
+  so it cannot drive a progress bar.)
+- While an async call is in flight, sync setters (`setCamera`, `setSun`,
   `setAtmosphere`, `setWater`, `setFlora`, `setGrass`, `setClouds`,
-  `setMist`, `setRenderQuality`, `setDebugView`, `resize`) are silently
-  skipped rather than queued or thrown — this is intentional (see the
+  `setMist`, `setWeather`, `setShadows`, `setSurface`, `setBiomes`,
+  `setRenderQuality`, `setDebugView`, `resize`) are silently skipped
+  rather than queued or thrown; the replacement hooks throw instead (see
+  [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md#reentrancy)) — this is intentional (see the
   reentrancy note in [`docs/architecture.md`](architecture.md#lifecycle))
   and means your camera controller can keep calling `setCamera()` every frame without any
   special-casing around terrain generation. `renderOnce()` keeps returning
   the last real `RenderStats` during this window rather than blocking.
-- Use `RenderQualityOptions` to trade quality for frame time: `preset:
-  "preview"` for fast iteration (level editors, seed browsing), `"balanced"`
-  for normal play, `"high"`/`"offline"` for screenshots or offline renders.
-  `floraDensityScale` is the cheapest lever if flora/grass billboard
+- Find the slow pass first: `RenderStats.gpuPassTimesMs` gives GPU time per
+  pass (see
+  [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#find-what-is-slow-first)).
+  Then limit distant work with `RenderQualityOptions.renderDistanceMetres`,
+  `detailDistanceMetres`, and `cloudDistanceMetres`, or a `preset`.
+  `RenderQualityOptions.floraDensityScale` is the cheapest lever if flora/grass billboard
   fill-rate is your bottleneck — it scales both `FloraOptions.density` and
   `GrassOptions.density` together. `CloudsOptions.style: "volumetric"` and
   `MistOptions.style: "volumetric"` are the next things to turn off or
   down first if you need frame time back; both have cheaper
   `"painted"`/`"flat"` equivalents that look nearly as good for far less
   cost (see [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md)).
-- Watch `RenderStats.frameTimeMs` and
-  `terrainTriangles`/`floraInstances`/`grassInstances` from the `"stats"`
-  event to build your own performance HUD or adaptive quality logic (for
-  example, drop `floraDensityScale` if `frameTimeMs` stays above your
-  budget for a few seconds).
+  After those, lower `CloudsOptions.resolutionScale`, the tree shadow map
+  (`ShadowOptions.trees.resolution` and `distanceMetres`), or switch tree
+  shadows off; terrain shadows are nearly free, since they are only
+  recalculated when the sun or terrain changes (see
+  [`docs/shadows.md`](shadows.md)).
+- Weather is a gameplay tool too: `getWeather()` reports rain, snow,
+  wetness, and wind every frame, and `"weatherChanged"` fires on each
+  change, so gameplay (slippery roads, sound, NPC shelter) can follow the
+  sky (see [`docs/weather.md`](weather.md)).
+- Time the gap between `"stats"` events, and watch
+  `terrainTriangles`/`floraInstances`/`grassInstances`, to build your own
+  performance HUD or adaptive quality logic (for example, drop
+  `floraDensityScale` if frames stay slow for a few seconds).
+  `RenderStats.frameTimeMs` only covers the CPU side of a frame; see
+  [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md#render-statistics-renderstats).
 
 ## 6. Error handling in a shipped game
 

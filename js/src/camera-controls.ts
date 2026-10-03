@@ -1,3 +1,4 @@
+import { checkOptions, invalid } from "./errors.js";
 import type { CameraOptions } from "./types.js";
 
 /**
@@ -103,6 +104,11 @@ export interface FlyCameraControls {
   setPosition(position: [number, number, number]): void;
 
   /**
+   * Turn the camera to look at a world position, keeping its position.
+   */
+  lookAt(target: [number, number, number]): void;
+
+  /**
    * Remove every event listener and stop the internal animation loop.
    */
   dispose(): void;
@@ -143,7 +149,8 @@ const LOOK_RIGHT_KEYS = new Set(["ArrowRight"]);
  *
  * Controls:
  * - Drag with the primary (left) pointer button to look around.
- * - `W`/`A`/`S`/`D` or arrow keys to move.
+ * - `W`/`A`/`S`/`D` to move, or up and down arrows to move forwards and backwards.
+ * - Left and right arrows to turn.
  * - `Space`/`E` to rise, `Shift`/`Q` to descend.
  * - Hold the middle mouse button and drag up or down to rise or descend.
  * - Scroll wheel to zoom in and out by adjusting the field of view.
@@ -157,6 +164,7 @@ export function attachFlyCameraControls(
   canvas: HTMLCanvasElement,
   options: FlyCameraControlsOptions = {}
 ): FlyCameraControls {
+  checkControls(engine, canvas, options);
   const position: [number, number, number] = options.initialPosition
     ? [...options.initialPosition]
     : [0, 200, 0];
@@ -409,9 +417,17 @@ export function attachFlyCameraControls(
       return fieldOfViewDegrees;
     },
     setPosition(next: [number, number, number]): void {
+      checkPoint("setPosition()", next);
       position[0] = next[0];
       position[1] = next[1];
       position[2] = next[2];
+      apply();
+    },
+    lookAt(target: [number, number, number]): void {
+      checkPoint("lookAt()", target);
+      const [yaw, pitch] = computeYawPitchTowards(position, target);
+      yawDegrees = (yaw * 180) / Math.PI;
+      pitchDegrees = (pitch * 180) / Math.PI;
       apply();
     },
     dispose(): void {
@@ -438,6 +454,46 @@ export function attachFlyCameraControls(
   };
 }
 
+/** Throw unless `point` is three finite numbers. */
+function checkPoint(call: string, point: unknown): void {
+  if (!Array.isArray(point) || point.length !== 3 || !point.every(Number.isFinite)) {
+    throw new TypeError(`${call} expects a position [x, y, z] of three finite numbers in metres.`);
+  }
+}
+
+/**
+ * Check what `attachFlyCameraControls()` is given before it listens to
+ * anything: every number finite, and fields of view from 1 to 179
+ * degrees with the minimum no larger than the maximum.
+ */
+function checkControls(engine: FlyCameraEngine, canvas: HTMLCanvasElement, options: FlyCameraControlsOptions): void {
+  const call = "attachFlyCameraControls()";
+
+  if (typeof engine?.setCamera !== "function" || typeof canvas?.addEventListener !== "function") {
+    throw new TypeError(`${call} expects an engine with setCamera() and a canvas element.`);
+  }
+
+  const { initialPosition, onCameraChange, ...numbers } = checkOptions<FlyCameraControlsOptions>(call, options);
+
+  if (initialPosition !== undefined) {
+    checkPoint(`${call} initialPosition`, initialPosition);
+  }
+
+  if (onCameraChange !== undefined && typeof onCameraChange !== "function") {
+    throw new TypeError(`${call} onCameraChange must be a function.`);
+  }
+
+  for (const [name, value] of Object.entries(numbers)) {
+    if (value !== undefined && !(typeof value === "number" && Number.isFinite(value) && (!/FieldOfView/i.test(name) || (value >= 1 && value <= 179)))) {
+      throw invalid(`${call} ${name} must be a finite number${/FieldOfView/i.test(name) ? " from 1 to 179 degrees" : ""}, but it is ${String(value)}.`);
+    }
+  }
+
+  if ((numbers.minFieldOfViewDegrees ?? 20) > (numbers.maxFieldOfViewDegrees ?? 100)) {
+    throw invalid(`${call} minFieldOfViewDegrees must not be above maxFieldOfViewDegrees.`);
+  }
+}
+
 /**
  * Clamp a value to an inclusive range.
  */
@@ -460,6 +516,20 @@ export function computeForwardVector(
     Math.sin(pitchRadians),
     Math.cos(pitchRadians) * Math.cos(yawRadians)
   ];
+}
+
+/**
+ * Return the yaw and pitch, in radians, that look from `from` towards
+ * `to`: the inverse of {@link computeForwardVector}.
+ */
+export function computeYawPitchTowards(
+  from: [number, number, number],
+  to: [number, number, number]
+): [number, number] {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  return [Math.atan2(dx, dz), Math.atan2(dy, Math.hypot(dx, dz))];
 }
 
 /**

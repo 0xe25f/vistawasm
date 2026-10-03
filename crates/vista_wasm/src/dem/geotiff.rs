@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use vista_types::{DemLoadOptions, GeospatialMetadata, TerrainMetadata};
 
+use super::{sample_count, Samples};
+use crate::config::{validate_finite, MAX_METRES_PER_SAMPLE};
 use crate::errors::{VistaError, VistaResult};
 use crate::terrain::heightmap::HeightMap;
 
@@ -32,8 +34,36 @@ struct IfdEntry {
   inline_value: [u8; 4],
 }
 
+/// The largest GeoTIFF file accepted: the largest map, 2048 x 2048
+/// float32 samples, and 64 MiB for its tags and any padding between
+/// strips. The whole file is copied into WASM memory to be parsed, so
+/// the browser wrapper and the engine check this first.
+pub const MAX_GEOTIFF_BYTES: u64 =
+  crate::config::MAX_TERRAIN_SIZE as u64 * crate::config::MAX_TERRAIN_SIZE as u64 * 4
+    + 64 * 1024 * 1024;
+
+/// Reject a GeoTIFF longer than [`MAX_GEOTIFF_BYTES`] before reading it.
+pub fn check_geotiff_length(length: u64) -> VistaResult<()> {
+  if length > MAX_GEOTIFF_BYTES {
+    return Err(VistaError::DemFormatUnsupported(format!(
+      "the GeoTIFF is {length} bytes, more than the {MAX_GEOTIFF_BYTES} a map of at most {max} x {max} samples needs.",
+      max = crate::config::MAX_TERRAIN_SIZE
+    )));
+  }
+
+  Ok(())
+}
+
 /// Decode an uncompressed GeoTIFF into a heightmap.
+///
+/// Every offset and count in the file is untrusted: reads are bounds
+/// checked with overflow-free arithmetic, and the image size is checked
+/// against [`crate::config::MAX_TERRAIN_SIZE`] before anything is
+/// allocated for it.
 pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<HeightMap> {
+  check_geotiff_length(bytes.len() as u64)?;
+  let vertical_scale = options.vertical_scale.unwrap_or(1.0);
+  validate_finite("verticalScale", vertical_scale)?;
   let endian = parse_endian(bytes)?;
   let magic = read_u16(bytes, 2, endian)?;
 
@@ -45,8 +75,10 @@ pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<Hei
 
   let ifd_offset = read_u32(bytes, 4, endian)? as usize;
   let entries = read_ifd(bytes, ifd_offset, endian)?;
-  let width = entry_u32(bytes, &entries, TAG_IMAGE_WIDTH, endian)? as u32;
-  let height = entry_u32(bytes, &entries, TAG_IMAGE_LENGTH, endian)? as u32;
+  let width = entry_u32(bytes, &entries, TAG_IMAGE_WIDTH, endian)?;
+  let height = entry_u32(bytes, &entries, TAG_IMAGE_LENGTH, endian)?;
+  let expected =
+    sample_count("GeoTIFF", width, height).map_err(VistaError::DemFormatUnsupported)?;
   let compression = entry_u32(bytes, &entries, TAG_COMPRESSION, endian).unwrap_or(1);
 
   if compression != 1 {
@@ -63,8 +95,21 @@ pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<Hei
     ));
   }
 
-  let bits_per_sample = entry_u32(bytes, &entries, TAG_BITS_PER_SAMPLE, endian)? as u16;
-  let sample_format = entry_u32(bytes, &entries, TAG_SAMPLE_FORMAT, endian).unwrap_or(1) as u16;
+  let bits_per_sample = entry_u32(bytes, &entries, TAG_BITS_PER_SAMPLE, endian)?;
+  let sample_format = entry_u32(bytes, &entries, TAG_SAMPLE_FORMAT, endian).unwrap_or(1);
+  let read_sample: fn(&[u8], Endian) -> f32 = match (bits_per_sample, sample_format) {
+    (16, 1) => |chunk, endian| f32::from(read_chunk_u16(chunk, endian)),
+    (16, 2) => |chunk, endian| f32::from(read_chunk_u16(chunk, endian) as i16),
+    (32, 1) => |chunk, endian| read_chunk_u32(chunk, endian) as f32,
+    (32, 2) => |chunk, endian| read_chunk_u32(chunk, endian) as i32 as f32,
+    (32, 3) => |chunk, endian| f32::from_bits(read_chunk_u32(chunk, endian)),
+    _ => {
+      return Err(VistaError::DemFormatUnsupported(
+        "GeoTIFF samples must be uint16, int16, uint32, int32, or float32.".to_string(),
+      ));
+    }
+  };
+  let sample_size = bits_per_sample as usize / 8;
   let strip_offsets = entry_values_u32(bytes, &entries, TAG_STRIP_OFFSETS, endian)?;
   let strip_byte_counts = entry_values_u32(bytes, &entries, TAG_STRIP_BYTE_COUNTS, endian)?;
 
@@ -74,7 +119,23 @@ pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<Hei
     ));
   }
 
-  let no_data_value = entry_ascii(bytes, &entries, TAG_GDAL_NODATA, endian)
+  // Strips are separate parts of the file, so together they cannot be
+  // longer than it; checking this first means a small file can never
+  // make the decoder allocate for a large image.
+  let strip_bytes: u64 = strip_byte_counts
+    .iter()
+    .map(|count| u64::from(*count))
+    .sum();
+  let needed = expected as u64 * sample_size as u64;
+
+  if strip_bytes > bytes.len() as u64 || strip_bytes < needed {
+    return Err(VistaError::DemMetadataMissing(format!(
+      "GeoTIFF strips hold {strip_bytes} bytes, but {width} x {height} samples need {needed} and the file has {}.",
+      bytes.len()
+    )));
+  }
+
+  let no_data_value = entry_ascii(bytes, &entries, TAG_GDAL_NODATA)
     .and_then(|text| text.trim_matches(char::from(0)).trim().parse::<f32>().ok());
   let pixel_scale = entry_values_f64(bytes, &entries, TAG_MODEL_PIXEL_SCALE, endian)
     .ok()
@@ -82,54 +143,57 @@ pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<Hei
   let tiepoint = entry_values_f64(bytes, &entries, TAG_MODEL_TIEPOINT, endian)
     .ok()
     .and_then(|values| array6(values.as_slice()));
-  let warnings = geo_warnings(&entries);
-  let mut heights = Vec::with_capacity(width as usize * height as usize);
-  let mut no_data = Vec::with_capacity(width as usize * height as usize);
+  let mut warnings = geo_warnings(&entries);
+  let mut samples = Samples::new(expected, vertical_scale, no_data_value);
 
   for (offset, byte_count) in strip_offsets.iter().zip(strip_byte_counts.iter()) {
-    let start = *offset as usize;
-    let end = start + *byte_count as usize;
-
-    if end > bytes.len() {
-      return Err(VistaError::DemMetadataMissing(
+    let strip = slice(bytes, *offset as usize, *byte_count as usize).map_err(|_| {
+      VistaError::DemMetadataMissing(
         "GeoTIFF strip points outside the supplied buffer.".to_string(),
-      ));
-    }
+      )
+    })?;
+    let room = expected - samples.heights.len();
 
-    decode_samples(
-      &bytes[start..end],
-      endian,
-      bits_per_sample,
-      sample_format,
-      no_data_value,
-      options.vertical_scale.unwrap_or(1.0),
-      &mut heights,
-      &mut no_data,
-    )?;
+    for chunk in strip.chunks_exact(sample_size).take(room) {
+      samples.push(read_sample(chunk, endian));
+    }
   }
 
-  let expected = width as usize * height as usize;
+  // Strips of a length that is not a whole number of samples can still
+  // leave the image short.
+  if samples.heights.len() < expected {
+    return Err(VistaError::DemMetadataMissing(format!(
+      "GeoTIFF holds {} samples, but its width and height ({width} x {height}) need {expected}.",
+      samples.heights.len()
+    )));
+  }
 
-  if heights.len() < expected {
-    return Err(VistaError::DemMetadataMissing(
-      "GeoTIFF contains fewer samples than width and height require.".to_string(),
+  // Scales outside this range are usually degrees rather than metres, and
+  // would make world coordinates that are not finite.
+  let scale = pixel_scale.map(|scale| [scale[0] as f32, scale[1] as f32]);
+  let metres = scale
+    .map(|[x, _]| x)
+    .filter(|metres| *metres > 0.0 && *metres <= MAX_METRES_PER_SAMPLE);
+
+  if scale.is_some() && metres.is_none() {
+    warnings.push(format!(
+      "ModelPixelScaleTag gives {} per sample, outside 0 to {MAX_METRES_PER_SAMPLE} m; metres per sample defaults to 1.",
+      scale.map_or(0.0, |[x, _]| x)
     ));
   }
 
-  heights.truncate(expected);
-  no_data.truncate(expected);
-
+  warnings.extend(samples.warning());
   let mut metadata = TerrainMetadata {
     width,
     height,
-    metres_per_sample: pixel_scale.map(|scale| scale[0] as f32).unwrap_or(1.0),
-    vertical_scale: options.vertical_scale.unwrap_or(1.0),
+    metres_per_sample: metres.unwrap_or(1.0),
+    vertical_scale,
     sea_level_metres: 0.0,
     source: "geotiff".to_string(),
     generator_version: "vistawasm-geotiff-0.1.0".to_string(),
     geospatial: Some(GeospatialMetadata {
-      metres_per_sample_x: pixel_scale.map(|scale| scale[0] as f32),
-      metres_per_sample_y: pixel_scale.map(|scale| scale[1] as f32),
+      metres_per_sample_x: scale.map(|[x, _]| x),
+      metres_per_sample_y: scale.map(|[_, y]| y),
       projection_name: None,
       model_tiepoint: tiepoint,
       model_pixel_scale: pixel_scale,
@@ -144,7 +208,20 @@ pub fn decode_geotiff(bytes: &[u8], options: &DemLoadOptions) -> VistaResult<Hei
       .push("GeoKeyDirectoryTag is missing; projection is approximate.".to_string());
   }
 
-  HeightMap::from_values(width, height, heights, no_data, metadata)
+  HeightMap::from_values(width, height, samples.heights, samples.no_data, metadata)
+}
+
+/// `len` bytes from `start`, or an error when any of them lies outside
+/// `bytes` (or the end does not fit in `usize`).
+fn slice(bytes: &[u8], start: usize, len: usize) -> VistaResult<&[u8]> {
+  start
+    .checked_add(len)
+    .and_then(|end| bytes.get(start..end))
+    .ok_or_else(|| {
+      VistaError::DemMetadataMissing(
+        "a TIFF offset or count points outside the supplied buffer.".to_string(),
+      )
+    })
 }
 
 fn parse_endian(bytes: &[u8]) -> VistaResult<Endian> {
@@ -165,20 +242,16 @@ fn parse_endian(bytes: &[u8]) -> VistaResult<Endian> {
 
 fn read_ifd(bytes: &[u8], offset: usize, endian: Endian) -> VistaResult<HashMap<u16, IfdEntry>> {
   let count = read_u16(bytes, offset, endian)? as usize;
+  // At most 65,535 twelve-byte entries, all inside the buffer.
+  let table = slice(bytes, offset.saturating_add(2), count * 12)?;
   let mut entries = HashMap::new();
 
-  for index in 0..count {
-    let entry_offset = offset + 2 + index * 12;
-    let tag = read_u16(bytes, entry_offset, endian)?;
-    let field_type = read_u16(bytes, entry_offset + 2, endian)?;
-    let count = read_u32(bytes, entry_offset + 4, endian)?;
-    let value_offset = read_u32(bytes, entry_offset + 8, endian)?;
-    let inline_value = [
-      bytes[entry_offset + 8],
-      bytes[entry_offset + 9],
-      bytes[entry_offset + 10],
-      bytes[entry_offset + 11],
-    ];
+  for entry in table.chunks_exact(12) {
+    let tag = read_chunk_u16(&entry[0..2], endian);
+    let field_type = read_chunk_u16(&entry[2..4], endian);
+    let count = read_chunk_u32(&entry[4..8], endian);
+    let value_offset = read_chunk_u32(&entry[8..12], endian);
+    let inline_value = [entry[8], entry[9], entry[10], entry[11]];
 
     entries.insert(
       tag,
@@ -192,50 +265,6 @@ fn read_ifd(bytes: &[u8], offset: usize, endian: Endian) -> VistaResult<HashMap<
   }
 
   Ok(entries)
-}
-
-fn decode_samples(
-  bytes: &[u8],
-  endian: Endian,
-  bits_per_sample: u16,
-  sample_format: u16,
-  no_data_value: Option<f32>,
-  vertical_scale: f32,
-  heights: &mut Vec<f32>,
-  no_data: &mut Vec<bool>,
-) -> VistaResult<()> {
-  let sample_size = (bits_per_sample / 8) as usize;
-
-  if sample_size == 0 {
-    return Err(VistaError::DemFormatUnsupported(
-      "GeoTIFF BitsPerSample must be 16 or 32.".to_string(),
-    ));
-  }
-
-  for chunk in bytes.chunks_exact(sample_size) {
-    let value = match (bits_per_sample, sample_format) {
-      (16, 1) => read_chunk_u16(chunk, endian) as f32,
-      (16, 2) => read_chunk_i16(chunk, endian) as f32,
-      (32, 1) => read_chunk_u32(chunk, endian) as f32,
-      (32, 2) => read_chunk_i32(chunk, endian) as f32,
-      (32, 3) => read_chunk_f32(chunk, endian),
-      _ => {
-        return Err(VistaError::DemFormatUnsupported(
-          "GeoTIFF samples must be uint16, int16, uint32, int32, or float32.".to_string(),
-        ));
-      }
-    };
-    let is_no_data = no_data_value.is_some_and(|marker| (value - marker).abs() <= f32::EPSILON);
-
-    heights.push(if is_no_data {
-      0.0
-    } else {
-      value * vertical_scale
-    });
-    no_data.push(is_no_data);
-  }
-
-  Ok(())
 }
 
 fn geo_warnings(entries: &HashMap<u16, IfdEntry>) -> Vec<String> {
@@ -258,15 +287,16 @@ fn entry_u32(
   tag: u16,
   endian: Endian,
 ) -> VistaResult<u32> {
-  entries.get(&tag).ok_or_else(|| {
-    VistaError::DemMetadataMissing(format!("required TIFF tag {tag} is missing."))
-  })?;
-  let values = entry_values_u32(bytes, entries, tag, endian)?;
-
-  values
+  entry_values_u32(bytes, entries, tag, endian)?
     .first()
     .copied()
     .ok_or_else(|| VistaError::DemMetadataMissing(format!("TIFF tag {tag} has no value.")))
+}
+
+fn entry(entries: &HashMap<u16, IfdEntry>, tag: u16) -> VistaResult<&IfdEntry> {
+  entries
+    .get(&tag)
+    .ok_or_else(|| VistaError::DemMetadataMissing(format!("required TIFF tag {tag} is missing.")))
 }
 
 fn entry_values_u32(
@@ -275,31 +305,28 @@ fn entry_values_u32(
   tag: u16,
   endian: Endian,
 ) -> VistaResult<Vec<u32>> {
-  let entry = entries.get(&tag).ok_or_else(|| {
-    VistaError::DemMetadataMissing(format!("required TIFF tag {tag} is missing."))
-  })?;
+  let entry = entry(entries, tag)?;
   let raw = entry_raw_value(bytes, entry)?;
-  let mut result = Vec::with_capacity(entry.count as usize);
 
+  // `raw` holds exactly `count` values, so the vectors below grow no
+  // larger than the file itself.
   match entry.field_type {
-    3 => {
-      for chunk in raw.chunks_exact(2).take(entry.count as usize) {
-        result.push(read_chunk_u16(chunk, endian) as u32);
-      }
-    }
-    4 => {
-      for chunk in raw.chunks_exact(4).take(entry.count as usize) {
-        result.push(read_chunk_u32(chunk, endian));
-      }
-    }
-    _ => {
-      return Err(VistaError::DemMetadataMissing(format!(
-        "TIFF tag {tag} has an unsupported numeric type."
-      )));
-    }
+    3 => Ok(
+      raw
+        .chunks_exact(2)
+        .map(|chunk| u32::from(read_chunk_u16(chunk, endian)))
+        .collect(),
+    ),
+    4 => Ok(
+      raw
+        .chunks_exact(4)
+        .map(|chunk| read_chunk_u32(chunk, endian))
+        .collect(),
+    ),
+    _ => Err(VistaError::DemMetadataMissing(format!(
+      "TIFF tag {tag} has an unsupported numeric type."
+    ))),
   }
-
-  Ok(result)
 }
 
 fn entry_values_f64(
@@ -308,47 +335,39 @@ fn entry_values_f64(
   tag: u16,
   endian: Endian,
 ) -> VistaResult<Vec<f64>> {
-  let entry = entries.get(&tag).ok_or_else(|| {
-    VistaError::DemMetadataMissing(format!("required TIFF tag {tag} is missing."))
-  })?;
+  let entry = entry(entries, tag)?;
   let raw = entry_raw_value(bytes, entry)?;
-  let mut result = Vec::with_capacity(entry.count as usize);
+  let chunks = raw.chunks_exact(8);
 
   match entry.field_type {
-    5 => {
-      for chunk in raw.chunks_exact(8).take(entry.count as usize) {
-        let numerator = read_chunk_u32(&chunk[0..4], endian);
-        let denominator = read_chunk_u32(&chunk[4..8], endian).max(1);
-        result.push(numerator as f64 / denominator as f64);
-      }
-    }
-    12 => {
-      for chunk in raw.chunks_exact(8).take(entry.count as usize) {
-        let array = [
-          chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ];
-        result.push(match endian {
-          Endian::Little => f64::from_le_bytes(array),
-          Endian::Big => f64::from_be_bytes(array),
-        });
-      }
-    }
-    _ => {
-      return Err(VistaError::DemMetadataMissing(format!(
-        "TIFF tag {tag} has an unsupported floating point type."
-      )));
-    }
+    5 => Ok(
+      chunks
+        .map(|chunk| {
+          let numerator = read_chunk_u32(&chunk[0..4], endian);
+          let denominator = read_chunk_u32(&chunk[4..8], endian).max(1);
+          f64::from(numerator) / f64::from(denominator)
+        })
+        .collect(),
+    ),
+    12 => Ok(
+      chunks
+        .map(|chunk| {
+          let first = u64::from(read_chunk_u32(&chunk[0..4], endian));
+          let second = u64::from(read_chunk_u32(&chunk[4..8], endian));
+          f64::from_bits(match endian {
+            Endian::Little => second << 32 | first,
+            Endian::Big => first << 32 | second,
+          })
+        })
+        .collect(),
+    ),
+    _ => Err(VistaError::DemMetadataMissing(format!(
+      "TIFF tag {tag} has an unsupported floating point type."
+    ))),
   }
-
-  Ok(result)
 }
 
-fn entry_ascii(
-  bytes: &[u8],
-  entries: &HashMap<u16, IfdEntry>,
-  tag: u16,
-  _endian: Endian,
-) -> Option<String> {
+fn entry_ascii(bytes: &[u8], entries: &HashMap<u16, IfdEntry>, tag: u16) -> Option<String> {
   let entry = entries.get(&tag)?;
 
   if entry.field_type != 2 {
@@ -356,11 +375,13 @@ fn entry_ascii(
   }
 
   let raw = entry_raw_value(bytes, entry).ok()?;
-  Some(String::from_utf8_lossy(&raw).to_string())
+  Some(String::from_utf8_lossy(raw).to_string())
 }
 
-fn entry_raw_value(bytes: &[u8], entry: &IfdEntry) -> VistaResult<Vec<u8>> {
-  let type_size = match entry.field_type {
+/// An entry's value bytes: inline when they fit in four bytes, otherwise
+/// at its offset in the buffer.
+fn entry_raw_value<'a>(bytes: &'a [u8], entry: &'a IfdEntry) -> VistaResult<&'a [u8]> {
+  let type_size: usize = match entry.field_type {
     1 | 2 => 1,
     3 => 2,
     4 | 11 => 4,
@@ -372,42 +393,25 @@ fn entry_raw_value(bytes: &[u8], entry: &IfdEntry) -> VistaResult<Vec<u8>> {
       )));
     }
   };
-  let byte_count = entry.count as usize * type_size;
+  let byte_count = (entry.count as usize)
+    .checked_mul(type_size)
+    .ok_or_else(|| {
+      VistaError::DemMetadataMissing("a TIFF entry's count is too large.".to_string())
+    })?;
 
   if byte_count <= 4 {
-    return Ok(entry.inline_value[..byte_count].to_vec());
+    return Ok(&entry.inline_value[..byte_count]);
   }
 
-  let start = entry.value_offset as usize;
-  let end = start + byte_count;
-
-  if end > bytes.len() {
-    return Err(VistaError::DemMetadataMissing(
-      "TIFF entry points outside the supplied buffer.".to_string(),
-    ));
-  }
-
-  Ok(bytes[start..end].to_vec())
+  slice(bytes, entry.value_offset as usize, byte_count)
 }
 
 fn read_u16(bytes: &[u8], offset: usize, endian: Endian) -> VistaResult<u16> {
-  if offset + 2 > bytes.len() {
-    return Err(VistaError::DemMetadataMissing(
-      "TIFF u16 read is outside the supplied buffer.".to_string(),
-    ));
-  }
-
-  Ok(read_chunk_u16(&bytes[offset..offset + 2], endian))
+  Ok(read_chunk_u16(slice(bytes, offset, 2)?, endian))
 }
 
 fn read_u32(bytes: &[u8], offset: usize, endian: Endian) -> VistaResult<u32> {
-  if offset + 4 > bytes.len() {
-    return Err(VistaError::DemMetadataMissing(
-      "TIFF u32 read is outside the supplied buffer.".to_string(),
-    ));
-  }
-
-  Ok(read_chunk_u32(&bytes[offset..offset + 4], endian))
+  Ok(read_chunk_u32(slice(bytes, offset, 4)?, endian))
 }
 
 fn read_chunk_u16(chunk: &[u8], endian: Endian) -> u16 {
@@ -416,15 +420,6 @@ fn read_chunk_u16(chunk: &[u8], endian: Endian) -> u16 {
   match endian {
     Endian::Little => u16::from_le_bytes(array),
     Endian::Big => u16::from_be_bytes(array),
-  }
-}
-
-fn read_chunk_i16(chunk: &[u8], endian: Endian) -> i16 {
-  let array = [chunk[0], chunk[1]];
-
-  match endian {
-    Endian::Little => i16::from_le_bytes(array),
-    Endian::Big => i16::from_be_bytes(array),
   }
 }
 
@@ -437,40 +432,12 @@ fn read_chunk_u32(chunk: &[u8], endian: Endian) -> u32 {
   }
 }
 
-fn read_chunk_i32(chunk: &[u8], endian: Endian) -> i32 {
-  let array = [chunk[0], chunk[1], chunk[2], chunk[3]];
-
-  match endian {
-    Endian::Little => i32::from_le_bytes(array),
-    Endian::Big => i32::from_be_bytes(array),
-  }
-}
-
-fn read_chunk_f32(chunk: &[u8], endian: Endian) -> f32 {
-  let array = [chunk[0], chunk[1], chunk[2], chunk[3]];
-
-  match endian {
-    Endian::Little => f32::from_le_bytes(array),
-    Endian::Big => f32::from_be_bytes(array),
-  }
-}
-
 fn array3(values: &[f64]) -> Option<[f64; 3]> {
-  if values.len() < 3 {
-    return None;
-  }
-
-  Some([values[0], values[1], values[2]])
+  values.get(..3)?.try_into().ok()
 }
 
 fn array6(values: &[f64]) -> Option<[f64; 6]> {
-  if values.len() < 6 {
-    return None;
-  }
-
-  Some([
-    values[0], values[1], values[2], values[3], values[4], values[5],
-  ])
+  values.get(..6)?.try_into().ok()
 }
 
 #[cfg(test)]

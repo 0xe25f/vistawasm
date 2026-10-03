@@ -84,7 +84,8 @@ fails — wrap it in a `try`/`catch` in real code (see
 the full error code reference).
 
 You can pass initial `camera`, `sun`, `atmosphere`, `water`, `flora`,
-`grass`, `clouds`, `mist`, and `quality` options here too, instead of
+`grass`, `clouds`, `mist`, `quality`, `biomes`, `weather`, `shadows`, and
+`surface` options here too, instead of
 calling the matching `set*()` method immediately afterwards — see
 [`docs/options-reference.md`](options-reference.md).
 
@@ -107,8 +108,11 @@ const handle = await engine.generateFractal({
 console.log(handle.metadata.minHeightMetres, handle.metadata.maxHeightMetres);
 ```
 
-`generateFractal()` is async — it can take from a few milliseconds to a few
-hundred, depending on `size` and whether erosion is requested. It returns a
+`generateFractal()` is async. It takes from tens of milliseconds for a
+small terrain to much longer for a large one with erosion. While it runs,
+`set*()` calls are skipped (see
+[Reentrancy](events-errors-and-lifecycle.md#reentrancy)), so await it
+before configuring the scene. It returns a
 `TerrainHandle` with `metadata` describing the real height range, sea level,
 and sample spacing of what was generated, which you will need for camera
 placement, sea level tuning, and gameplay height queries.
@@ -119,14 +123,22 @@ To load a real-world elevation model instead of generating one, see
 ## 5. Place a camera and start rendering
 
 ```ts
+// Look across the terrain from above its highest peak, near one edge.
+const { maxHeightMetres, width, metresPerSample } = handle.metadata;
+const start: [number, number, number] = [0, maxHeightMetres + 400, (width - 1) * metresPerSample * 0.45];
+
 engine.setCamera({
-  position: [0, 400, 900],
-  target: [0, 0, 0],
+  position: start,
+  target: [0, maxHeightMetres * 0.3, 0],
   fieldOfViewDegrees: 55
 });
 
 engine.start();
 ```
+
+Heights depend on the seed and options (fractal terrain spans up to about
+±900 m × `verticalScale`), so place the camera from `handle.metadata`
+rather than fixed numbers, which can end up inside a hill.
 
 `engine.start()` runs VistaWASM's own `requestAnimationFrame` loop. If you'd
 rather drive rendering from your own game loop, call `engine.renderOnce()`
@@ -139,7 +151,9 @@ controller:
 import { attachFlyCameraControls } from "@vista-wasm/vista-wasm";
 
 const controls = attachFlyCameraControls(engine, canvas, {
-  initialPosition: [0, 400, 900]
+  initialPosition: start,
+  initialYawDegrees: 180, // face −z, towards the centre
+  initialPitchDegrees: -15
 });
 ```
 
@@ -167,8 +181,72 @@ window.addEventListener("beforeunload", () => {
 Always call `stop()` (or stop your own render loop) before disposing so no
 frame renders against a disposed engine.
 
-## 7. Where to go next
+## 7. Deploy
 
+- Serve your site over HTTPS (or `localhost` while developing). WebGPU
+  only works in a secure context.
+- Serve `.wasm` files as `application/wasm`. Most hosts and CDNs do this
+  already; if yours does not, VistaWASM falls back to a slower load path
+  and still works, but fix the header for production.
+- Serve the `.wasm` and `.js` files compressed, with Brotli where you can.
+  Brotli makes the download about 18 % smaller than gzip: the WASM is
+  433 KB instead of 532 KB. Browsers decompress either transparently, so
+  VistaWASM needs no change. Many CDNs compress with Brotli on their own;
+  check that responses carry `Content-Encoding: br`. On your own server,
+  compress the files once at build time at the highest quality and serve
+  those, rather than compressing on every request:
+
+  ```sh
+  brotli -q 11 -k dist/pkg/vista_wasm_bg.wasm dist/pkg/vista_wasm.js
+  gzip -9 -k dist/pkg/vista_wasm_bg.wasm dist/pkg/vista_wasm.js
+  ```
+
+  ```text
+  # Caddy
+  file_server {
+    precompressed br gzip
+  }
+
+  # nginx, with the ngx_brotli module
+  brotli_static on;
+  gzip_static on;
+  ```
+
+  Keep the gzip files for the few clients that do not accept Brotli, and
+  keep `Content-Type: application/wasm` on the compressed WASM.
+  In the VistaWASM repository, `node scripts/check-size.mjs` prints both
+  sizes for every release file.
+- Elevation files (`loadDemFromUrl()`) fetched from another origin need
+  CORS headers on that origin.
+- If your page sets a Content Security Policy, its `script-src` needs
+  `'wasm-unsafe-eval'` so the browser may compile VistaWASM's WASM. Nothing
+  else is needed when the package is served from your own origin:
+
+  ```text
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'
+  ```
+
+  Add the origins you load elevation files from to `connect-src`. The
+  demo and the vanilla example ship with such a policy; see
+  [the demo guide](demo.md#content-security-policy).
+- VistaWASM does not use threads today, so you do not need the
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers.
+  If a future release adds threaded builds, it will need:
+
+  ```text
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  ```
+
+Using a framework? See [`docs/frameworks.md`](frameworks.md) for complete
+React, Vue, and Svelte components.
+
+## 8. Where to go next
+
+- [`docs/README.md`](README.md) — the full documentation index.
+- [`docs/frameworks.md`](frameworks.md) — React, Vue, and Svelte
+  components.
+- [`docs/threejs.md`](threejs.md) — using VistaWASM with three.js.
 - [`docs/options-reference.md`](options-reference.md) — every public
   option, its type, default, and validation rule, in one table-driven
   reference.
@@ -179,14 +257,21 @@ frame renders against a disposed engine.
 - [`docs/vegetation.md`](vegetation.md) — trees and grass, quality tiers,
   and performance.
 - [`docs/sky-atmosphere-and-weather.md`](sky-atmosphere-and-weather.md) —
-  sun, atmosphere, clouds, and mist.
-- [`docs/water.md`](water.md) — the water plane.
+  sun, atmosphere, clouds, cloud types, and mist.
+- [`docs/weather.md`](weather.md) — weather states, transitions, and
+  automatic cycling.
+- [`docs/shadows.md`](shadows.md) — terrain, tree, and cloud shadows.
+- [`docs/hooks.md`](hooks.md) — replacing tree models, placement, species
+  mixes, and textures with your own.
+- [`docs/biomes.md`](biomes.md) — biomes and how to shape them.
+- [`docs/water.md`](water.md) — ocean waves, currents, rivers, and lakes.
 - [`docs/camera-and-controls.md`](camera-and-controls.md) — camera model
   and the bundled fly-camera controller.
 - [`docs/render-quality-and-diagnostics.md`](render-quality-and-diagnostics.md) —
-  quality presets, render statistics, and debug overlays.
+  quality settings, render statistics, and debug overlays.
 - [`docs/export-and-snapshots.md`](export-and-snapshots.md) — heightmap,
-  PNG, OBJ, and screenshot export helpers.
+  PNG, OBJ, and screenshot export helpers, every map the engine builds,
+  the trees, and zip bundles.
 - [`docs/events-errors-and-lifecycle.md`](events-errors-and-lifecycle.md) —
   the engine lifecycle, every event, and every error code.
 - [`docs/game-development.md`](game-development.md) — using VistaWASM as
@@ -194,5 +279,13 @@ frame renders against a disposed engine.
   collision, error handling).
 - [`docs/engine-integration.md`](engine-integration.md) — integrating with
   other web game engines (Three.js, Babylon.js, PlayCanvas).
+- [`docs/import.md`](import.md) — heightmap images, painted biome,
+  water and vegetation maps, and bundles.
+- [`docs/babylonjs.md`](babylonjs.md) — using VistaWASM with Babylon.js.
+- [`docs/demo.md`](demo.md) — a guide to the live demo.
+- [`docs/performance.md`](performance.md) — GPU budgets, generation
+  times, peak memory and download size.
+- [`docs/security.md`](security.md) — the threat model, input limits
+  and Content Security Policy.
 - [`docs/architecture.md`](architecture.md) — internals, for anyone
   contributing to VistaWASM itself.

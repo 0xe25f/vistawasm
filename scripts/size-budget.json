@@ -1,0 +1,19 @@
+{
+  "files": {
+    "dist/pkg/vista_wasm_bg.wasm": 532241,
+    "dist/pkg/vista_wasm.js": 13583,
+    "dist/camera-controls.js": 2903,
+    "dist/codec.js": 995,
+    "dist/errors.js": 1550,
+    "dist/feature-detect.js": 400,
+    "dist/frame-pacing.js": 363,
+    "dist/import-glue.js": 273,
+    "dist/index.js": 12470,
+    "dist/map-export.js": 5310,
+    "dist/map-import.js": 6348,
+    "dist/option-keys.js": 1590,
+    "dist/png-decode.js": 2377,
+    "dist/terrain-export.js": 2471,
+    "dist/types.js": 40
+  }
+}

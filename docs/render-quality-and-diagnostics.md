@@ -4,34 +4,220 @@ This covers the three tools VistaWASM gives you for understanding and
 tuning what it renders: `RenderQualityOptions`, `RenderStats`, and
 `DebugView`.
 
-## Render quality presets (`RenderQualityOptions`)
+## Find what is slow first
 
-See [`docs/options-reference.md`](options-reference.md#renderqualityoptions)
-for the exact field list. The one field with real, direct effect today is
-`preset`, which caps the total erosion iteration budget requested by
-`ErosionOptions` regardless of what a caller asks for — `"preview"` keeps a
-UI responsive while a user drags sliders, `"balanced"` is a reasonable
-default for normal play, `"high"`/`"offline"` allow the full requested
-iteration count for a final export or screenshot. See
-[`docs/terrain-data.md`](terrain-data.md#erosion) for the exact caps.
+`RenderStats.gpuPassTimesMs` reports the GPU time of each pass: terrain, trees, grass, boulders, clouds, sky and fog, water,
+shadows, tree culling, and upscaling with lens drops. The demo lists them, largest first,
+in its stats panel. Look there before changing settings: the pass at the
+top is the one worth making cheaper. It needs the browser's
+`timestamp-query` feature (current Chrome and Edge have it); elsewhere it
+is `null`. Readings arrive a few frames late and are only taken when the
+previous one has arrived, so measuring never stalls rendering.
+
+To see where the trees' time goes, set `splitTreeTiming: true`: the
+trees pass then runs as three passes, and `gpuPassTimesMs.treeMeshes`,
+`understorey` and `treeImpostors` break `trees` down. The extra passes
+cost a little, so leave it off outside profiling.
+
+```ts
+engine.setRenderQuality({ preset: "balanced", splitTreeTiming: true });
+engine.on("stats", ({ gpuPassTimesMs, treeTriangles }) => {
+  console.log(gpuPassTimesMs?.treeImpostors, treeTriangles);
+});
+```
+
+## Load time and pipeline warm-up
+
+The first frame waits for the textures and pipelines it draws with, and
+nothing else. Pipelines are created when the scene needs them, in the
+order the frame draws: a map without rivers never compiles the river
+pipeline, and one without grass never compiles grass. Procedural textures
+are baked the same way: only the terrain materials the ground uses, the
+bark and leaves of the species present, and the cloud volume when clouds
+or volumetric mist need it. What the scene may need soon, such as rain
+and its clouds when the weather can turn, is created after the first
+frame is on screen, one pipeline per frame, so it never holds the first
+frame back and is ready when it is needed.
+
+To see the effect, time the first frame from `createVistaEngine()`:
+
+```ts
+const started = performance.now();
+const engine = await createVistaEngine({ canvas });
+await engine.generateFractal({
+  seed: 1,
+  size: 512,
+  horizontalScaleMetres: 12,
+  verticalScale: 1,
+  noise: { kind: "ridged", octaves: 7, gain: 0.52, lacunarity: 2.05 }
+});
+engine.renderOnce();
+await new Promise(requestAnimationFrame);
+console.log(`first frame after ${Math.round(performance.now() - started)} ms`);
+```
+
+Under software WebGPU the default scene's first frame arrives in about
+half the time it took before pipelines and textures were created on
+demand. Turning a system on later (grass, clouds, screen reflections)
+compiles its pipeline once, on the next frame.
+
+## Frame rate and resolution
+
+VistaWASM aims for a steady frame rate on any display, from a 1080p
+laptop to a 4K monitor or a phone. Three settings do this:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `maxFrameRate` | `60` | `start()` renders evenly spaced frames at this rate, so a 120 or 144 Hz display shows a steady 60 rather than a rate that swings with the scene. `0` renders on every animation frame. |
+| `dynamicResolution` | `true` | Renders the scene below the canvas resolution when frames arrive late, and back up to `renderScale` when there is time to spare. |
+| `renderScale` / `minRenderScale` | `1` / `0.5` | The highest and lowest fraction of the canvas resolution to render at. |
+
+Most of the cost of clouds, sky, fog, and rain is per pixel, and a 4K
+display at a device pixel ratio of 2 has four times the pixels of 1080p.
+Rendering at 75 % of each side shades 56 % of the pixels. A final pass
+upscales the image with contrast-adaptive sharpening, which keeps edges
+crisp; at typical viewing distances 75 % is hard to tell from full
+resolution. `RenderStats.renderScale` reports the scale in use.
+
+```ts
+engine.setRenderQuality({
+  preset: "balanced",
+  maxFrameRate: 60,
+  dynamicResolution: true,
+  minRenderScale: 0.5
+});
+
+// A fixed 75 %, for example on a phone:
+engine.setRenderQuality({
+  preset: "balanced",
+  renderScale: 0.75,
+  dynamicResolution: false
+});
+```
+
+Dynamic resolution judges the real interval between rendered frames, so
+it works in every browser, with or without GPU timing. It holds the cap,
+or 60 when uncapped. It lowers the scale within half a second of frames
+running late, raises it one step after two calm seconds, and avoids for
+ten seconds a scale that has just dropped frames, so it settles instead
+of swinging.
+
+Overcast, rain, and storm skies also march cloud lighting with fewer
+samples: under a thick grey layer the fine light detail that more samples
+resolve cannot be seen.
+
+## Distances and presets (`RenderQualityOptions`)
+
+Three distances limit work far from the camera. See
+[`docs/options-reference.md`](options-reference.md#renderqualityoptions)
+for the exact fields.
+
+| Setting | What it does | Cost it saves |
+| --- | --- | --- |
+| `renderDistanceMetres` | Terrain, trees, and water past it are not shaded; horizon-coloured fog thickens over the `renderFadeMetres` before it and is complete at it, so the edge is never seen. | Terrain and tree shading in the distance. |
+| `detailDistanceMetres` | Past it, terrain takes one far-scale texture sample per material instead of up to eight. Textures there are so minified that the two look the same. | Terrain texture sampling. |
+| `cloudDistanceMetres` | Clouds and rain curtains are raymarched only this far, thinning out over the `cloudFadeMetres` before it. | The longest cloud marches, near the horizon. |
+
+`preset` fills in any distance you leave unset:
+
+| `preset` | Render | Detail | Clouds |
+| --- | --- | --- | --- |
+| `"preview"` | 6 km | 400 m | 12 km |
+| `"balanced"` (default) | unlimited | 2 km | 60 km |
+| `"high"` | unlimited | 5 km | 90 km |
+| `"offline"` | unlimited | unlimited | 90 km |
+
+Measured in one scene (a 12 km island seen from 7.5 km away, software
+GPU), GPU time per frame: `"offline"` 1330 ms, `"balanced"` 1164 ms (no
+visible difference), `"preview"` 981 ms, and `"balanced"` with a 4 km
+render distance 957 ms. Most of the saving was terrain shading. Real GPUs
+are much faster, and the proportions differ, so check the profiler.
+
+Both fades are yours to set, in metres: `renderFadeMetres` (default a
+third of the render distance) and `cloudFadeMetres` (default 30 % of the
+cloud distance). A long fade hides the edge more gently; `0` gives a hard
+edge. Each is capped at its distance.
+
+```ts
+engine.setRenderQuality({
+  preset: "balanced",
+  renderDistanceMetres: 8000,
+  renderFadeMetres: 3000, // fog from 5 km, complete at 8 km
+  cloudDistanceMetres: 30000,
+  cloudFadeMetres: 10000 // clouds thin out from 20 km
+});
+```
+
+`preset` does not change `FloraOptions.treeQuality`, `GrassOptions`,
+`CloudsOptions.style`, or `MistOptions.style`, and it does not limit
+erosion (that is `ErosionOptions.quality`; see
+[`docs/terrain-data.md`](terrain-data.md#erosion)).
 
 `floraDensityScale` is a global multiplier applied to both
-`FloraOptions.density` and `GrassOptions.density` — the cheapest lever if
-vegetation fill-rate is your bottleneck (see
+`FloraOptions.density` and `GrassOptions.density` (see
 [`docs/vegetation.md`](vegetation.md#performance)).
 
 `maxClipmapLevels` is only used by native/test builds without a GPU, to
 compute a theoretical `RenderStats.terrainTriangles`/`clipmapLevels`
 estimate; browser builds report the real uploaded mesh's stats regardless
-of this value (the terrain mesh's actual vertex budget is fixed — see
+of this value (see
 [`docs/architecture.md`](architecture.md#terrain-rendering-and-level-of-detail)).
 
-`preset` does **not** automatically change `FloraOptions.treeQuality`,
-`GrassOptions`, `CloudsOptions.style`, or `MistOptions.style` — those
-default independently and a host must opt into each explicitly. If you want
-"one dial" behaviour (cheap tiers at `"preview"`/`"balanced"`, expensive
-tiers at `"high"`/`"offline"`), implement that mapping yourself in your own
-UI/settings code.
+### Vegetation budgets
+
+Six more fields bound vegetation: `vegetationDetailMetres` (the radius
+of full-density trees), `canopyDistanceMetres` (where trees give way to
+the canopy layer), `maxTreeInstances` and `maxGrassInstances` (most drawn
+per frame), `maxTreeTriangles` (most tree triangles drawn per frame) and
+`grassDetailMetres` (the radius of full-cover grass). `preset` fills
+them in:
+
+| `preset` | Detail | Canopy | Trees | Grass | Tree triangles | Grass detail |
+| --- | --- | --- | --- | --- | --- | --- |
+| `"preview"` | 120 m | 1.5 km | 40,000 | 150,000 | 1,000,000 | 25 m |
+| `"balanced"` (default) | 250 m | 2.5 km | 120,000 | 400,000 | 2,500,000 | 45 m |
+| `"high"` | 400 m | 4 km | 250,000 | 800,000 | 5,000,000 | 70 m |
+| `"offline"` | 600 m | 8 km | 1,000,000 | 2,000,000 | no limit | 120 m |
+
+The engine enforces the budgets itself. Each frame it estimates the
+drawn counts from the cover texture. Over budget, the detail radius
+shrinks by 10 % a frame (never below 60 m for trees or 10 m for grass),
+and grows back after 2 s with headroom. The tree triangles are counted
+on the GPU and read back a frame or two late, never stalling: over
+budget, the mesh distance comes in so the furthest meshes become
+impostors first, and shadow casters keep to a quarter of the budget.
+
+Dynamic resolution feeds in too. With streamed vegetation, late frames
+lower the render scale only to 0.85; then detail pressure rises by 0.25
+per window, up to 1, shrinking the detail radii and the boulder
+distance by up to half and moving more trees to impostors. Only at full
+pressure may the scale fall
+further, to `minRenderScale`. On time again, the scale climbs back to
+0.85, the pressure falls by 0.25 per window, and then the scale rises
+above 0.85. Without streamed vegetation there is no detail to shed, and
+the scale falls straight to `minRenderScale`. Watch
+`RenderStats.floraInstances`, `grassInstances`, `treeTriangles` and
+`gpuPassTimesMs.generation` to see it work. See
+[`docs/vegetation.md`](vegetation.md#budgets).
+
+```ts
+engine.setRenderQuality({
+  preset: "balanced",
+  vegetationDetailMetres: 180,
+  maxTreeInstances: 80000,
+  maxTreeTriangles: 1500000,
+  grassDetailMetres: 35
+});
+```
+
+Other per-feature levers: `CloudsOptions.temporal` (reuse distant clouds
+between frames), `CloudsOptions.raymarchSteps` (or `style: "painted"`),
+`CloudsOptions.resolutionScale` (clouds render at half resolution by
+default; `0.25` is cheaper still), `ShadowOptions.trees.resolution` and
+`distanceMetres`, `FloraOptions.meshDistanceMetres`, and
+`GrassOptions.viewDistanceMetres`. Storm weather (or
+`CloudsOptions.towering`) makes the cloud layer up to 2.6 times as tall
+and costs more than fair weather.
 
 ## Render statistics (`RenderStats`)
 
@@ -39,18 +225,30 @@ Returned by `engine.renderOnce()` and emitted on every rendered frame via
 the `"stats"` event:
 
 ```ts
+let lastFrameAt = performance.now();
+
 engine.on("stats", (stats) => {
-  const fps = stats.frameTimeMs > 0 ? Math.round(1000 / stats.frameTimeMs) : 0;
+  const now = performance.now();
+  const fps = Math.round(1000 / Math.max(1, now - lastFrameAt));
+  lastFrameAt = now;
   updateHud({ fps, ...stats });
 });
 ```
 
 See [`docs/options-reference.md`](options-reference.md#renderstats-from-enginerenderonce-and-the-stats-event)
-for the exact field list. Two fields are always `null` today regardless of
-platform: `gpuFrameTimeMs` and `activeGpuMemoryBytes` — the type reserves
-space for them, but no current backend populates either. Use
-`frameTimeMs` (measured by the JavaScript wrapper around the call into the
-WASM module) for real performance measurement instead.
+for the exact field list. `gpuFrameTimeMs` is the sum of
+`gpuPassTimesMs`, when the browser supports timestamp queries.
+`activeGpuMemoryBytes` is always `null` today.
+
+`frameTimeMs` is the CPU time the JavaScript wrapper measures around the
+call into the WASM module: the time to record and submit the frame. The
+GPU runs that work afterwards, so a GPU-bound scene can drop frames while
+`frameTimeMs` stays small. To measure the real frame rate, time the gap
+between `"stats"` events with `performance.now()`, as below.
+
+`weather` holds the dominant weather state while the weather system is
+on, and `null` otherwise; the `"weatherChanged"` event fires when it
+changes.
 
 `terrainTriangles`/`clipmapLevels` reflect the real uploaded terrain mesh
 on browser builds — a constant `512 × 512 × 2` triangle budget regardless
@@ -63,40 +261,39 @@ Native/test builds without a GPU report a theoretical estimate from
 ## Debug views (`DebugView`)
 
 `engine.setDebugView(view)` accepts `"none" | "height" | "slope" |
-"normals" | "lod" | "flow" | "materials" | "no-data"`, and the value is
-validated, stored, and returned unchanged by the engine. **As of this
-release, no `DebugView` value other than `"none"` currently changes what is
-rendered** — every mode currently produces the same output as `"none"`. The
-type and setter exist as a stable, forward-compatible API surface (the demo
-and every example already expose a "Debug view" selector wired up to it),
-but the corresponding shader/rendering logic for each overlay has not been
-implemented yet.
+"normals" | "lod" | "flow" | "materials" | "no-data" | "biomes"`. These
+modes replace the terrain's textured shading with a flat-lit overlay:
 
-If you are relying on a specific debug overlay for your own workflow today,
-do not — check back once this is implemented, or, in the meantime, use
-[`docs/export-and-snapshots.md`](export-and-snapshots.md)'s heightmap
-export (which does give you real height data you can visualise yourself,
-via `renderHeightmapToCanvas`'s hypsometric colouring) as a substitute for
-a height/slope overlay.
+| View | Shows |
+| --- | --- |
+| `"height"` | Height above sea level, green lowlands to pale peaks. |
+| `"slope"` | Flat (green) to steep (red). |
+| `"normals"` | World-space normals as colour. |
+| `"materials"` | The dominant surface material (lush grass, dry grass, forest floor, sand, rock, snow, mud, volcanic, glacier ice, tundra, river gravel). |
+| `"biomes"` | The biome map, one colour per biome (see [`docs/biomes.md`](biomes.md)). |
+
+`"lod"`, `"flow"`, and `"no-data"` are accepted but currently render like
+`"none"`. Trees, water, sky, and fog render normally in every mode.
 
 ## Building your own performance HUD
 
-Combine `RenderStats` with the levers above for an adaptive-quality loop:
+Dynamic resolution already holds the frame rate. To trade other detail
+for speed as well, combine `RenderStats` with the levers above:
 
 ```ts
-let lowFrameTimeStreak = 0;
+let lastFrameAt = performance.now();
+let slowFrameStreak = 0;
 
-engine.on("stats", (stats) => {
-  if (stats.frameTimeMs > 20) {
-    lowFrameTimeStreak += 1;
-  } else {
-    lowFrameTimeStreak = 0;
-  }
+engine.on("stats", () => {
+  const now = performance.now();
+  const frameIntervalMs = now - lastFrameAt;
+  lastFrameAt = now;
+  slowFrameStreak = frameIntervalMs > 20 ? slowFrameStreak + 1 : 0;
 
-  if (lowFrameTimeStreak > 120) {
-    // Roughly two seconds of a real terrain frame budget breach at ~60 FPS.
+  if (slowFrameStreak > 100) {
+    // About two seconds below 50 FPS.
     engine.setRenderQuality({ preset: "balanced", floraDensityScale: 0.5 });
-    lowFrameTimeStreak = 0;
+    slowFrameStreak = 0;
   }
 });
 ```
