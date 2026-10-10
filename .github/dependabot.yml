@@ -1,28 +1,24 @@
 # Keep npm, Cargo and GitHub Actions dependencies current. Minor and
-# patch updates arrive grouped, as one pull request per ecosystem a week;
+# patch updates arrive grouped, as one pull request per ecosystem a month;
 # major updates arrive one by one, so each can be checked on its own.
+# Every Dependabot push runs the Checks workflow, so a monthly cadence
+# and one npm entry for both package directories keep CI minutes down.
 version: 2
 updates:
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/bench"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       npm-minor-and-patch:
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "npm"
-    directory: "/bench"
-    schedule:
-      interval: "weekly"
-    groups:
-      bench-minor-and-patch:
         update-types: ["minor", "patch"]
 
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       cargo-minor-and-patch:
         update-types: ["minor", "patch"]
@@ -30,7 +26,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
       actions-minor-and-patch:
         update-types: ["minor", "patch"]

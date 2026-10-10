@@ -230,7 +230,7 @@ Advisory status, checked on 2026-10-02:
 | `npm audit` (`bench/`) | 0 vulnerabilities |
 
 CI (`.github/workflows/checks.yml`) runs these audits on every push and
-pull request, including Dependabot's weekly updates, and fails on any
+pull request, including Dependabot's monthly updates, and fails on any
 advisory. The build checks the prebuilt `wasm-bindgen` it downloads
 against SHA-256 checksums recorded in `scripts/wasm-bindgen-sha256.json`
 and refuses any other archive.

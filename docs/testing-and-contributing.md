@@ -75,7 +75,7 @@ npm run dev              # the demo at http://127.0.0.1:5173/
 Use `npm ci` rather than `npm install` for a fresh setup: it installs
 exactly the versions in `package-lock.json`. Development dependencies are
 declared as caret ranges, so `npm install` can move them to newer minor
-releases; Dependabot proposes those updates weekly.
+releases; Dependabot proposes those updates monthly.
 
 ### A macOS/Homebrew toolchain quirk
 
@@ -195,7 +195,9 @@ seconds, and checks that a forced GPU validation error arrives as a
 `gpuError` event. It fails on any page or console
 error, any console warning (a WGSL error is only a warning and a black
 frame), any error the page logged, or a black frame. It is the only CI
-coverage of the WebGPU paths. Run it locally from a static server at the
+coverage of the WebGPU paths. Dependabot branches skip it to save CI
+minutes; their updates are smoke tested once merged into `main`, before
+the site deploys. Run it locally from a static server at the
 repository root:
 
 ```bash
@@ -226,7 +228,7 @@ error with `cargo test`, whose naga messages quote the same source.
 ### Dependency audits
 
 The dependencies are kept at their latest releases (Dependabot proposes
-updates weekly) and must carry no known advisories. Check both
+updates monthly) and must carry no known advisories. Check both
 ecosystems, and `bench/` on its own:
 
 ```bash

@@ -3,6 +3,7 @@ name: Checks
 # Every check a contributor runs before pushing (see
 # docs/testing-and-contributing.md), plus the size budget, the audits,
 # the fuzzers and a browser smoke test, on every push and pull request.
+# Dependabot branches skip the browser smoke test.
 # The jobs run in parallel; none is allowed to fail. deploy-demo.yml
 # calls this workflow and deploys only when every job passes.
 on:
@@ -254,6 +255,10 @@ jobs:
 
   browser:
     name: Browser smoke test (software WebGPU)
+    # The slowest job, so Dependabot branches skip it to save CI minutes.
+    # A dependency update is still smoke tested on main, and the deploy
+    # workflow runs this job before it publishes.
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'dependabot/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
